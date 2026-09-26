@@ -835,8 +835,8 @@ def test_doctor_does_not_run_command_helper(tmp_path: Path, monkeypatch: pytest.
 def test_doctor_headless_override_reports_support_without_display_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    if os.name == "nt":
-        pytest.skip("display readiness is a POSIX concern")
+    if not sys.platform.startswith("linux"):
+        pytest.skip("display readiness diagnostic applies on Linux")
     conf = tmp_path / "config"
     conf.mkdir()
     data = tmp_path / "data"
