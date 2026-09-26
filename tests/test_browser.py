@@ -623,3 +623,58 @@ def test_owned_lock_retains_exclusion_through_cleanup_and_publication(
             assert published == [True]
 
     _run(scenario())
+
+
+def test_inherited_lock_lease_expires_and_child_cannot_bypass_contention(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = {"browser": {"lock_path": str(tmp_path / "shared.lock")}}
+    monkeypatch.setattr(browser, "PLAYWRIGHT_FACTORY", lambda: pytest.fail("Busy lock must precede browser setup"))
+
+    async def scenario() -> None:
+        released = asyncio.Event()
+
+        async def inherited_child() -> str:
+            await released.wait()
+            with pytest.raises(CampusError) as caught:
+                async with browser.open_session(config, data_dir=tmp_path, headless=True):
+                    pytest.fail("Child must not borrow an expired lock lease")
+            return caught.value.code
+
+        with browser.session_lock(config, data_dir=tmp_path):
+            child = asyncio.create_task(inherited_child())
+            with pytest.raises(CampusError) as caught:
+                await asyncio.create_task(browser.open_session(config, data_dir=tmp_path, headless=True).__aenter__())
+            assert caught.value.code == "session-busy"
+        with exclusive_lock(tmp_path / "shared.lock"):
+            released.set()
+            assert await child == "session-busy"
+
+    _run(scenario())
+
+
+def test_sibling_tasks_cannot_share_an_owned_session_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    executable = tmp_path / "chromium"
+    executable.touch()
+    install_fake_playwright(monkeypatch, FakeChromium())
+    config = {"browser": {"lock_path": str(tmp_path / "shared.lock"), "executable_path": str(executable)}}
+
+    async def scenario() -> None:
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def first() -> None:
+            async with browser.open_session(config, data_dir=tmp_path, headless=True):
+                entered.set()
+                await release.wait()
+
+        task = asyncio.create_task(first())
+        await entered.wait()
+        with pytest.raises(CampusError) as caught:
+            async with browser.open_session(config, data_dir=tmp_path, headless=True):
+                pytest.fail("Second task must not bypass the first task's lock")
+        assert caught.value.code == "session-busy"
+        release.set()
+        await task
+
+    _run(scenario())

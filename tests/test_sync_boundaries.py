@@ -29,8 +29,21 @@ def policy(origin: str, operation: str) -> UiRequestPolicy:
                 ("/api/v1/course/addSessionCourseInfo", "POST"),
                 ("/std/course", "GET"),
                 ("/std/task", "GET"),
+                ("/api/v1/week/getStdWeekList", "POST"),
                 ("/api/v1/task/stdList", "POST"),
             )
+        ],
+        "static_asset_origins": [origin],
+        "static_resource_types": ["script", "stylesheet", "font", "image"],
+        "suppress": [
+            {
+                "name": "panopto-sso-popup",
+                "origin": "https://cnu.ap.panopto.com",
+                "path_template": "/Panopto/Pages/Auth/Login.aspx",
+                "operation": operation,
+                "methods": ["POST"],
+                "reason": "panopto-sso-popup",
+            }
         ],
         "allowed_media": [],
         "max_bytes": None,
@@ -157,7 +170,7 @@ def test_epoch_transition_aborts_old_and_bad_requests_before_local_server() -> N
 
         server = await asyncio.start_server(receive, "127.0.0.1", 0)
         port = server.sockets[0].getsockname()[1]
-        origin = f"http://127.0.0.1:{port}"
+        origin = "https://lms.example.invalid"
         target = Target()
         frame = SimpleNamespace(url=origin + "/std/course")
         old_url = origin + "/std/course"
@@ -227,12 +240,14 @@ def test_epoch_transition_aborts_old_and_bad_requests_before_local_server() -> N
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize("fault", ["referer", "frame", "range", "redirect", "precommit", "pending"])
+@pytest.mark.parametrize(
+    "fault", ["referer", "frame", "range", "redirect", "precommit", "pending", "second-selection", "missing-referer"]
+)
 def test_bound_request_denials_are_run_wide(fault: str) -> None:
     async def scenario() -> None:
         origin = "https://lms.example.invalid"
         target = Target()
-        frame = object()
+        frame = SimpleNamespace(url=origin + "/std/course")
         guard = await install_ui_request_interceptor(
             target,
             policy(origin, "assignments.sync"),
@@ -240,14 +255,30 @@ def test_bound_request_denials_are_run_wide(fault: str) -> None:
             diagnostics=UiRequestDiagnostics(),
             require_selection=fault == "precommit",
         )
+        selected = selection()
         if fault != "precommit":
-            guard.bind_selection(selection(), frame=frame, document_url=origin + "/std/course")
+            guard.bind_selection(selected, frame=frame, document_url=frame.url)
         request = Request(
             origin + "/api/v1/task/stdList",
             object() if fault == "frame" else frame,
             origin + ("/std/task" if fault == "referer" else "/std/course"),
             extras={"Range": "bytes=0-1"} if fault == "range" else None,
         )
+        if fault == "second-selection":
+            request = Request(origin + "/api/v1/course/addSessionCourseInfo", frame, frame.url)
+        if fault == "missing-referer":
+            guard.quarantine()
+            guard.activate(
+                policy(origin, "assignments.sync"),
+                operation="assignments.sync",
+                selection=selected,
+                frame=frame,
+                document_url=frame.url,
+                navigation_path="/std/task",
+                settled=True,
+            )
+            request = Request(origin + "/std/task", frame, frame.url, method="GET", resource_type="document")
+            request.headers = {}
         if fault == "redirect":
             request.redirected_from = SimpleNamespace(url=origin + "/std/course")
         if fault == "pending":
@@ -264,7 +295,7 @@ def test_bound_request_denials_are_run_wide(fault: str) -> None:
     asyncio.run(scenario())
 
 
-def test_preselection_window_and_duplicate_are_bound_before_local_server() -> None:
+def test_guarded_roster_two_courses_and_late_requests_before_local_server() -> None:
     async def scenario() -> None:
         arrivals = 0
 
@@ -277,9 +308,9 @@ def test_preselection_window_and_duplicate_are_bound_before_local_server() -> No
             writer.close()
 
         server = await asyncio.start_server(receive, "127.0.0.1", 0)
-        origin = f"http://127.0.0.1:{server.sockets[0].getsockname()[1]}"
+        origin = "https://lms.example.invalid"
         roster_url = origin + "/std/myLecture"
-        frame = SimpleNamespace(url=roster_url)
+        frame = SimpleNamespace(url=origin + "/post-login")
         target = Target()
         guard = await install_ui_request_interceptor(
             target,
@@ -296,8 +327,13 @@ def test_preselection_window_and_duplicate_are_bound_before_local_server() -> No
             return route.action
 
         try:
-            with pytest.raises(UiRequestDenied):
-                guard.bind_selection(selection(), frame=frame, document_url=origin + "/std/lecture")
+            guard.arm_roster(frame=frame, document_url=frame.url)
+            assert (
+                await send(Request(roster_url, frame, frame.url, method="GET", resource_type="document")) == "continue"
+            )
+            frame.url = roster_url
+            assert await send(Request(origin + "/api/v1/week/getStdWeekList", frame, roster_url)) == "continue"
+            guard.bind_roster(frame=frame, document_url=roster_url)
             guard.arm_selection(frame=frame, document_url=roster_url)
             assert await send(Request(origin + "/api/v1/course/addSessionCourseInfo", frame, roster_url)) == "continue"
             with pytest.raises(UiRequestDenied):
@@ -307,20 +343,112 @@ def test_preselection_window_and_duplicate_are_bound_before_local_server() -> No
                 == "continue"
             )
             frame.url = origin + "/std/lecture"
+            assert (
+                await send(Request(origin + "/assets/entry.js", frame, frame.url, method="GET", resource_type="script"))
+                == "continue"
+            )
+            assert await send(Request(origin + "/api/v1/week/getStdWeekList", frame, frame.url)) == "continue"
             first = selection()
-            guard.bind_selection(first, frame=frame, document_url=origin + "/std/lecture")
-            assert guard.epoch.selection_epoch == first.epoch
+            guard.bind_selection(first, frame=frame, document_url=frame.url)
+            guard.raise_if_denied()
+
+            class Popup:
+                closed = False
+
+                async def opener(self) -> Any:
+                    return SimpleNamespace(url="https://dcs-learning.cnu.ac.kr/std/myLecture")
+
+                async def close(self) -> None:
+                    self.closed = True
+
+            popup = Popup()
+            popup_frame = SimpleNamespace(
+                parent_frame=None, url="https://dcs-learning.cnu.ac.kr/SSOServiceLogin", page=popup
+            )
+            assert (
+                await send(
+                    Request(
+                        "https://cnu.ap.panopto.com/Panopto/Pages/Auth/Login.aspx",
+                        popup_frame,
+                        frame.url,
+                        method="POST",
+                        resource_type="document",
+                    )
+                )
+                == "abort"
+            )
+            assert popup.closed
+            guard.raise_if_denied()
+
+            late = Request(origin + "/api/v1/task/stdList", frame, frame.url)
+            late.wait, late.entered = asyncio.Event(), asyncio.Event()
+            pending = asyncio.create_task(send(late))
+            await late.entered.wait()
             guard.quarantine()
+            guard.activate(
+                policy(origin, "assignments.sync"),
+                operation="assignments.sync",
+                selection=first,
+                frame=frame,
+                document_url=frame.url,
+                navigation_path="/std/task",
+                settled=True,
+            )
+            assert (
+                await send(Request(origin + "/std/task", frame, frame.url, method="GET", resource_type="document"))
+                == "continue"
+            )
+            frame.url = origin + "/std/task"
+            guard.bind_document(frame=frame, document_url=frame.url, selection=first)
+            assert await send(Request(origin + "/api/v1/task/stdList", frame, frame.url)) == "continue"
+            guard.quarantine()
+            guard.activate(
+                policy(origin, "assignments.sync"),
+                operation="assignments.sync",
+                selection=first,
+                frame=frame,
+                document_url=frame.url,
+                navigation_path="/std/myLecture",
+                settled=True,
+            )
+            assert (
+                await send(Request(roster_url, frame, frame.url, method="GET", resource_type="document")) == "continue"
+            )
             frame.url = roster_url
+            guard.bind_document(frame=frame, document_url=roster_url, selection=first)
+            guard.quarantine()
             second_epoch = guard.arm_selection(frame=frame, document_url=roster_url)
             assert second_epoch.selection_epoch == first.epoch + 1
-            with pytest.raises(UiRequestDenied):
-                guard.bind_selection(first, frame=frame, document_url=origin + "/std/lecture")
             assert await send(Request(origin + "/api/v1/course/addSessionCourseInfo", frame, roster_url)) == "continue"
-            assert await send(Request(origin + "/api/v1/course/addSessionCourseInfo", frame, roster_url)) == "abort"
-            assert arrivals == 3
+            assert (
+                await send(Request(origin + "/std/lecture", frame, roster_url, method="GET", resource_type="document"))
+                == "continue"
+            )
+            frame.url = origin + "/std/lecture"
+            assert (
+                await send(Request(origin + "/assets/entry.js", frame, frame.url, method="GET", resource_type="script"))
+                == "continue"
+            )
+            second = selection(
+                course_id="synthetic-course-2",
+                roster_course_id="synthetic-course-2",
+                topbar_course_id="synthetic-course-2",
+                epoch=2,
+                response_body={
+                    "header": {"code": 200},
+                    "body": {"result": "Y", "data": {"course_id": "synthetic-course-2"}},
+                },
+            )
+            guard.bind_selection(second, frame=frame, document_url=frame.url)
+            guard.raise_if_denied()
+            assert arrivals == 12
+            late.wait.set()
+            assert await pending == "abort"
+            assert await send(Request(origin + "/api/v1/course/addSessionCourseInfo", frame, frame.url)) == "abort"
+            assert arrivals == 12
             with pytest.raises(UiRequestDenied):
                 guard.raise_if_denied()
+            assert target.installs == 1
         finally:
             await guard.close()
             server.close()

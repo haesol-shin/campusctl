@@ -67,7 +67,14 @@ def pre_browser_check(check: Callable[[], None]) -> Iterator[None]:
         _PRE_BROWSER_CHECK.reset(token)
 
 
-_OWNED_SESSION_LOCK: ContextVar[Path | None] = ContextVar("owned_session_lock", default=None)
+@dataclass(slots=True)
+class _SessionLockLease:
+    path: Path
+    owner: asyncio.Task[Any]
+    live: bool = True
+
+
+_OWNED_SESSION_LOCK: ContextVar[_SessionLockLease | None] = ContextVar("owned_session_lock", default=None)
 _ACTIVE_SESSION: ContextVar[bool] = ContextVar("active_browser_session", default=False)
 
 
@@ -85,13 +92,19 @@ def session_lock(config: dict[str, Any], *, data_dir: Path | None = None) -> Ite
     acquisition is prohibited; open_session recognizes this scope instead.
     """
     path = _session_lock_path(config, data_dir)
-    if _OWNED_SESSION_LOCK.get() is not None:
+    owner = asyncio.current_task()
+    if owner is None:
+        raise RuntimeError("browser session lock requires an async task")
+    inherited = _OWNED_SESSION_LOCK.get()
+    if inherited is not None and inherited.live and inherited.owner is owner:
         raise RuntimeError("browser session lock already owned")
     with profile_span("lock"), exclusive_lock(path):
-        token = _OWNED_SESSION_LOCK.set(path)
+        lease = _SessionLockLease(path, owner)
+        token = _OWNED_SESSION_LOCK.set(lease)
         try:
             yield
         finally:
+            lease.live = False
             _OWNED_SESSION_LOCK.reset(token)
 
 
@@ -430,14 +443,15 @@ async def open_session(
     root = ensure_private_dir(Path(data_dir).expanduser()) if data_dir is not None else default_data_dir(create=True)
     lock_path = _session_lock_path(config, data_dir)
 
-    owned_path = _OWNED_SESSION_LOCK.get()
-    if owned_path is not None and _ACTIVE_SESSION.get():
+    lease = _OWNED_SESSION_LOCK.get()
+    owns_lock = lease is not None and lease.live and lease.owner is asyncio.current_task()
+    if owns_lock and _ACTIVE_SESSION.get():
         raise RuntimeError("browser session already active")
-    if owned_path is not None and owned_path != lock_path:
+    if owns_lock and lease.path != lock_path:
         raise RuntimeError("browser session lock does not match the owned lock")
     with (
-        profile_span("lock") if owned_path is None else nullcontext(),
-        nullcontext() if owned_path is not None else exclusive_lock(lock_path),
+        profile_span("lock") if not owns_lock else nullcontext(),
+        nullcontext() if owns_lock else exclusive_lock(lock_path),
     ):
         check = _PRE_BROWSER_CHECK.get()
         if check is not None:
