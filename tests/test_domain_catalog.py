@@ -64,6 +64,32 @@ def test_fixture_merge_transitions(tmp_path: Path) -> None:
     assert actual == unknown["expected"]
 
 
+@pytest.mark.parametrize("domain", ["assignments", "notices", "materials"])
+def test_first_filtered_catalog_remains_unknown_until_full_success(domain: str) -> None:
+    course = {"course_id": "synthetic-course", "label": "Synthetic course", "class_no": None}
+    filtered = merge_domain_catalog(
+        domain,
+        None,
+        [course],
+        [],
+        successful_course_ids={"synthetic-course"},
+        failed_courses=[],
+        selected_course_id="synthetic-course",
+    )
+    assert filtered["enrollment_state"] == "unknown"
+    assert filtered["failed_courses"] == []
+    full = merge_domain_catalog(
+        domain,
+        filtered,
+        [course],
+        [],
+        successful_course_ids={"synthetic-course"},
+        failed_courses=[],
+    )
+    assert full["enrollment_state"] == "known"
+    assert full["failed_courses"] == []
+
+
 def test_domain_paths_and_missing_catalog_are_domain_specific(tmp_path: Path) -> None:
     assert domain_catalog_path("assignments", tmp_path) == tmp_path / "catalog" / "assignments.json"
     assert domain_catalog_path("notices", tmp_path) != domain_catalog_path("materials", tmp_path)

@@ -179,9 +179,14 @@ def _existing_config_init(path: Path) -> tuple[dict[str, Any], CampusError | Non
     )
 
 
-def run_config_init(username: str | None, *, interactive: bool) -> tuple[dict[str, Any], CampusError | None]:
+def run_config_init(
+    username: str | None, *, interactive: bool, guided: bool = False
+) -> tuple[dict[str, Any], CampusError | None]:
     path = config_path()
     if path.exists():
+        if guided:
+            load_config(path)
+            return {"config_path": str(path), "created": False, "next": []}, None
         if interactive:
             return _existing_config_init(path)
         raise config_exists_error(path)
@@ -196,12 +201,15 @@ def run_config_init(username: str | None, *, interactive: bool) -> tuple[dict[st
     try:
         path, config = create_config(username)
     except CampusError as error:
+        if guided and error.code == "config-exists":
+            load_config(path)
+            return {"config_path": str(path), "created": False, "next": []}, None
         if interactive and error.code == "config-exists":
             return _existing_config_init(path)
         raise
 
     result = {"config_path": str(path), "created": True, "next": ["campusctl auth set"]}
-    if not interactive:
+    if not interactive or guided:
         return result, None
 
     saved, password_error = _password_prompt(config)

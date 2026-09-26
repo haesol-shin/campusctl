@@ -72,7 +72,7 @@ def _merge_health(
     if selected_course_id is not None:
         old_failures.pop(selected_course_id, None)
         old_failures.update(current_failures)
-        merged["enrollment_state"] = previous.get("enrollment_state", "unknown") if previous else "known"
+        merged["enrollment_state"] = previous.get("enrollment_state", "unknown") if previous else "unknown"
         merged["failed_courses"] = list(old_failures.values())
         return
 
