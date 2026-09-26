@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from campusctl.browser import PROTOCOL_TIMEOUT_SECONDS, bounded, open_session, profile_count, profile_span
 from campusctl.catalog import catalog_path, merge_catalog, read_catalog, write_catalog
 from campusctl.envelope import CampusError
 
+from .course_context import CourseSelection
 from .courses import discover_courses
 from .lectures import EXTRACT_LEARNING_ROWS_JS, LEARNING_ROW_SELECTOR, parse_learning_rows
 from .login import COURSE_LINK_SELECTOR, MY_LECTURE_URL, ensure_logged_in
@@ -92,6 +94,49 @@ def _merge_health(
     merged["failed_courses"] = list(current_failures.values())
 
 
+async def collect_lectures_rows(
+    page: Any, course: dict[str, Any], selection: CourseSelection | None, section_guard: Any
+) -> list[dict[str, Any]]:
+    """Read LV rows on the committed course section without selecting again."""
+    if selection is not None and selection.course_id != course.get("course_id"):
+        raise ValueError("lecture selection belongs to a different course")
+    if section_guard is not None:
+        section_guard.raise_if_denied()
+        if selection is not None:
+            if urlsplit(page.main_frame.url).path != "/std/course":
+                raise ValueError("lecture section document is not the selected course page")
+            epoch = section_guard.epoch
+            if (
+                epoch.phase != "bound"
+                or epoch.course_id != selection.course_id
+                or epoch.selection_epoch != selection.epoch
+                or epoch.frame is not page.main_frame
+                or epoch.document_url != page.main_frame.url
+            ):
+                raise ValueError("lecture section is not bound to the selected course")
+    ordinal = selection.ordinal if selection is not None else None
+    try:
+        await bounded(
+            page.wait_for_selector(LEARNING_ROW_SELECTOR, state="attached", timeout=COURSE_ROOM_TIMEOUT_MS),
+            COURSE_ROOM_TIMEOUT_MS / 1000 + PROTOCOL_TIMEOUT_SECONDS,
+            "waiting for CNU lecture rows",
+        )
+    except Exception as error:
+        if not _is_timeout(error):
+            raise
+        raw_rows = []
+    else:
+        with profile_span("extract", domain="lectures", course=ordinal):
+            raw_rows = await bounded(
+                page.evaluate(EXTRACT_LEARNING_ROWS_JS),
+                PROTOCOL_TIMEOUT_SECONDS,
+                "extracting CNU lecture rows",
+            )
+    if section_guard is not None:
+        section_guard.raise_if_denied()
+    return parse_learning_rows(raw_rows, course)
+
+
 async def sync_lectures(
     config: dict[str, Any], root: Path, course_id: str | None = None, *, headless: bool = False
 ) -> tuple[dict[str, Any], list[CampusError]]:
@@ -158,28 +203,7 @@ async def sync_lectures(
                         PROTOCOL_TIMEOUT_SECONDS,
                         "opening the CNU course lecture page",
                     )
-                try:
-                    await bounded(
-                        page.wait_for_selector(
-                            LEARNING_ROW_SELECTOR,
-                            state="attached",
-                            timeout=COURSE_ROOM_TIMEOUT_MS,
-                        ),
-                        COURSE_ROOM_TIMEOUT_MS / 1000 + PROTOCOL_TIMEOUT_SECONDS,
-                        "waiting for CNU lecture rows",
-                    )
-                except Exception as error:
-                    if not _is_timeout(error):
-                        raise
-                    raw_rows = []
-                else:
-                    with profile_span("extract", domain="lectures", course=ordinal):
-                        raw_rows = await bounded(
-                            page.evaluate(EXTRACT_LEARNING_ROWS_JS),
-                            PROTOCOL_TIMEOUT_SECONDS,
-                            "extracting CNU lecture rows",
-                        )
-                course_lectures = parse_learning_rows(raw_rows, course)
+                course_lectures = await collect_lectures_rows(page, course, None, None)
             except CampusError as error:
                 if error.code in _LOGIN_ERRORS:
                     raise

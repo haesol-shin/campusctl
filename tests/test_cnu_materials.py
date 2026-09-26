@@ -15,6 +15,8 @@ from campusctl.domain_catalog import domain_catalog_path, read_domain_catalog
 from campusctl.envelope import CampusError
 from campusctl.profiling import SpanRecorder
 from campusctl.providers.cnu import materials
+from campusctl.providers.cnu.course_context import CourseSelection
+from campusctl.providers.cnu.ui_policy import UiRequestDiagnostics, UiRequestPolicy, install_ui_request_interceptor
 
 _FIXTURE = Path(__file__).parent / "fixtures/lms_sources/materials_archive.json"
 
@@ -27,6 +29,20 @@ class FakeGuard:
     def raise_if_denied(self) -> None:
         if self.denied:
             raise CampusError("policy-blocked", "Blocked", None, "error")
+
+    def quarantine(self) -> None:
+        self.raise_if_denied()
+
+    def activate(self, policy, *, operation, selection, frame, document_url, navigation_path, settled):
+        assert operation == "materials.sync" and navigation_path == "/std/archive" and settled
+        assert policy.approved and frame.url == document_url and selection.course_id == self.epoch.course_id
+        self.epoch.phase = "navigation"
+
+    def bind_document(self, *, frame, document_url, selection):
+        assert self.epoch.phase == "navigation" and frame.url == document_url
+        assert selection.course_id == self.epoch.course_id
+        self.epoch.phase = "bound"
+        self.epoch.document_url = document_url
 
     async def close(self) -> None:
         self.closed = True
@@ -180,6 +196,11 @@ class FakePage:
                 "row_count": len(posts),
                 "page_size": self.case.get("page_size", 10),
                 "current_page": self.page_number,
+                "selected_course_id": (
+                    "other-course"
+                    if self.case.get("wrong_restore_course") and self.events.count(materials._ARCHIVE_MENU) > 1
+                    else self.case["course"]["course_id"]
+                ),
             }
         if "archiveMetadataClickIcon" in script:
             assert self.view == "archive"
@@ -548,3 +569,217 @@ def test_unresolved_attachment_controls_keep_stale_course(monkeypatch, tmp_path:
     assert "attachment controls were unresolved" in errors[0].message.lower()
     assert read_domain_catalog("materials", path)["materials"] == old_rows
     assert not any("archiveMetadataOpenDetail" in event for event in events)
+
+
+def test_material_collector_binds_entry_response_and_preserves_full_records() -> None:
+    data = fixture()
+    case = next(case for case in data["cases"] if case["name"] == "multiple-posts")
+    case = {**case, "pages": [[case["posts"][0]], [case["posts"][1]]], "page_size": 1}
+    page = FakePage({**case, "course": data["course"]}, [])
+    selection = CourseSelection(data["course"]["course_id"], 1, 1, 1, 2)
+
+    async def collect():
+        capture = await materials.arm_materials_capture(page, page.guard)
+        await materials.open_materials_section(
+            page, page.guard, lambda: page.click(materials._ARCHIVE_MENU), capture=capture
+        )
+        page.guard.epoch = SimpleNamespace(
+            phase="bound",
+            course_id=selection.course_id,
+            operation="materials.sync",
+            policy=SimpleNamespace(approved=True),
+            selection_epoch=selection.epoch,
+            frame=page.main_frame,
+            document_url=page.main_frame.url,
+        )
+        return await materials.collect_materials_rows(page, data["course"], selection, page.guard, capture=capture)
+
+    rows = asyncio.run(collect())
+    assert [(row["archive_entry"]["board_item_id"], row["file_id"], row["filename"]) for row in rows] == [
+        ("board-first", "file-first", "first.pdf"),
+        ("board-next", "file-next", "next.pdf"),
+    ]
+    assert page.page_number == 2
+    assert page.listeners["request"] == []
+
+
+def test_material_collector_rejects_wrong_course_and_duplicate_entry_list() -> None:
+    data = fixture()
+    case = next(case for case in data["cases"] if case["name"] == "modal-multiple")
+    page = FakePage({**case, "course": data["course"]}, [])
+
+    async def collect(*, duplicate: bool, selected_id: str):
+        capture = await materials.arm_materials_capture(page, page.guard)
+        await materials.open_materials_section(
+            page, page.guard, lambda: page.click(materials._ARCHIVE_MENU), capture=capture
+        )
+        page.guard.epoch = SimpleNamespace(
+            phase="bound",
+            course_id=data["course"]["course_id"],
+            selection_epoch=1,
+            frame=page.main_frame,
+            document_url=page.main_frame.url,
+        )
+        if duplicate:
+            page._request(materials._ARCHIVE_LIST, "POST")
+        return await materials.collect_materials_rows(
+            page, data["course"], CourseSelection(selected_id, 1, 1, 1, 2), page.guard, capture=capture
+        )
+
+    with pytest.raises(CampusError):
+        asyncio.run(collect(duplicate=False, selected_id="other-course"))
+    with pytest.raises(CampusError):
+        asyncio.run(collect(duplicate=True, selected_id=data["course"]["course_id"]))
+
+
+@pytest.mark.parametrize(
+    ("case_name", "error_code"),
+    [
+        ("duplicate-id", "item-identity-missing"),
+        ("unresolved-after-inline", "course-sync-failed"),
+        ("failed-restore", "course-sync-failed"),
+    ],
+)
+def test_material_collector_fails_entire_course_without_detail_fallback(case_name: str, error_code: str) -> None:
+    data = fixture()
+    case = next(case for case in data["cases"] if case["name"] == case_name)
+    events: list[str] = []
+    page = FakePage({**case, "course": data["course"]}, events)
+    selection = CourseSelection(data["course"]["course_id"], 1, 1, 1, 2)
+
+    async def collect() -> None:
+        capture = await materials.arm_materials_capture(page, page.guard)
+        await materials.open_materials_section(
+            page, page.guard, lambda: page.click(materials._ARCHIVE_MENU), capture=capture
+        )
+        page.guard.epoch = SimpleNamespace(
+            phase="bound",
+            course_id=selection.course_id,
+            selection_epoch=selection.epoch,
+            operation="materials.sync",
+            policy=SimpleNamespace(approved=True),
+            frame=page.main_frame,
+            document_url=page.main_frame.url,
+        )
+        await materials.collect_materials_rows(page, data["course"], selection, page.guard, capture=capture)
+
+    with pytest.raises((CampusError, ValueError)) as failure:
+        asyncio.run(collect())
+    if isinstance(failure.value, CampusError):
+        assert failure.value.code == error_code
+    assert not any("archiveMetadataOpenDetail" in event for event in events)
+    assert page.listeners["request"] == []
+    assert page.listeners["response"] == []
+
+
+def test_failed_archive_section_open_closes_armed_capture() -> None:
+    data = fixture()
+    page = FakePage({"course": data["course"], "posts": []}, [])
+
+    async def fail() -> None:
+        capture = await materials.arm_materials_capture(page, page.guard)
+
+        async def broken_click() -> None:
+            raise RuntimeError("archive menu unavailable")
+
+        await materials.open_materials_section(page, page.guard, broken_click, capture=capture)
+
+    with pytest.raises(RuntimeError, match="menu unavailable"):
+        asyncio.run(fail())
+    assert all(not listeners for listeners in page.listeners.values())
+
+
+@pytest.mark.parametrize("wrong_course", [False, True])
+def test_real_interceptor_rebinds_every_archive_restoration(wrong_course: bool) -> None:
+    data = fixture()
+    case = next(case for case in data["cases"] if case["name"] == "multiple-posts")
+    events: list[str] = []
+    page = FakePage({**case, "course": data["course"], "wrong_restore_course": wrong_course}, events)
+    origin = "https://dcs-learning.cnu.ac.kr"
+    selection = CourseSelection(data["course"]["course_id"], 1, 1, 1, 2)
+
+    class Target:
+        handler = None
+
+        async def route(self, pattern, handler):
+            assert pattern == "**/*"
+            self.handler = handler
+
+        async def unroute(self, pattern, handler):
+            assert pattern == "**/*" and self.handler == handler
+            self.handler = None
+
+    class Route:
+        def __init__(self, request):
+            self.request = request
+            self.action = None
+
+        async def continue_(self):
+            self.action = "continue"
+
+        async def abort(self):
+            self.action = "abort"
+
+    target = Target()
+    policy = UiRequestPolicy.from_reviewed_config(
+        {
+            "approved": True,
+            "read_only_evidence": "synthetic route fixture only",
+            "origins": [origin],
+            "routes": [
+                {"origin": origin, "path": path, "operation": "materials.sync", "methods": [method]}
+                for path, method in (("/std/archive", "GET"), (materials._ARCHIVE_LIST, "POST"))
+            ],
+            "allowed_media": [],
+            "max_bytes": None,
+        }
+    )
+
+    async def scenario():
+        guard = await install_ui_request_interceptor(
+            target, policy, operation="materials.sync", diagnostics=UiRequestDiagnostics()
+        )
+        page.guard = guard
+        guard.bind_selection(selection, frame=page.main_frame, document_url=page.main_frame.url)
+        original_click = page.click
+
+        async def checked_click(selector):
+            for path, method, resource_type in (
+                ("/std/archive", "GET", "document"),
+                (materials._ARCHIVE_LIST, "POST", "xhr"),
+            ):
+                if resource_type == "xhr":
+                    await original_click(selector)
+                request = SimpleNamespace(
+                    url=origin + path,
+                    method=method,
+                    resource_type=resource_type,
+                    frame=page.main_frame,
+                    redirected_from=None,
+                    all_headers=lambda: asyncio.sleep(0, result={"referer": page.main_frame.url}),
+                )
+                route = Route(request)
+                await target.handler(route)
+                assert route.action == "continue"
+
+        page.click = checked_click
+        try:
+            capture = await materials.arm_materials_capture(page, guard)
+            await materials.open_materials_section(
+                page, guard, lambda: materials._restore_archive_document(page, guard, selection), capture=capture
+            )
+            return await materials.collect_materials_rows(page, data["course"], selection, guard, capture=capture)
+        finally:
+            await guard.close()
+
+    if wrong_course:
+        with pytest.raises(ValueError, match="archive table did not complete"):
+            asyncio.run(scenario())
+    else:
+        rows = asyncio.run(scenario())
+        assert [(row["archive_entry"]["board_item_id"], row["file_id"]) for row in rows] == [
+            ("board-first", "file-first"),
+            ("board-next", "file-next"),
+        ]
+        assert events.count(materials._ARCHIVE_MENU) == 3
+    assert all(not listeners for listeners in page.listeners.values())

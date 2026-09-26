@@ -15,6 +15,7 @@ from campusctl.catalog import catalog_path, read_catalog, write_catalog
 from campusctl.envelope import CampusError
 from campusctl.lock import exclusive_lock
 from campusctl.providers.cnu import sync as sync_module
+from campusctl.providers.cnu.course_context import CourseSelection
 
 COURSES = [
     {"course_id": "course-a", "label": "Course A", "class_no": None},
@@ -623,3 +624,51 @@ def test_busy_session_lock_returns_exit_75(
     assert code == 75
     assert envelope["status"] == "busy"
     assert envelope["errors"][0]["code"] == "session-busy"
+
+
+def test_lecture_collector_uses_committed_section_without_another_selection() -> None:
+    page = FakePage({"course-a": [_row("new-a"), _row("other", moduletype="AS")]})
+    page.current_course = "course-a"
+    page.in_course_room = True
+    selection = CourseSelection("course-a", 1, 1, 1, 2)
+    page.main_frame = SimpleNamespace(url="https://lms.example.invalid/std/course")
+    guard = SimpleNamespace(
+        raise_if_denied=lambda: None,
+        epoch=SimpleNamespace(
+            phase="bound",
+            course_id="course-a",
+            selection_epoch=1,
+            frame=page.main_frame,
+            document_url=page.main_frame.url,
+        ),
+    )
+
+    rows = asyncio.run(sync_module.collect_lectures_rows(page, COURSES[0], selection, guard))
+
+    assert [row["entity_id"] for row in rows] == ["cnu_lecture:course-a:new-a"]
+    assert page.course_clicks == []
+    with pytest.raises(ValueError, match="different course"):
+        asyncio.run(sync_module.collect_lectures_rows(page, COURSES[1], selection, guard))
+
+
+def test_lecture_collector_empty_and_denial() -> None:
+    page = FakePage({}, empty_courses={"course-a"})
+    page.current_course = "course-a"
+    page.in_course_room = True
+    selection = CourseSelection("course-a", 1, 1, 1, 2)
+    page.main_frame = SimpleNamespace(url="https://lms.example.invalid/std/course")
+    guard = SimpleNamespace(
+        raise_if_denied=lambda: None,
+        epoch=SimpleNamespace(
+            phase="bound",
+            course_id="course-a",
+            selection_epoch=1,
+            frame=page.main_frame,
+            document_url=page.main_frame.url,
+        ),
+    )
+    assert asyncio.run(sync_module.collect_lectures_rows(page, COURSES[0], selection, guard)) == []
+
+    denied = SimpleNamespace(raise_if_denied=lambda: (_ for _ in ()).throw(CampusError("policy-blocked", "Blocked")))
+    with pytest.raises(CampusError, match="Blocked"):
+        asyncio.run(sync_module.collect_lectures_rows(page, COURSES[0], selection, denied))
