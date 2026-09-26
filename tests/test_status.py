@@ -145,8 +145,48 @@ def test_partial_coverage_failed_courses_and_filtered_stale_rows(tmp_path: Path)
             "course_id": "course-a",
             "label": "Course A",
             "domains": ["lectures", "notices"],
-            "reasons": ["catalog-stale", "course-sync-failed", "enrollment-unknown"],
+            "reasons": ["catalog-stale", "collection-failed", "enrollment-unknown"],
         }
+    ]
+
+
+def test_first_sync_failure_without_roster_is_partial_and_preserves_reason(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "lectures",
+        [],
+        courses=[A],
+        failed_courses=[
+            {"course_id": "course-new", "label": "New course", "reason": "collection-failed"},
+            {"course_id": "course-unnamed"},
+        ],
+    )
+    _write(
+        tmp_path,
+        "notices",
+        [],
+        courses=[A],
+        failed_courses=[{"course_id": "course-a", "label": "Course A", "reason": "removal-deferred"}],
+    )
+    _write(tmp_path, "assignments", [], courses=[A])
+    _write(tmp_path, "materials", [], courses=[A])
+
+    result, status, errors = build_status(tmp_path, "course-new", now=NOW)
+    assert status == "partial"
+    assert [(error["domain"], error["code"]) for error in errors] == [("lectures", "course-sync-failed")]
+    assert result["stale_courses"] == [
+        {
+            "course_id": "course-new",
+            "label": "New course",
+            "domains": ["lectures"],
+            "reasons": ["collection-failed"],
+        }
+    ]
+    all_courses, _, _ = build_status(tmp_path, None, now=NOW)
+    assert [(row["course_id"], row["label"], row["reasons"]) for row in all_courses["stale_courses"]] == [
+        ("course-a", "Course A", ["removal-deferred"]),
+        ("course-new", "New course", ["collection-failed"]),
+        ("course-unnamed", "course-unnamed", ["course-sync-failed"]),
     ]
 
 

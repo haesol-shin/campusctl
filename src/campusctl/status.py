@@ -108,10 +108,17 @@ def _stale_courses(
             continue
         cache = coverage[domain]["cache"]
         reasons: dict[str, set[str]] = {}
+        failed_only: list[dict[str, Any]] = []
+        known_ids = {course["course_id"] for course in catalog["courses"]}
         for failure in catalog.get("failed_courses", []):
-            if isinstance(failure, dict) and isinstance(failure.get("course_id"), str):
-                reasons.setdefault(failure["course_id"], set()).add("course-sync-failed")
-        for course in catalog["courses"]:
+            if not isinstance(failure, dict) or not isinstance(failure.get("course_id"), str):
+                continue
+            cid = failure["course_id"]
+            reason = failure.get("reason")
+            reasons.setdefault(cid, set()).add(reason if isinstance(reason, str) else "course-sync-failed")
+            if cid not in known_ids:
+                failed_only.append(failure)
+        for course in [*catalog["courses"], *failed_only]:
             if not isinstance(course, dict) or not isinstance(course.get("course_id"), str):
                 raise CampusError(
                     "catalog-invalid",
@@ -175,6 +182,27 @@ def build_status(
                     )
             catalogs[domain] = catalog
             coverage[domain] = {"state": "available", "cache": cache}
+            known_ids = {course["course_id"] for course in catalog["courses"]}
+            if any(
+                isinstance(failure, dict)
+                and isinstance(failure.get("course_id"), str)
+                and failure["course_id"] not in known_ids
+                and (course_id is None or course_id == failure["course_id"])
+                for failure in catalog.get("failed_courses", [])
+            ):
+                errors.append(
+                    {
+                        "domain": domain,
+                        **error_item(
+                            CampusError(
+                                "course-sync-failed",
+                                f"The {domain} catalog has a failed course without cached records.",
+                                f"Run 'campusctl sync --only {domain}' again.",
+                                "error",
+                            )
+                        ),
+                    }
+                )
         except CampusError as error:
             coverage[domain] = {"state": "missing" if error.code == "catalog-missing" else "invalid", "cache": None}
             errors.append({"domain": domain, **error_item(error)})
