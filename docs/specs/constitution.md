@@ -1,29 +1,53 @@
-# Campus LMS source implementation constitution
+# campusctl constitution
 
-These rules govern merged PR1, follow-up PR1.1 and PR2–PR5 and take precedence over domain preferences. Owner-reviewed decisions are summarized below (authoritative owner-held sanitized LMS policy evidence, 2026-09-25; no raw course data in specs). Ordinary UI/provider requests and officially offered **non-video** attachments are in scope; campusctl owns source catalogs and selected packages, not scheduling, delivery, or the legacy notifier's ledger.
+These rules govern every campusctl change and take precedence over domain specs. campusctl syncs and reads the owner's own coursework through the normal LMS web UI; it owns local catalogs and selected source packages, not scheduling or delivery.
 
 ## Principles
 
-1. **UX first.** Human-readable terminal output is the default on a TTY; `--json` gives agents a stable versioned envelope. Human lists print complete selectable entity IDs and stale-cache warnings. Never make users parse a truncated ID.
-2. **Read-only coursework state.** Use normal LMS UI/session authentication and pinned operation paths. Notice-detail fetch may increment the per-course view counter: this owner-approved side effect is ordinary reading, not a mark-read operation. Do not invoke logging/beacons or change submission, attendance, grading or enrollment; before PR5 record whether global to-do `read_yn` flips (accepted if observed). Other observed state effects disable the path.
-3. **Media boundary.** No lecture video download, stream interception, capture, range fetching, HLS/DASH, or audio/video transfer. A named reviewed Panopto script and two logging calls are **aborted** at the network layer, never fetched; their safe reasons/counts are diagnostic, not success for any other denied request. Approved-origin static GET script/stylesheet/font/image resources may load by resource type, not by data-route wildcard. Official selected non-video attachments still require selected-file binding, trusted MIME/signature and size limits; external/unknown or media content is refused before its body is consumed.
-4. **One session per account.** All network operations use campusctl's one non-blocking browser session lock; no second lock or reuse of the legacy notifier's browser lock. Local catalogs and packages are private, atomic, and domain-separated. `busy`/75 never counts as an empty successful sync.
-5. **Fixture-first, gated live checks.** Implementation and tests use sanitized synthetic or owner-provided representative fixtures; no live LMS use in implementation. Separate owner-authorized later live verification gates activation, especially detail-page read-state behavior. An unavailable proof leaves the operation unregistered and unadvertised, not mocked as supported.
-6. **Small reviewed PRs.** Merged PR1 private groundwork precedes PR1.1 shared policy/interceptor and navigation-only course entry, then PR2/3/4 independent domains and PR5 selected fetch. Authenticate once before installing the per-operation guard, then pin `/std/myLecture` roster/re-entry and all in-operation requests; mid-operation login redirect fails closed, without re-login/retry. PR1's CLI contract adds only a non-advertising pointer; domain PRs add their own contract and reviewed capability atomically, without shared CLI/renderer/contract-inventory edits. Release integration serializes CHANGELOG/version changes. The legacy notifier remains outside the change scope.
-7. **Commit messages and staging.** Stage only intended paths with `git add <path>`. Commit and pull request titles use `type(scope): summary` in English, followed by exactly one blank line and at most four adjacent imperative `- ` bullets without trailing periods; no trailers. Verify with `git log -1 --format=%B | cat -A`.
+1. **Working features first.** A core command that fails is a defect, and so is a safeguard that stops it without preventing one of the harms listed under [hard limits](#hard-limits). Narrow such a safeguard at its source instead of adding exceptions around it.
+2. **UX first.** Human-readable output is the default on a TTY; `--json` gives agents a stable versioned envelope. Lists print complete selectable IDs and stale-cache warnings; nobody parses a truncated ID.
+3. **Suppress, don't stop.** The request guard aborts harmful requests and lets the run continue (see [request guard](#request-guard)). A run stops only for a failed login, a busy session, or data that cannot be tied to its course.
+4. **Verified identity before publication.** Data is published only under the course the committed page and its responses prove. A wrong or unprovable course fails that course and keeps its previous records; other courses and domains continue.
+5. **One session per account.** Network commands share one non-blocking browser session lock. Catalogs and packages are private, atomic and domain-separated. `busy`/75 never counts as an empty successful sync.
+6. **Traffic from evidence.** Changes that affect LMS traffic are derived from a recorded [live run](live-run.md), not guessed from fixtures. Tests replay recorded traffic offline.
+7. **Small reviewed PRs.** Stage only intended paths with `git add <path>`. Commit and PR titles use `type(scope): summary` in English, then exactly one blank line and at most four adjacent imperative `- ` bullets without trailing periods; no trailers. Verify with `git log -1 --format=%B | cat -A`. Release integration serializes CHANGELOG and version changes.
+
+## Hard limits
+
+These are the only lines campusctl never crosses:
+
+- **No media transfer.** No video or audio download, stream interception, capture, range fetching or HLS/DASH retrieval. Playback happens only in the official player, one lecture at a time.
+- **No coursework writes.** No submission, attendance, grading, enrollment or mark-read action. Opening a notice detail may add one view and flip the notice's read state; that is ordinary reading.
+- **No logging or telemetry calls.** Known LMS logging and telemetry requests are aborted before they leave the browser.
+- **No private data in the public repository.** Real course names, IDs, board or file IDs, personal names and raw traffic stay in owner-held evidence; fixtures use synthetic IDs and `.invalid` hosts.
+
+## Request guard
+
+The guard is installed context-wide right after login, including popups, and applies one rule set to every request:
+
+| Request | Disposition |
+| --- | --- |
+| Known logging or telemetry endpoint, Panopto logging or connectivity check | Suppress |
+| Audio, video, media or stream resource type or extension | Suppress |
+| Non-GET request whose path names logging, attendance, progress or a write action | Suppress |
+| Cross-origin request other than a passive static asset | Suppress |
+| Passive static asset (script, stylesheet, font, image) from any origin | Allow |
+| Same-origin page request not matched above | Allow |
+| Selected official attachment transfer | Allow only when bound to the selected file, typed and size-bounded |
+
+Suppression never fails a run. Every suppressed request and every allowed request outside the reviewed route list is recorded in the run diagnostics as method, origin class, placeholder path, resource type and reason, so the next change starts from evidence.
 
 ## Boundary decisions
 
 | Tier | Actions |
 | --- | --- |
-| **Always** | Preserve full IDs and exact legacy notice identities; private atomic writes, one campusctl lock, safe errors, approved origins and operation-specific data route/method pins, safe suppression diagnostics, strict selected-file binding, fixture-only implementation checks and per-PR review. |
-| **Ask first** | Get owner review for changed route/media pins, newly observed attachment MIME/signature, notice attachment behavior, per-course to-do coverage, and authorization for separately scheduled live/headless checks or production cutover. |
-| **Never** | Retrieve/capture video, audio or streams; fetch logging endpoints (only three named Panopto suppression entries may be aborted without failing); bypass course-context UI/auth/access controls; infer allowed origins/routes from DOM or redirects; publish unimplemented/disabled capabilities; mutate coursework except reviewed notice-detail view accounting and any observed `read_yn` flip; access the legacy notifier's production ledger from campusctl; run live LMS during implementation. |
+| **Always** | Full IDs, private atomic writes, one session lock, verified course identity, sanitized diagnostics, selected-file binding, one recorded live run before traffic-affecting work. |
+| **Ask first** | A second live run for the same change, any exception to a hard limit, new attachment types, production cutover of other automation. |
+| **Never** | The [hard limits](#hard-limits); publishing a capability that has not passed its live run. |
 
-## Approved decisions and observed-evidence boundary (2026-09-25)
+## Owner decisions
 
-1. **Panopto suppression, not blanket tolerance.** Abort only GET `/js/common/panopto-{hash}.js`, POST `/api/v1/panopto/addInternetDisconnectionLog`, GET `/api/v1/panopto/checkInternetConnection` on the L host, per reviewed operation. Evidence saw the Panopto script/logging requests and a distinct `panoptoSaml-<hash>.js`; the latter is **not** on the list. Rationale: avoid logging/media behavior while keeping the ordinary page usable. Every other unexpected request fails `policy-blocked`/error/1. Suppression count/reasons are safe, never token-bearing URLs.
-2. **Read-only page background is exact-pinned.** Evidence showed ordinary bootstrap and course/menu/alarm/shortcut requests; myLecture course-list helpers, lecture week/notice/survey requests, todo Q&A and GET `/properties/messages.properties` / `/properties/messages_ko.properties` (decision file lines 15–20). Allow those only for the operations and exact methods/paths pinned in the domain specs; do not infer full path spelling from an observed suffix or allow generic XHR. Rationale: a page must work without creating a general provider API allowlist.
-3. **Notice reading accounting is accepted.** Opening notice detail incremented the per-course view count by one in observed evidence; owner accepts this as ordinary reading. Whether global `/std/todo` `read_yn` flips remains unverified (if it does, accept and record it before PR5); per-course to-do coverage remains unverified, and `/std/notice` lacks `read_yn`. Rationale: retain useful notice fetch while explicitly bounding accepted state effects.
-4. **Attachments are selected, typed and bounded.** Allowed extensions: pdf, ppt/pptx, doc/docx, xls/xlsx, hwp/hwpx, txt/md, png/jpg, zip, ipynb/py/c/cpp/java/js/sql; maximum 200_000_000 bytes. Observed pairs: PDF `application/x-pdf` + `%PDF-`, PPTX Office MIME + ZIP `PK\\x03\\x04` signature, ZIP `application/zip` + ZIP `PK\\x03\\x04`. Other extensions require known signature matching before save, never MIME alone. Store ZIP only, never extract; video always blocked. No `Content-Disposition` was observed: use official control or `getAttachFileList` display name, remove trailing `바로보기`, then sanitize. Rationale: attached file names and MIME are untrusted, and user selects exactly one file. Notice attachment behavior and unobserved MIME pairs remain open.
-5. **Static-asset origin/type exemption only.** Evidence saw same-origin page script/stylesheet/font/image resources. Permit only approved-origin GET of those Playwright resource types (L `https://dcs-learning.cnu.ac.kr` for current domains); excluded: suppressed paths, media/video types or extensions. XHR/fetch/document remains exact data-path pinned. C `https://dcs-lcms.cnu.ac.kr` is for a selected materials download only, not a static-asset blanket exception. Rationale: ordinary page rendering without widening access to data, media or alternate hosts.
+- **Attachments** (2026-09-25): allowed extensions are pdf, ppt/pptx, doc/docx, xls/xlsx, hwp/hwpx, txt/md, png/jpg, zip and ipynb/py/c/cpp/java/js/sql, up to 200,000,000 bytes. Observed MIME/signature pairs: PDF `application/x-pdf` + `%PDF-`; PPTX Office MIME + `PK\x03\x04`; ZIP `application/zip` + `PK\x03\x04`. Other extensions need a matching known signature, never MIME alone. ZIP files are stored, never extracted. File names come from the official control or `getAttachFileList` display text with a trailing `바로보기` removed, then sanitized.
+- **Notice reading** (2026-09-25): one view per opened notice detail is accepted; a read-state flip is accepted and recorded.
+- **Notice attachments** (2026-09-27): until a notice with an attachment is observed, notice fetch records attachments as omissions and transfers nothing.
+- **Guard model** (2026-09-27): suppress-and-continue replaces stop-on-unknown; the per-course selection-epoch layer is removed.
