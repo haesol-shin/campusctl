@@ -80,7 +80,7 @@ $ campusctl materials list
 $ campusctl materials download <ENTITY_ID>
 ```
 
-파일은 기본적으로 운영체제의 다운로드 폴더 아래 `campusctl/<과목 이름>/`에 저장됩니다. 다른 폴더에 저장하려면 `--out DIR`을 지정하세요. 과제·공지·자료 동기화에는 여전히 화면이 표시되는 브라우저가 필요합니다. 로컬 Chromium 프로필의 자료 다운로드에는 `materials download <ENTITY_ID> --headless`를 사용할 수 있지만 CDP 브라우저 세션에서는 사용할 수 없습니다.
+파일은 기본적으로 운영체제의 다운로드 폴더 아래 `campusctl/<과목 이름>/`에 저장됩니다. 다른 폴더에 저장하려면 `--out DIR`을 지정하세요. 동기화와 자료 다운로드는 전역 옵션으로 화면 없이 실행할 수 있습니다. 예: `campusctl --headless sync`, `campusctl --headless materials download <ENTITY_ID>`. 로컬 Chromium 프로필에서만 가능하며 CDP 브라우저 세션과 강의 재생에는 사용할 수 없습니다.
 
 스크립트나 에이전트에서 JSON이 필요하면 `--json`을 추가하세요. 터미널에서는 기본적으로 사람이 읽기 쉬운 형식으로 출력합니다.
 

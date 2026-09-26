@@ -5,11 +5,11 @@
 ## Commands
 
 ```text
-campusctl sync --only assignments [--course COURSE_ID] [--headless] [--json]
+campusctl [--headless|--headed] sync --only assignments [--course COURSE_ID] [--json]
 campusctl assignments list [--course COURSE_ID] [--json]
 ```
 
-`sync` without `--only` still syncs lectures. Assignment sync runs for all enrolled courses unless filtered to an enrolled course ID. It holds the single non-blocking browser session lock and uses a visible session by default. `--headless` is refused with `headless-unavailable` before browser or catalog access until separately approved compatibility verification; it never falls back to headed execution. The list reads only `<data-dir>/catalog/assignments.json`, without configuration, session, lock, or network access. An unknown list course filter yields an empty assignment array; an unknown filtered sync course returns `course-not-found`.
+`sync` without `--only` still syncs lectures. Assignment sync runs for all enrolled courses unless filtered to an enrolled course ID. It holds the single non-blocking browser session lock and uses a visible session by default. The global `--headless` flag runs it headless with a local Chromium profile; with a configured CDP browser it is refused with `headless-unavailable` before browser or catalog access, and it never falls back to headed execution. The list reads only `<data-dir>/catalog/assignments.json`, without configuration, session, lock, or network access. An unknown list course filter yields an empty assignment array; an unknown filtered sync course returns `course-not-found`.
 
 Assignment sync enters each course before arming the task-list response wait around the task-menu click. The first post-commit task list, its task-page Referer, and the active topbar course must agree; an opaque encrypted request body is not treated as a plaintext course ID.
 
