@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 from contextlib import asynccontextmanager
@@ -13,7 +12,6 @@ import pytest
 from campusctl import cli
 from campusctl.commands import discover_domain_modules, materials
 from campusctl.domain_catalog import write_domain_catalog
-from campusctl.envelope import CampusError
 from campusctl.providers.cnu import attachment_transfer
 from campusctl.providers.cnu import materials as provider
 from campusctl.providers.cnu.ui_policy import UiRequestPolicy
@@ -76,9 +74,6 @@ def test_sync_list_human_json_and_staleness(
         {"courses": 1, "materials": 2, "failed_courses": [], "catalog": {"enrollment_state": "known"}},
         50,
     ) == ["Synced 1 course, 2 materials."]
-    with pytest.raises(CampusError) as failure:
-        asyncio.run(materials.sync({}, tmp_path, None, headless=True))
-    assert failure.value.code == "headless-unavailable"
 
 
 def test_discovery_only_exposes_reviewed_materials() -> None:
@@ -138,7 +133,7 @@ def _fake_network(
     page.context = SimpleNamespace()
 
     @asynccontextmanager
-    async def session(config: Any, *, data_dir: Path, headless: bool):
+    async def session(config: Any, *, data_dir: Path, headless: bool, operation: str):
         calls.append("lock")
         assert data_dir == root
         if headless:
@@ -220,7 +215,9 @@ def test_download_selection_policy_and_outcome(
     assert not (path.parent / ".attachment-synthetic").exists()
     code, raw = _cli(["materials", "download", "absent", "--json"], capsys)
     assert code == 2 and json.loads(raw)["errors"][0]["code"] == "entity-unknown"
-    code, raw = _cli(["materials", "download", ID, "--headless", "--out", str(tmp_path / "headless"), "--json"], capsys)
+    code, raw = _cli(["materials", "download", ID, "--headless", "--json"], capsys)
+    assert code == 2 and json.loads(raw)["errors"][0]["code"] == "usage-error"
+    code, raw = _cli(["--headless", "materials", "download", ID, "--out", str(tmp_path / "headless"), "--json"], capsys)
     assert code == 0 and json.loads(raw)["result"]["material"]["outcome"] == "saved"
     assert calls.count("fetch") == 2 and "headless" in calls
 
@@ -317,7 +314,12 @@ def test_full_ids_stale_warning_and_outcome_paths() -> None:
         34,
     )
     assert (
-        "".join(line.strip() for line in lines if "cnu_lms_material" in line or line.strip().startswith("x")) == long_id
+        "".join(
+            line.strip().removeprefix("1. ")
+            for line in lines
+            if "cnu_lms_material" in line or line.strip().startswith("x")
+        )
+        == long_id
     )
     assert any("Warning:" in line for line in lines)
     for outcome, label in (("saved", "Saved"), ("reused", "Reused"), ("skipped-existing", "Skipped existing")):
@@ -359,3 +361,24 @@ def test_end_to_end_fixture_cli_scenario(
     code, json_retry = _cli(["materials", "download", ID, "--json"], capsys)
     assert code == 0 and json.loads(json_retry)["result"]["material"]["outcome"] == "skipped-existing"
     assert calls == ["lock"]
+
+
+def test_printed_material_number_is_bound_to_generation_and_json_cannot_prompt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _catalog(tmp_path)
+    monkeypatch.setenv("CAMPUSCTL_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("CAMPUSCTL_OUTPUT", "human")
+    monkeypatch.setattr("campusctl.config.load_config", lambda: {})
+    calls = _fake_network(monkeypatch, tmp_path)
+    code, output = _cli(["materials", "list", "--course", "course-a"], capsys)
+    assert code == 0 and f"1. {ID}" in output
+    code, output = _cli(["materials", "download", "1"], capsys)
+    assert code == 0 and "Saved:" in output and calls.count("fetch") == 1
+    _catalog(tmp_path)
+    calls.clear()
+    code, output = _cli(["materials", "download", "1"], capsys)
+    assert code == 2 and "selection-stale" in output and not calls
+    monkeypatch.setattr("builtins.input", lambda *args: pytest.fail("JSON must not prompt"))
+    code, output = _cli(["materials", "download", "--json"], capsys)
+    assert code == 2 and json.loads(output)["errors"][0]["code"] == "selection-required"

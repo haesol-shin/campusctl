@@ -5,10 +5,18 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from campusctl.browser_options import preflight_browser_mode
+from campusctl.catalog_view import (
+    assert_material_snapshot_current,
+    cache_metadata,
+    catalog_snapshot,
+    publish_material_snapshot,
+    resolve_material_number,
+)
 from campusctl.domain_catalog import domain_catalog_path, read_domain_catalog
 from campusctl.envelope import CampusError, UsageError
 from campusctl.paths import data_dir
@@ -156,11 +164,11 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     listing = commands.add_parser("list", help="list cached archive files")
     listing.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
     listing.add_argument("--course", help="limit results to one course ID")
+    listing.add_argument("--refresh", action="store_true")
     download = commands.add_parser("download", help="save one selected archive file")
     download.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
-    download.add_argument("entity_id", help="full ID from materials list")
+    download.add_argument("entity_id", nargs="?", help="full ID or printed human number")
     download.add_argument("--out", type=Path, help="destination directory")
-    download.add_argument("--headless", action="store_true", help="request reviewed headless operation")
 
 
 def dispatch(args: argparse.Namespace) -> tuple[dict[str, Any], CampusError | None]:
@@ -174,14 +182,62 @@ def dispatch(args: argparse.Namespace) -> tuple[dict[str, Any], CampusError | No
         if args.course is not None:
             rows = [row for row in rows if row["course"]["id"] == args.course]
         return {
-            "cache": {
-                "generated_at": catalog["generated_at"],
-                "path_present": True,
-                "enrollment_state": catalog["enrollment_state"],
-                "failed_courses": catalog["failed_courses"],
-            },
+            "cache": cache_metadata(catalog, now=datetime.now(UTC), domain="materials"),
             "materials": rows,
         }, None
+    selection = None
+    if args.entity_id is None:
+        if not args._interactive:
+            raise CampusError(
+                "selection-required",
+                "Select a full material ID without interactive terminals.",
+                "Run 'campusctl materials list --json' and pass one full ID.",
+                "user-action",
+            )
+        import sys
+
+        from campusctl.envelope import make_envelope
+        from campusctl.presentation import render_human
+
+        snapshot = catalog_snapshot("materials", root)
+        if snapshot is None:
+            raise CampusError(
+                "catalog-missing",
+                "Materials catalog is missing.",
+                "Run 'campusctl sync --only materials'.",
+                "user-action",
+            )
+        catalog = snapshot[0]
+        render_human(
+            "materials.list",
+            make_envelope(
+                result={
+                    "materials": catalog["materials"],
+                    "cache": cache_metadata(catalog, now=datetime.now(UTC), domain="materials"),
+                }
+            ),
+            sys.stdout,
+        )
+        sys.stdout.flush()
+        publish_material_snapshot(root, snapshot[1], [row["entity_id"] for row in catalog["materials"]])
+        try:
+            choice = input("Select one file number (blank cancels): ").strip()
+        except EOFError:
+            choice = ""
+        if not choice:
+            raise CampusError(
+                "selection-cancelled", "No material selected.", "Run 'campusctl materials list'.", "user-action"
+            )
+        args.entity_id, selection = resolve_material_number(root, choice)
+    elif args.entity_id.isdecimal() and not any(row["entity_id"] == args.entity_id for row in catalog["materials"]):
+        if args._output_mode == "json":
+            raise CampusError(
+                "selection-invalid",
+                "JSON download requires a full material ID.",
+                "Use a full ID from 'campusctl materials list --json'.",
+                "user-action",
+            )
+        args.entity_id, selection = resolve_material_number(root, args.entity_id)
     rows = [row for row in catalog["materials"] if row.get("entity_id") == args.entity_id]
     if len(rows) != 1:
         raise CampusError(
@@ -200,22 +256,24 @@ def dispatch(args: argparse.Namespace) -> tuple[dict[str, Any], CampusError | No
         )
     from campusctl.config import load_config
 
-    return {"material": asyncio.run(_download(load_config(), root, row, args.out, headless=args.headless))}, None
+    config = load_config()
+    mode = preflight_browser_mode(config, "materials.download", override=args.headless_override)
+    from contextlib import nullcontext
+
+    from campusctl.browser import pre_browser_check
+
+    check = pre_browser_check(lambda: assert_material_snapshot_current(root, selection)) if selection else nullcontext()
+    with check:
+        material = asyncio.run(_download(config, root, row, args.out, headless=mode))
+    return {"material": material}, None
 
 
 async def sync(
     config: dict[str, Any], root: Path, course_id: str | None, *, headless: bool = False
 ) -> tuple[dict[str, Any], list[CampusError]]:
-    if headless:
-        raise CampusError(
-            "headless-unavailable",
-            "Headless materials sync is not approved.",
-            "Use a visible browser session.",
-            "user-action",
-        )
     from campusctl.providers.cnu.materials import sync_materials
 
-    return await sync_materials(config, root, course_id, headless=False, reviewed_policy=CAPABILITY["policy"])
+    return await sync_materials(config, root, course_id, headless=headless, reviewed_policy=CAPABILITY["policy"])
 
 
 def _result(row: dict[str, Any], path: str, size: int, digest: str, outcome: str) -> dict[str, Any]:
@@ -271,7 +329,7 @@ async def _download(
     course_id = row["course"]["id"]
     post_id = row["archive_entry"]["board_item_id"]
     file_id = row["file_id"]
-    async with open_session(config, data_dir=root, headless=headless) as session:
+    async with open_session(config, data_dir=root, headless=headless, operation="materials.download") as session:
         destination = out if out is not None else default_download_dir() / safe_component(row["course"]["label"])
         output_dir = prepare_output_dir(root, entity_id, destination)
         receipt = verified_receipt(root, entity_id, output_dir)
@@ -429,7 +487,7 @@ def render(command: str, result: dict[str, Any], width: int) -> list[str]:
     if not rows:
         return lines + _wrap("No cached materials match this selection.", width)
     last_course = None
-    for row in rows:
+    for number, row in enumerate(rows, 1):
         course = row["course"]
         if course["id"] != last_course:
             lines.append("")
@@ -438,5 +496,5 @@ def render(command: str, result: dict[str, Any], width: int) -> list[str]:
         lines.extend(_wrap(f"Archive: {row['archive_entry']['title']}", width, indent="  "))
         lines.extend(_wrap(f"File: {row['filename']}", width, indent="  "))
         lines.extend(_wrap(f"Downloadable: {'yes' if row['downloadable'] else 'no'}", width, indent="  "))
-        lines.append(f"  {row['entity_id']}")
+        lines.append(f"  {number}. {row['entity_id']}")
     return lines

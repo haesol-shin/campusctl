@@ -9,15 +9,27 @@ import shutil
 import sys
 from collections.abc import Callable, Sequence
 from contextlib import suppress
+from datetime import UTC, datetime
 from pathlib import Path
 from types import ModuleType
 from typing import Any
 
 from campusctl import __version__
+from campusctl.browser_options import preflight_browser_mode, resolve_headless
 from campusctl.catalog import catalog_path, read_catalog
+from campusctl.catalog_view import (
+    DOMAINS,
+    cache_metadata,
+    catalog_snapshot,
+    course_roster,
+    publish_course_snapshot,
+    publish_material_snapshot,
+    read_course_snapshot,
+)
 from campusctl.commands import discover_domain_modules
 from campusctl.config import load_config
 from campusctl.config_init import run_config_init
+from campusctl.course_selection import CourseAmbiguous, resolve_course
 from campusctl.credentials import helper_status, keyring_status, prompt_and_store
 from campusctl.envelope import (
     EXIT_CODES,
@@ -30,12 +42,15 @@ from campusctl.envelope import (
 )
 from campusctl.paths import config_path, data_dir
 from campusctl.presentation import render_human, render_progress
+from campusctl.profiling import SpanRecorder
+from campusctl.sync import parse_domains, run_sync
 
 SUPPORTED_SPEEDS = [1.0, 1.25, 1.5]
 _DOMAIN_MODULES: dict[str, ModuleType] = discover_domain_modules()
 CAPABILITIES = {
-    "sync": ["lectures", *_DOMAIN_MODULES],
+    "sync": list(DOMAINS),
     "lectures": ["list", "play"],
+    "status": ["local"],
     **{name: list(module.CAPABILITY["commands"]) for name, module in _DOMAIN_MODULES.items()},
 }
 
@@ -67,6 +82,10 @@ def _with_json(parser: argparse.ArgumentParser, *, default: Any = argparse.SUPPR
 
 def build_parser() -> argparse.ArgumentParser:
     parser = EnvelopeArgumentParser(prog="campusctl", description="Campus LMS control CLI")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--headless", dest="headless_override", action="store_const", const=True, default=None)
+    mode.add_argument("--headed", dest="headless_override", action="store_const", const=False)
+    parser.add_argument("--profile", action="store_true", help="profile sync or refresh on stderr")
     _with_json(parser, default=False)
     parser.add_argument("--version", action="store_true", help="show the campusctl version")
     commands = parser.add_subparsers(dest="command", parser_class=EnvelopeArgumentParser)
@@ -93,17 +112,20 @@ def build_parser() -> argparse.ArgumentParser:
     setup = commands.add_parser("setup", help="install or check the local Chromium browser")
     _with_json(setup)
 
-    sync = commands.add_parser("sync", help="sync a local catalog (lectures by default)")
+    sync = commands.add_parser("sync", help="sync all metadata domains")
     _with_json(sync)
-    sync.add_argument("--only", default="lectures", help="lectures, assignments, notices, or materials")
-    sync.add_argument("--headless", action="store_true", help="request headless mode for an approved domain sync")
-    sync.add_argument("--course", help="limit sync to one course ID")
+    sync.add_argument("--only", help="comma-separated domain subset")
+    sync.add_argument("--course", help="limit sync to one course")
 
+    status = commands.add_parser("status", help="summarize cached coursework")
+    _with_json(status)
+    status.add_argument("--course", help="select one course")
     courses = commands.add_parser("courses", help="list cached courses")
     _with_json(courses)
     course_commands = courses.add_subparsers(dest="courses_command", parser_class=EnvelopeArgumentParser)
     courses_list = course_commands.add_parser("list", help="list cached courses")
     _with_json(courses_list)
+    courses_list.add_argument("--refresh", action="store_true")
 
     lectures = commands.add_parser("lectures", help="list or play lectures")
     _with_json(lectures)
@@ -112,10 +134,12 @@ def build_parser() -> argparse.ArgumentParser:
     _with_json(lectures_list)
     lectures_list.add_argument("--all", action="store_true", help="include completed or recorded lectures")
     lectures_list.add_argument("--course", help="limit results to one course ID")
+    lectures_list.add_argument("--refresh", action="store_true")
     lectures_play = lecture_commands.add_parser("play", help="play explicit lecture IDs")
     _with_json(lectures_play)
     lectures_play.add_argument("entity_ids", nargs="+")
     lectures_play.add_argument("--speed", type=float, choices=SUPPORTED_SPEEDS)
+    lectures_play.add_argument("--replay", action="store_true", help="explicitly replay completed lectures")
     for module in _DOMAIN_MODULES.values():
         module.register(commands)
     return parser
@@ -328,14 +352,66 @@ def _interactive_config_init(args: argparse.Namespace | None) -> bool:
     )
 
 
+def _select_course(
+    selector: str | None,
+    root: Path,
+    *,
+    ids_only: bool,
+    allow_live_id: bool = False,
+) -> tuple[str | None, dict[str, Any] | None]:
+    if selector is None:
+        return None, None
+    try:
+        roster = course_roster(root)
+    except CampusError as error:
+        if error.code != "catalog-missing":
+            raise
+        if allow_live_id and ids_only and selector.strip():
+            return selector, None
+        if ids_only:
+            code = "course-index-unavailable" if selector.isdecimal() else "course-id-required"
+            raise CampusError(
+                code,
+                "JSON course selection requires an exact full course ID.",
+                "Use a full course ID from 'campusctl courses list --json'.",
+                "user-action",
+            ) from None
+        if selector.isdecimal():
+            read_course_snapshot(root)
+        raise
+    snapshot = None
+    if selector.isdecimal() and not ids_only and not any(row["course_id"] == selector for row in roster["courses"]):
+        snapshot = read_course_snapshot(root)
+    return resolve_course(selector, roster, ids_only=ids_only, printed_roster=snapshot), snapshot
+
+
+def _refresh(
+    domain: str,
+    root: Path,
+    course_id: str | None,
+    args: argparse.Namespace,
+    snapshot: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], CampusError | list[CampusError] | None]:
+    config = load_config()
+    mode = preflight_browser_mode(config, f"{domain}.sync", override=args.headless_override)
+    return run_sync(
+        config, root, (domain,), course_id, headless=mode,
+        profile=getattr(args, "_profile", None), course_snapshot=snapshot,
+    )
+
+
 def _command_key(args: argparse.Namespace | None) -> str:
     if args is None:
         return "usage"
     if args.version:
         return "version"
     command = getattr(args, "command", None)
-    if command == "sync" and getattr(args, "only", "lectures") != "lectures":
-        return f"sync.{args.only}"
+    if command == "sync" and getattr(args, "only", None) is not None:
+        try:
+            domains = parse_domains(args.only)
+        except CampusError:
+            return "sync"
+        return f"sync.{domains[0]}" if len(domains) == 1 else "sync"
     if command == "config" and getattr(args, "config_command", None) == "init":
         return "config.init"
     if command == "auth" and getattr(args, "auth_command", None):
@@ -440,54 +516,119 @@ def _dispatch(args: argparse.Namespace) -> tuple[Any, CampusError | list[CampusE
                 )
         return credentials, None
     if args.command == "setup":
-        from campusctl.setup import run_setup
+        from campusctl.setup import run_guided_setup, run_setup
 
+        if args._interactive:
+            return run_guided_setup(
+                confirm=_confirm_setup,
+                out=sys.stdout,
+                run_sync=run_sync,
+                headless_override=args.headless_override,
+            )
         path = config_path()
         config = load_config(path) if path.exists() else None
-        interactive = bool(getattr(args, "_interactive", False))
-        return run_setup(
-            config,
-            confirm=_confirm_setup if interactive else None,
-            out=sys.stdout if getattr(args, "_output_mode", "json") == "human" else None,
-        ), None
+        return run_setup(config, confirm=None, out=sys.stdout if args._output_mode == "human" else None), None
+    root = data_dir()
+    ids_only = args._output_mode == "json"
     if args.command == "sync":
-        if args.only == "lectures":
-            if args.headless:
-                raise UsageError("Headless mode is not available for lecture sync.")
-            import asyncio
-
-            from campusctl.providers.cnu.sync import sync_lectures
-
-            result, errors = asyncio.run(sync_lectures(load_config(), data_dir(), args.course))
-            return result, errors or None
-        module = _DOMAIN_MODULES.get(args.only)
-        if module is None:
-            raise CampusError(
-                "unsupported-domain",
-                "That sync domain is not supported in v0.",
-                "Use 'campusctl sync --only lectures'.",
-            )
-        import asyncio
-
-        result, errors = asyncio.run(module.sync(load_config(), data_dir(), args.course, headless=args.headless))
-        return result, errors or None
-    if args.command in _DOMAIN_MODULES:
-        return _DOMAIN_MODULES[args.command].dispatch(args)
+        domains = parse_domains(args.only)
+        course_id, snapshot = _select_course(args.course, root, ids_only=ids_only, allow_live_id=True)
+        config = load_config()
+        for domain in domains:
+            preflight_browser_mode(config, f"{domain}.sync", override=args.headless_override)
+        return run_sync(
+            config,
+            root,
+            domains,
+            course_id,
+            headless=args.headless_override,
+            profile=getattr(args, "_profile", None),
+            course_snapshot=snapshot,
+        )
     if args.command == "courses" and args.courses_command == "list":
-        catalog = read_catalog()
-        return {
-            "cache": {"generated_at": catalog["generated_at"], "path_present": True},
-            "courses": catalog["courses"],
-        }, None
+        refresh = None
+        if args.refresh:
+            refresh = _refresh("lectures", root, None, args)
+        try:
+            roster = course_roster(root)
+        except CampusError:
+            if refresh is None or not refresh[1]:
+                raise
+            errors = refresh[1] if isinstance(refresh[1], list) else [refresh[1]]
+            return {
+                "refresh": {"status": "error", "result": refresh[0], "errors": [error_item(item) for item in errors]}
+            }, refresh[1]
+        result = {"cache": roster["cache"], "courses": roster["courses"]}
+        if refresh is not None:
+            result["refresh"] = {
+                "status": "partial" if refresh[1] else "ok",
+                "result": refresh[0],
+                "errors": [error_item(error) for error in refresh[1]]
+                if isinstance(refresh[1], list)
+                else [error_item(refresh[1])]
+                if refresh[1]
+                else [],
+            }
+            if refresh[1]:
+                return result, refresh[1]
+        if not ids_only:
+            args._course_roster = roster
+        return result, None
+    if args.command == "status":
+        from campusctl.status import build_status
+
+        course_id, _ = _select_course(args.course, root, ids_only=ids_only)
+        result, status, errors = build_status(root, course_id, now=datetime.now(UTC))
+        args._status = status
+        args._status_errors = errors
+        return result, None
+    if args.command in _DOMAIN_MODULES:
+        if getattr(args, f"{args.command}_command", None) == "list":
+            args.course, snapshot = _select_course(args.course, root, ids_only=ids_only)
+            refresh = _refresh(args.command, root, args.course, args, snapshot) if args.refresh else None
+            try:
+                result, error = _DOMAIN_MODULES[args.command].dispatch(args)
+            except CampusError:
+                if refresh is None or not refresh[1]:
+                    raise
+                return {
+                    "refresh": {
+                        "status": "error",
+                        "result": refresh[0],
+                        "errors": [error_item(e) for e in refresh[1]]
+                        if isinstance(refresh[1], list)
+                        else [error_item(refresh[1])],
+                    }
+                }, refresh[1]
+            if refresh is not None:
+                result["refresh"] = {
+                    "status": "partial" if refresh[1] else "ok",
+                    "result": refresh[0],
+                    "errors": [error_item(e) for e in refresh[1]]
+                    if isinstance(refresh[1], list)
+                    else [error_item(refresh[1])]
+                    if refresh[1]
+                    else [],
+                }
+                return result, refresh[1]
+            return result, error
+        return _DOMAIN_MODULES[args.command].dispatch(args)
     if args.command == "lectures" and args.lectures_command == "list":
-        catalog = read_catalog()
-        course_order: dict[str, int] = {}
-        for index, course in enumerate(catalog["courses"]):
-            if isinstance(course, dict) and isinstance(course.get("course_id"), str):
-                course_order.setdefault(course["course_id"], index)
+        course_id, snapshot = _select_course(args.course, root, ids_only=ids_only)
+        refresh = _refresh("lectures", root, course_id, args, snapshot) if args.refresh else None
+        try:
+            catalog = read_catalog()
+        except CampusError:
+            if refresh is None or not refresh[1]:
+                raise
+            errors = refresh[1] if isinstance(refresh[1], list) else [refresh[1]]
+            return {
+                "refresh": {"status": "error", "result": refresh[0], "errors": [error_item(item) for item in errors]}
+            }, refresh[1]
+        course_order = {course["course_id"]: index for index, course in enumerate(catalog["courses"])}
         lectures = catalog["lectures"]
-        if args.course is not None:
-            lectures = [lecture for lecture in lectures if _lecture_course_id(lecture) == args.course]
+        if course_id is not None:
+            lectures = [lecture for lecture in lectures if _lecture_course_id(lecture) == course_id]
         if not args.all:
             lectures = [lecture for lecture in lectures if lecture.get("completion") == "incomplete"]
         lectures = sorted(
@@ -498,10 +639,19 @@ def _dispatch(args: argparse.Namespace) -> tuple[Any, CampusError | list[CampusE
                 _natural_sort_key(lecture.get("sequence")),
             ),
         )
-        return {
-            "cache": {"generated_at": catalog["generated_at"], "path_present": True},
-            "lectures": lectures,
-        }, None
+        result = {"cache": cache_metadata(catalog, now=datetime.now(UTC), domain="lectures"), "lectures": lectures}
+        if refresh is not None:
+            result["refresh"] = {
+                "status": "partial" if refresh[1] else "ok",
+                "result": refresh[0],
+                "errors": [error_item(error) for error in refresh[1]]
+                if isinstance(refresh[1], list)
+                else [error_item(refresh[1])]
+                if refresh[1]
+                else [],
+            }
+            return result, refresh[1]
+        return result, None
     if args.command == "lectures" and args.lectures_command == "play":
         import asyncio
 
@@ -509,10 +659,29 @@ def _dispatch(args: argparse.Namespace) -> tuple[Any, CampusError | list[CampusE
         from campusctl.providers.cnu.player import play_lectures, validate_requested_lectures
 
         catalog = read_catalog()
-        lectures = validate_requested_lectures(args.entity_ids, catalog["lectures"])
+        lectures = validate_requested_lectures(args.entity_ids, catalog["lectures"], replay=args.replay)
         config = load_config()
+        output_mode = args._output_mode
+        if args.replay and output_mode == "human":
+            if not args._interactive:
+                raise CampusError(
+                    "replay-confirmation-required",
+                    "Replay needs two interactive terminals.",
+                    "Run replay in a terminal or use explicit IDs with --json.",
+                    "user-action",
+                )
+            sys.stdout.write(f"Replay {len(lectures)} selected lectures?\n")
+            for lecture in lectures:
+                sys.stdout.write(f"  {lecture['entity_id']} — {lecture.get('title', '')}\n")
+            sys.stdout.flush()
+            try:
+                consent = input("Replay using the official player? [y/N] ").strip().lower()
+            except EOFError:
+                consent = ""
+            if consent not in {"y", "yes"}:
+                raise CampusError("replay-cancelled", "Replay was cancelled.", "Select lectures again.", "user-action")
+        mode = preflight_browser_mode(config, "lectures.play", override=args.headless_override)
 
-        output_mode = getattr(args, "_output_mode", "json")
         progress_callback = None
         finish_progress = None
         if output_mode == "human":
@@ -520,13 +689,16 @@ def _dispatch(args: argparse.Namespace) -> tuple[Any, CampusError | list[CampusE
 
         async def _play() -> tuple[dict[str, Any], CampusError | list[CampusError] | None]:
             try:
-                async with open_session(config, data_dir=data_dir()) as session:
+                async with open_session(
+                    config, data_dir=data_dir(), headless=mode, operation="lectures.play"
+                ) as session:
                     return await play_lectures(
                         session.page,
                         config,
                         lectures,
                         speed=args.speed,
                         progress=progress_callback,
+                        replay=args.replay,
                     )
             finally:
                 if finish_progress is not None:
@@ -534,12 +706,13 @@ def _dispatch(args: argparse.Namespace) -> tuple[Any, CampusError | list[CampusE
                         finish_progress()
 
         return asyncio.run(_play())
-    raise UsageError("a command is required")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args: argparse.Namespace | None = None
     output_mode = "json"
+    recorder: SpanRecorder | None = None
+    outcome = "failed"
     try:
         arguments = list(sys.argv[1:] if argv is None else argv)
         stdout_isatty = sys.stdout.isatty()
@@ -550,13 +723,51 @@ def main(argv: Sequence[str] | None = None) -> int:
         interactive = output_mode == "human" and stdin_isatty and stdout_isatty
         parser = build_parser()
         args = parser.parse_args(arguments)
+        if args.profile:
+            refresh = args.command == "courses" and args.courses_command == "list" and args.refresh
+            refresh |= args.command == "lectures" and args.lectures_command == "list" and args.refresh
+            refresh |= (
+                args.command in _DOMAIN_MODULES
+                and getattr(args, f"{args.command}_command", None) == "list"
+                and args.refresh
+            )
+            if args.command != "sync" and not refresh:
+                raise UsageError("--profile is valid only for sync or list --refresh.")
+            scope = (
+                parse_domains(args.only)
+                if args.command == "sync"
+                else (("lectures",) if args.command == "courses" else (args.command,))
+            )
+            mode = resolve_headless(load_config(), args.headless_override)
+            recorder = SpanRecorder(enabled=True, mode="headless" if mode else "headed", scope=scope)
+        args._profile = recorder
         args._interactive = interactive
         args._output_mode = output_mode
         result, error = _dispatch(args)
         command_key = _command_key(args)
-        if isinstance(error, list):
-            return _emit_partial(result, error, output_mode=output_mode, command_key=command_key)
-        return _emit_response(command_key, output_mode, result=result, error=error)
+        if args.command == "status":
+            envelope = make_envelope(status=args._status, result=result, errors=args._status_errors)
+            if output_mode == "json":
+                write_json(envelope)
+            else:
+                render_human(command_key, envelope, sys.stdout)
+            code = EXIT_CODES[args._status]
+        elif isinstance(error, list):
+            code = _emit_partial(result, error, output_mode=output_mode, command_key=command_key)
+        else:
+            code = _emit_response(command_key, output_mode, result=result, error=error)
+        if code == 0 and output_mode == "human" and command_key == "courses.list" and hasattr(args, "_course_roster"):
+            sys.stdout.flush()
+            publish_course_snapshot(data_dir(), args._course_roster)
+        if code == 0 and output_mode == "human" and command_key == "materials.list":
+            sys.stdout.flush()
+            source = catalog_snapshot("materials", data_dir())
+            if source is not None:
+                publish_material_snapshot(
+                    data_dir(), source[1], [row["entity_id"] for row in result["materials"]], course_id=args.course
+                )
+        outcome = "ok" if code == 0 else "failed"
+        return code
     except KeyboardInterrupt:
         if output_mode == "json":
             raise
@@ -564,12 +775,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 130
     except _HelpRequested:
         return 0
+    except CourseAmbiguous as error:
+        return _emit_response(_command_key(args), output_mode, result={"candidates": error.candidates}, error=error)
     except CampusError as error:
         return _emit_response(_command_key(args), output_mode, error=error)
     except Exception as error:
         # Never include exception text: third-party exceptions can contain credentials or endpoints.
         safe_error = CampusError("internal", type(error).__name__, None, "error")
         return _emit_response(_command_key(args), output_mode, error=safe_error)
+    finally:
+        if recorder is not None:
+            recorder.finish(outcome=outcome)
 
 
 if __name__ == "__main__":

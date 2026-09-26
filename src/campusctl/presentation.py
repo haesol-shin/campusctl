@@ -493,6 +493,53 @@ def _lectures(result: dict[str, Any], width: int) -> list[str]:
     return lines
 
 
+def _cache_advice(result: dict[str, Any], width: int) -> list[str]:
+    cache = result.get("cache")
+    if not isinstance(cache, dict):
+        return []
+    lines = []
+    if isinstance(cache.get("age_seconds"), int):
+        lines.extend(_wrap(f"Catalog generated {cache['age_seconds']} seconds ago.", width))
+    if cache.get("stale"):
+        lines.extend(
+            _wrap(
+                f"Warning: Cached data may be stale. Refresh: {cache.get('refresh_command', 'campusctl sync')}", width
+            )
+        )
+    return lines
+
+
+def _status(result: dict[str, Any], width: int) -> list[str]:
+    sections = (
+        ("Assignments due soon", "assignments", "due_soon", "unknown_due_count", "campusctl assignments list"),
+        ("Unread notices", "notices", "unread", "unknown_count", "campusctl notices list"),
+        ("Open incomplete lectures", "lectures", "open_incomplete", "unknown_open_count", "campusctl lectures list"),
+    )
+    lines = ["Coursework status (local catalogs)"]
+    for label, domain, key, unknown, command in sections:
+        section = result.get(domain, {})
+        entries = section.get(key, [])
+        lines.append(f"{label}: {len(entries)}; unknown: {section.get(unknown, 0)}")
+        for entry in entries[:3]:
+            lines.append("  " + _truncate(_text(entry.get("title"), _text(entry.get("entity_id"))), width - 2))
+        if len(entries) > 3:
+            lines.append(f"  +{len(entries) - 3} more")
+        lines.append(f"  See: {command}")
+    coverage = result.get("coverage", {})
+    gaps = [f"{name}: {value['state']}" for name, value in coverage.items() if value.get("state") != "available"]
+    if gaps:
+        lines.append("Missing coverage: " + ", ".join(gaps))
+    stale = result.get("stale_courses", [])
+    if stale:
+        lines.append(f"Stale courses: {len(stale)}")
+        lines.extend(
+            "  " + _truncate(_text(item.get("label"), _text(item.get("course_id"))), width - 2) for item in stale[:3]
+        )
+        if len(stale) > 3:
+            lines.append(f"  +{len(stale) - 3} more")
+    return lines
+
+
 def _courses(result: dict[str, Any], width: int) -> list[str]:
     courses = result.get("courses")
     if not isinstance(courses, list):
@@ -500,19 +547,21 @@ def _courses(result: dict[str, Any], width: int) -> list[str]:
     rows = [course for course in courses if isinstance(course, dict)]
     count_label = "course" if len(rows) == 1 else "courses"
     lines = _wrap(f"{len(rows)} {count_label}", width)
-    for course in rows:
+    for number, course in enumerate(rows, 1):
         course_id = _text(course.get("course_id"), "unknown")
         label = _text(course.get("label"), course_id)
-        if width < 60 or _cells(course_id) + 4 > width:
+        if width < 60 or _cells(course_id) + 8 > width:
             lines.extend(_course_heading(label, width))
-            lines.extend(_wrap(f"  ID: {course_id}", width))
+            lines.extend(_wrap(f"  {number}. {course_id}", width))
         else:
-            label_width = width - _cells(course_id) - 2
-            lines.append(f"{_pad(_truncate(label, label_width), label_width)}  {course_id}")
-    return lines
+            label_width = width - _cells(course_id) - 8
+            lines.append(f"{number}. {_pad(_truncate(label, label_width), label_width)}  {course_id}")
+    return lines + _cache_advice(result, width)
 
 
 def _sync(result: dict[str, Any], width: int) -> list[str]:
+    if isinstance(result.get("domains"), dict):
+        return [f"{name}: {entry.get('status', 'unknown')}" for name, entry in result["domains"].items()]
     if not any(key in result for key in ("courses", "lectures", "incomplete", "failed_courses")):
         return []
     courses = result.get("courses", 0)
@@ -679,6 +728,8 @@ def render_human(
         lines = _courses(result, terminal_width)
     elif command == "sync":
         lines = _sync(result, terminal_width)
+    elif command == "status":
+        lines = _status(result, terminal_width)
     elif command == "lectures.play":
         lines = _play(result, terminal_width)
     elif command == "doctor":
@@ -689,6 +740,8 @@ def render_human(
     else:
         lines = [wrapped for line in _simple(command, result) for wrapped in _wrap_simple(line, terminal_width)]
 
+    if command in {"lectures.list", "assignments.list", "notices.list", "materials.list"}:
+        lines.extend(_cache_advice(result, terminal_width))
     error_values = envelope.get("errors")
     if command == "doctor" and suppress_catalog_error:
         error_values = []

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from campusctl.catalog_view import cache_metadata
 from campusctl.domain_catalog import domain_catalog_path, read_domain_catalog
 from campusctl.envelope import CampusError, UsageError
+from campusctl.paths import data_dir
 
 _LMS = "https://dcs-learning.cnu.ac.kr"
 _OPERATION = "assignments.sync"
@@ -98,22 +100,18 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     listing = commands.add_parser("list", help="list cached assignments")
     listing.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
     listing.add_argument("--course", help="limit results to one course ID")
+    listing.add_argument("--refresh", action="store_true")
 
 
 def dispatch(args: argparse.Namespace) -> tuple[dict[str, Any], None]:
     if args.assignments_command != "list":
         raise UsageError("an assignments command is required")
-    catalog = read_domain_catalog("assignments", domain_catalog_path("assignments"))
+    catalog = read_domain_catalog("assignments", domain_catalog_path("assignments", data_dir()))
     rows = catalog["assignments"]
     if args.course is not None:
         rows = [row for row in rows if row["course"]["id"] == args.course]
     return {
-        "cache": {
-            "generated_at": catalog["generated_at"],
-            "path_present": True,
-            "enrollment_state": catalog["enrollment_state"],
-            "failed_courses": catalog["failed_courses"],
-        },
+        "cache": cache_metadata(catalog, now=datetime.now(UTC), domain="assignments"),
         "assignments": rows,
     }, None
 
@@ -121,13 +119,6 @@ def dispatch(args: argparse.Namespace) -> tuple[dict[str, Any], None]:
 async def sync(
     config: dict[str, Any], root: Path, course_id: str | None, *, headless: bool = False
 ) -> tuple[dict[str, Any], list[CampusError]]:
-    if headless:
-        raise CampusError(
-            "headless-unavailable",
-            "CNU assignment sync has not been verified in headless mode.",
-            "Use a visible local browser until CNU headless support is verified.",
-            "user-action",
-        )
     from campusctl.providers.cnu.assignments import sync_assignments
 
     return await sync_assignments(config, root, course_id, headless=headless, reviewed_policy=CAPABILITY["policy"])

@@ -194,6 +194,9 @@ def test_provider_modes_preserve_filtered_rows_and_failed_course(
 
 
 def _invoke(argv: list[str], capsys: pytest.CaptureFixture[str]) -> tuple[int, dict[str, Any]]:
+    # This provider fixture covers lecture-only sync; the CLI default is all domains.
+    if argv[0] == "sync" and "--only" not in argv:
+        argv = [*argv, "--only", "lectures"]
     exit_code = cli.main([*argv, "--json"])
     captured = capsys.readouterr()
     assert captured.err == ""
