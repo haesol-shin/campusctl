@@ -10,6 +10,7 @@ from typing import Any, TextIO
 
 from campusctl.browser import chromium_installed
 from campusctl.browser_options import preflight_browser_mode
+from campusctl.catalog_view import catalog_snapshot
 from campusctl.credentials import helper_status, keyring_status, prompt_and_store
 from campusctl.envelope import CampusError
 from campusctl.paths import config_path, data_dir
@@ -140,6 +141,13 @@ def run_guided_setup(
     from campusctl.config import load_config
     from campusctl.config_init import run_config_init
 
+    if not sys.stdin.isatty() or not out.isatty():
+        return {"steps": [], "next": ["campusctl setup"]}, CampusError(
+            "auth-tty-required",
+            "Guided setup requires interactive input and output terminals.",
+            "Run 'campusctl setup' from a terminal.",
+            "user-action",
+        )
     result: dict[str, Any] = {"steps": [], "next": []}
     steps: list[dict[str, str]] = result["steps"]
 
@@ -194,7 +202,7 @@ def run_guided_setup(
             out.write("Password input is hidden.\n")
             out.flush()
             try:
-                prompt_and_store(config, stdin_isatty=True)
+                prompt_and_store(config, stdin_isatty=sys.stdin.isatty())
             except CampusError as error:
                 step("credentials", "failed")
                 result["next"] = ["campusctl auth set"]
@@ -226,6 +234,15 @@ def run_guided_setup(
         return result, error
     step("check", "completed")
 
+    if run_sync is not None:
+        try:
+            already_synced = all(catalog_snapshot(domain, data_dir()) is not None for domain in _SYNC_DOMAINS)
+        except CampusError:
+            already_synced = False
+        if already_synced:
+            step("sync", "reused")
+            return result, None
+
     if run_sync is None or input("Run a first full sync now? [y/N] ").strip().lower() not in {"y", "yes"}:
         step("sync", "skipped")
         result["next"] = ["campusctl sync"]
@@ -242,4 +259,4 @@ def run_guided_setup(
     result["sync"] = sync_result
     step("sync", "failed" if errors else "completed")
     result["next"] = ["campusctl sync"] if errors else []
-    return result, errors
+    return result, errors or None
