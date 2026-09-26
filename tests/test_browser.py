@@ -326,6 +326,23 @@ def test_local_mode_uses_headed_persistent_profile_and_normal_user_agent(
     _run(scenario())
 
 
+def test_config_headless_does_not_opt_in_legacy_session_without_operation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DISPLAY", ":99")
+    chromium = FakeChromium()
+    install_fake_playwright(monkeypatch, chromium)
+
+    async def scenario() -> None:
+        async with browser.open_session({"browser": {"headless": True}}, data_dir=tmp_path):
+            pass
+
+    _run(scenario())
+    assert chromium.launch_args is not None
+    assert chromium.launch_args["headless"] is False
+    assert chromium.context.closed == 1
+
+
 def test_local_headless_mode_is_opt_in_and_skips_display_check(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     executable = tmp_path / "chromium"
     executable.touch()

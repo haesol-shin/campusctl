@@ -62,6 +62,8 @@ def validate_config(config: Any, *, path: Path) -> dict[str, Any]:
     for key in ("cdp_endpoint", "lock_path", "executable_path"):
         if key in browser and (not isinstance(browser[key], str) or not browser[key]):
             raise _invalid(path, f"browser.{key}", "expected a non-empty string")
+    if "headless" in browser and not isinstance(browser["headless"], bool):
+        raise _invalid(path, "browser.headless", "expected true or false")
 
     playback = _mapping(root.get("playback", {}), "playback", path)
     speed = playback.get("default_speed", 1.0)

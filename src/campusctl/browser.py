@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from campusctl.browser_options import preflight_browser_mode
 from campusctl.envelope import CampusError
 from campusctl.lock import exclusive_lock
 from campusctl.paths import data_dir as default_data_dir
@@ -285,8 +286,17 @@ async def _stop_playwright(manager: Any, playwright: Any) -> None:
 
 @asynccontextmanager
 async def open_session(
-    config: dict[str, Any], *, data_dir: Path | None = None, headless: bool = False
+    config: dict[str, Any],
+    *,
+    data_dir: Path | None = None,
+    headless: bool | None = None,
+    operation: str | None = None,
 ) -> AsyncIterator[BrowserSession]:
+    if operation is not None:
+        headless = preflight_browser_mode(config, operation, override=headless)
+    elif headless is None:
+        # Legacy callers have no operation to gate; config cannot opt them in.
+        headless = False
     browser_config = config.get("browser", {})
     endpoint = browser_config.get("cdp_endpoint")
     mode = "cdp" if endpoint else "local"
