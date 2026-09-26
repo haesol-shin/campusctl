@@ -93,7 +93,11 @@
     "entries": [
       {"name":"panopto-script","origin":"https://dcs-learning.cnu.ac.kr.invalid","methods":["GET"],"path_template":"/js/common/panopto-{hash}.js","reason":"media-integration"},
       {"name":"panopto-disconnection-log","origin":"https://dcs-learning.cnu.ac.kr.invalid","methods":["POST"],"path_template":"/api/v1/panopto/addInternetDisconnectionLog","reason":"logging"},
-      {"name":"panopto-connectivity-check","origin":"https://dcs-learning.cnu.ac.kr.invalid","methods":["GET"],"path_template":"/api/v1/panopto/checkInternetConnection","reason":"logging"}
+      {"name":"panopto-connectivity-check","origin":"https://dcs-learning.cnu.ac.kr.invalid","methods":["GET"],"path_template":"/api/v1/panopto/checkInternetConnection","reason":"logging"},
+      {"name":"course-roster-image","origin":"https://dcs-learning.cnu.ac.kr.invalid","methods":["GET"],"path_template":"/upload/dunetadmin/college/{hash}.png","reason":"course-roster-image"},
+      {"name":"favicon-icon","origin":"https://dcs-learning.cnu.ac.kr.invalid","methods":["GET"],"path_template":"/assets/images/favicon-{hash}.ico","reason":"favicon"},
+      {"name":"external-telemetry","origin":"http://telemetry.invalid:3000","methods":["POST"],"path_template":"/v1/events","reason":"telemetry"},
+      {"name":"panopto-sso-popup","origin":"https://cnu.ap.panopto.com.invalid","methods":["POST"],"path_template":"/Panopto/Pages/Auth/Login.aspx","reason":"panopto-sso-popup"}
     ],
     "panoptoSaml_script": "not suppressed; apply ordinary same-origin static script guard",
     "all_other_unlisted_requests": "deny-policy-blocked"
@@ -112,7 +116,8 @@
     "sibling_file_same_template": "deny",
     "redirect": "deny",
     "range_request": "deny",
-    "persisted_source_reference": "origin and normalized path only; omit query and fragment"
+    "persisted_source_reference": "origin and normalized path only; omit query and fragment",
+    "notice_attachment_before_route_approval": "omit with unapproved-file-route; defer transfer until attachment-bearing notice is observed"
   },
   "attachments": {
     "allowed_extensions_case_insensitive": ["pdf", "ppt", "pptx", "doc", "docx", "xls", "xlsx", "hwp", "hwpx", "txt", "md", "png", "jpg", "zip", "ipynb", "py", "c", "cpp", "java", "js", "sql"],

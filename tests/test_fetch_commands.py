@@ -23,13 +23,13 @@ from campusctl.providers.cnu.ui_policy import UiRequestDenied, UiRequestPolicy, 
         (notices.FETCH_POLICY, "notices.fetch", notices.CAPABILITY["policy"], "notices.sync"),
     ],
 )
-def test_fetch_panopto_side_requests_and_saml_script(
+def test_fetch_reviewed_side_requests_and_saml_script(
     config: dict[str, Any], operation: str, sync_config: dict[str, Any], sync_operation: str
 ) -> None:
     origin = "https://dcs-learning.cnu.ac.kr"
     policy = UiRequestPolicy.from_reviewed_config(config)
     assert policy.approved
-    assert len(policy.suppress) == 3
+    assert len(policy.suppress) == 7
     for path, method, kind in (
         ("/js/common/panopto-Ab_9.js", "GET", "script"),
         ("/api/v1/panopto/addInternetDisconnectionLog", "POST", "xhr"),
@@ -38,6 +38,15 @@ def test_fetch_panopto_side_requests_and_saml_script(
         assert (
             guard_ui_request(policy, origin + path, method, {}, operation=operation, resource_type=kind) == "suppress"
         )
+
+    # A roster may load these side requests before the selected detail; each is aborted.
+    for url, method, kind in (
+        (origin + "/upload/dunetadmin/college/Ab_9.png", "GET", "image"),
+        (origin + "/assets/images/favicon-Ab_9.ico", "GET", "other"),
+        ("http://0.0.0.0:3000/v1/events", "POST", "fetch"),
+        ("https://cnu.ap.panopto.com/Panopto/Pages/Auth/Login.aspx", "POST", "document"),
+    ):
+        assert guard_ui_request(policy, url, method, {}, operation=operation, resource_type=kind) == "suppress"
 
     saml_url = origin + "/js/common/panoptoSaml-Ab_9.js"
     assert guard_ui_request(policy, saml_url, "GET", {}, operation=operation, resource_type="script") == "allow"
@@ -119,13 +128,13 @@ def test_fetch_unpublished_surface(
     assert policy_a.approved is True
     assert not any(r.path == "/api/v1/week/getStdActivityStatus" for r in policy_a.routes)
     assert not any(s.name == "panopto-saml-script" for s in policy_a.suppress)
-    assert len(policy_a.suppress) == 3
+    assert len(policy_a.suppress) == 7
 
     policy_n = UiRequestPolicy.from_reviewed_config(notices.FETCH_POLICY)
     assert policy_n.approved is True
     assert not any(r.path == "/api/v1/week/getStdActivityStatus" for r in policy_n.routes)
     assert not any(s.name == "panopto-saml-script" for s in policy_n.suppress)
-    assert len(policy_n.suppress) == 3
+    assert len(policy_n.suppress) == 7
 
     assert cli.main(["assignments", "--help"]) == 0
     out_help_a = capsys.readouterr().out

@@ -254,6 +254,38 @@ FETCH_POLICY: dict[str, Any] = {
             "reason": "media-integration",
         },
         {
+            "name": "course-roster-image",
+            "origin": _ORIGIN,
+            "path_template": "/upload/dunetadmin/college/{hash}.png",
+            "operation": _FETCH_OPERATION,
+            "methods": ["GET"],
+            "reason": "course-roster-image",
+        },
+        {
+            "name": "favicon-icon",
+            "origin": _ORIGIN,
+            "path_template": "/assets/images/favicon-{hash}.ico",
+            "operation": _FETCH_OPERATION,
+            "methods": ["GET"],
+            "reason": "favicon",
+        },
+        {
+            "name": "external-telemetry",
+            "origin": "http://0.0.0.0:3000",
+            "path_template": "/v1/events",
+            "operation": _FETCH_OPERATION,
+            "methods": ["POST"],
+            "reason": "telemetry",
+        },
+        {
+            "name": "panopto-sso-popup",
+            "origin": "https://cnu.ap.panopto.com",
+            "path_template": "/Panopto/Pages/Auth/Login.aspx",
+            "operation": _FETCH_OPERATION,
+            "methods": ["POST"],
+            "reason": "panopto-sso-popup",
+        },
+        {
             "name": "panopto-disconnection-log",
             "origin": _ORIGIN,
             "path_template": "/api/v1/panopto/addInternetDisconnectionLog",
@@ -292,7 +324,7 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
 
 
 def dispatch(args: argparse.Namespace) -> tuple[dict[str, Any], CampusError | list[CampusError] | None]:
-    """Read cache without configuration, network, browser, or session lock."""
+    """Dispatch cached notice listing or the internal selected fetch path."""
     command = getattr(args, "notices_command", None)
     if command == "list":
         catalog = read_domain_catalog("notices", domain_catalog_path("notices", data_dir()))
