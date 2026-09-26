@@ -10,10 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from campusctl.browser import profile_context
-from campusctl.domain_catalog import domain_catalog_path, read_domain_catalog
 from campusctl.envelope import CampusError
-from campusctl.profiling import SpanRecorder
 from campusctl.providers.cnu import materials
 from campusctl.providers.cnu.course_context import CourseSelection
 from campusctl.providers.cnu.ui_policy import UiRequestDiagnostics, UiRequestPolicy, install_ui_request_interceptor
@@ -161,12 +158,6 @@ class FakePage:
             raise TimeoutError("pending archive request")
         self.events.append("network-idle")
 
-    async def goto(self, url: str) -> None:
-        assert url == materials.MY_LECTURE_URL
-        self.events.append("guarded-roster")
-        self.main_frame.url = url
-        self.view = "roster"
-
     async def click(self, selector: str) -> None:
         self.events.append(selector)
         if selector == materials._ARCHIVE_MENU:
@@ -183,8 +174,6 @@ class FakePage:
 
     async def evaluate(self, script: str, arg=None):
         self.events.append("evaluate:" + script.split("*/")[0].split("/*")[-1].strip())
-        if script == materials.EXTRACT_COURSES_JS:
-            return self.case.get("roster", [self.case["course"]])
         if "archiveMetadataState" in script:
             pages = self.case.get("pages", [self.case["posts"]])
             posts = [{"board_item_id": p["board_item_id"], "title": p["title"]} for p in pages[self.page_number - 1]]
@@ -345,231 +334,6 @@ def test_modal_inline_detail_and_course_failure() -> None:
     with pytest.raises(CampusError, match="enumerate") as exc:
         asyncio.run(materials.enumerate_archive(page, data["course"], page.guard))
     assert exc.value.code == "item-identity-missing"
-
-
-def _install_fake_session(monkeypatch, cases: list[dict], events: list[str]):
-    page = FakePage(
-        {
-            **cases[0],
-            "course": fixture()["course"],
-            "roster": [dict(fixture()["course"], course_id=f"course-{i}") for i in range(len(cases))],
-        },
-        events,
-    )
-
-    @asynccontextmanager
-    async def fake_session(*_args, **kwargs):
-        assert kwargs["operation"] == "materials.sync"
-        page.open_headless = kwargs["headless"]
-        events.append("session")
-        yield SimpleNamespace(page=page, context=page)
-
-    async def login(*_args, **_kwargs):
-        events.append("login")
-
-    async def interceptor(*_args, **_kwargs):
-        events.append("interceptor")
-        return page.guard
-
-    async def prepare(_page, _config, course_id, section):
-        assert section == "archive"
-        index = int(course_id.rsplit("-", 1)[-1])
-        page.case = {**cases[index], "course": page.case["course"], "roster": page.case["roster"]}
-        page.view = "archive"
-        page.elapsed_ms += 8500  # Row navigation is deliberately slower than the old 7-second window.
-        events.append(f"enter-{course_id}")
-
-    async def open_section(_page, section):
-        assert section == "archive"
-        page.elapsed_ms += 2900
-        page._archive_request(document=True)
-
-    monkeypatch.setattr(materials, "open_session", fake_session)
-    monkeypatch.setattr(materials, "ensure_logged_in", login)
-    monkeypatch.setattr(materials, "install_ui_request_interceptor", interceptor)
-    monkeypatch.setattr(materials, "prepare_course_section", prepare)
-    monkeypatch.setattr(materials, "open_course_section", open_section)
-    monkeypatch.setattr(
-        materials.UiRequestPolicy, "from_reviewed_config", lambda _config: SimpleNamespace(approved=True)
-    )
-    return page
-
-
-def test_profiled_archive_roster_wait_and_course_selection(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    case = next(case for case in fixture()["cases"] if case["name"] == "modal-multiple")
-    _install_fake_session(monkeypatch, [case], [])
-    recorder = SpanRecorder(enabled=True, scope=("materials",))
-    with profile_context(recorder):
-        result, errors = asyncio.run(materials.sync_materials({}, tmp_path, reviewed_policy={}))
-    assert result["courses"] == 1 and not errors
-    report = recorder.finish()
-    assert report is not None
-    phases = [item["phase"] for item in report["spans"]]
-    assert phases.index("course-selection") < phases.index("merge") < phases.index("serialize-write")
-    assert report["counts"]["course_selections"] == 1
-    assert any(span["phase"] == "sso-settle" and span["domain"] == "materials" for span in report["spans"])
-    assert report["counts"]["sso_settles"] == 1
-    output = capsys.readouterr()
-    assert output.out == "" and output.err.startswith("campusctl-profile: ")
-    assert "course-0" not in output.err
-
-
-@pytest.mark.parametrize("headless", [False, True])
-def test_modes_keep_records_failures_and_course_filter(monkeypatch, tmp_path: Path, headless: bool) -> None:
-    cases = {case["name"]: case for case in fixture()["cases"]}
-    page = _install_fake_session(monkeypatch, [cases["modal-multiple"], cases["inline-after-modal-timeout"]], [])
-    result, errors = asyncio.run(materials.sync_materials({}, tmp_path, headless=headless, reviewed_policy={}))
-    assert page.open_headless is headless
-    assert result["courses"] == 2 and result["materials"] == 3 and not errors
-    path = domain_catalog_path("materials", tmp_path)
-    original = read_domain_catalog("materials", path)
-    assert len([row for row in original["materials"] if row["course"]["id"] == "course-0"]) == 2
-    page = _install_fake_session(monkeypatch, [cases["duplicate-id"], cases["completed-empty"]], [])
-    result, errors = asyncio.run(materials.sync_materials({}, tmp_path, headless=headless, reviewed_policy={}))
-    assert page.open_headless is headless
-    assert result["courses"] == 1 and result["materials"] == 0
-    assert [error.code for error in errors] == ["item-identity-missing"]
-    stored = read_domain_catalog("materials", path)
-    assert [row for row in stored["materials"] if row["course"]["id"] == "course-0"] == [
-        row for row in original["materials"] if row["course"]["id"] == "course-0"
-    ]
-    assert stored["failed_courses"][0]["reason"] == "item-identity-missing"
-    page = _install_fake_session(monkeypatch, [cases["completed-empty"], cases["completed-empty"]], [])
-    result, errors = asyncio.run(
-        materials.sync_materials({}, tmp_path, course_id="course-1", headless=headless, reviewed_policy={})
-    )
-    assert page.open_headless is headless
-    assert result["courses"] == 1 and not errors
-    assert [
-        row for row in read_domain_catalog("materials", path)["materials"] if row["course"]["id"] == "course-0"
-    ] == [row for row in original["materials"] if row["course"]["id"] == "course-0"]
-
-
-@pytest.mark.parametrize("headless", [False, True])
-def test_modes_preserve_policy_denial_before_catalog_publication(monkeypatch, tmp_path: Path, headless: bool) -> None:
-    base = next(case for case in fixture()["cases"] if case["name"] == "modal-multiple")
-    page = _install_fake_session(monkeypatch, [base], [])
-    page.guard.denied = True
-    with pytest.raises(CampusError) as failure:
-        asyncio.run(materials.sync_materials({}, tmp_path, headless=headless, reviewed_policy={}))
-    assert page.open_headless is headless
-    assert failure.value.code == "policy-blocked"
-    assert not domain_catalog_path("materials", tmp_path).exists()
-
-
-def test_full_filtered_and_failed_course_merges(monkeypatch, tmp_path: Path) -> None:
-    cases = {case["name"]: case for case in fixture()["cases"]}
-    events: list[str] = []
-    page = _install_fake_session(monkeypatch, [cases["modal-multiple"], cases["inline-after-modal-timeout"]], events)
-    result, errors = asyncio.run(materials.sync_materials({}, tmp_path, reviewed_policy={}))
-    assert not errors and (result["courses"], result["materials"]) == (2, 3)
-    assert events.index("login") < events.index("interceptor") < events.index("guarded-roster")
-    assert page.guard.closed
-    original = read_domain_catalog("materials", domain_catalog_path("materials", tmp_path))
-    assert len(original["materials"]) == 3
-
-    events.clear()
-    _install_fake_session(monkeypatch, [cases["duplicate-id"], cases["completed-empty"]], events)
-    result, errors = asyncio.run(materials.sync_materials({}, tmp_path, reviewed_policy={}))
-    assert result["courses"] == 1 and result["materials"] == 0
-    assert [error.code for error in errors] == ["item-identity-missing"]
-    merged = read_domain_catalog("materials", domain_catalog_path("materials", tmp_path))
-    assert len([r for r in merged["materials"] if r["course"]["id"] == "course-0"]) == 2
-    assert not any(r["course"]["id"] == "course-1" for r in merged["materials"])
-    assert merged["failed_courses"][0]["reason"] == "item-identity-missing"
-
-    events.clear()
-    _install_fake_session(monkeypatch, [cases["completed-empty"], cases["completed-empty"]], events)
-    result, errors = asyncio.run(materials.sync_materials({}, tmp_path, course_id="course-0", reviewed_policy={}))
-    assert not errors and result["materials"] == 0
-    filtered = read_domain_catalog("materials", domain_catalog_path("materials", tmp_path))
-    assert all(r["course"]["id"] != "course-0" for r in filtered["materials"])
-
-    # A failed full roster retains timestamp and old rows while marking enrollment unknown.
-    page = _install_fake_session(monkeypatch, [cases["completed-empty"]], [])
-    page.case["roster"] = []
-    before = read_domain_catalog("materials", domain_catalog_path("materials", tmp_path))
-    with pytest.raises(CampusError) as exc:
-        asyncio.run(materials.sync_materials({}, tmp_path, reviewed_policy={}))
-    assert exc.value.code == "course-discovery-failed"
-    after = read_domain_catalog("materials", domain_catalog_path("materials", tmp_path))
-    assert after["generated_at"] == before["generated_at"]
-    assert after["materials"] == before["materials"]
-    assert after["enrollment_state"] == "unknown"
-
-
-@pytest.mark.parametrize(
-    "failure", [{"response_status": 500}, {"invalid_response": True}, {"pending": True}, {"table_ready": False}]
-)
-def test_unfinished_archive_never_replaces_course(monkeypatch, tmp_path: Path, failure: dict) -> None:
-    base = next(case for case in fixture()["cases"] if case["name"] == "modal-multiple")
-    _install_fake_session(monkeypatch, [base], [])
-    result, errors = asyncio.run(materials.sync_materials({}, tmp_path, reviewed_policy={}))
-    assert not errors and result["materials"] == 2
-    path = domain_catalog_path("materials", tmp_path)
-    before = read_domain_catalog("materials", path)
-
-    _install_fake_session(monkeypatch, [{**base, **failure}], [])
-    result, errors = asyncio.run(materials.sync_materials({}, tmp_path, reviewed_policy={}))
-    assert result["materials"] == 0
-    assert [error.code for error in errors] == ["course-sync-failed"]
-    after = read_domain_catalog("materials", path)
-    assert after["materials"] == before["materials"]
-    assert after["failed_courses"][0]["reason"] == "course-sync-failed"
-
-
-@pytest.mark.parametrize("late", ["stale_late", "outgoing_after_document"])
-def test_late_outgoing_archive_response_cannot_claim_next_course(monkeypatch, tmp_path: Path, late: str) -> None:
-    base = next(case for case in fixture()["cases"] if case["name"] == "modal-multiple")
-    _install_fake_session(monkeypatch, [base], [])
-    asyncio.run(materials.sync_materials({}, tmp_path, reviewed_policy={}))
-    path = domain_catalog_path("materials", tmp_path)
-    old_rows = read_domain_catalog("materials", path)["materials"]
-    _install_fake_session(monkeypatch, [{**base, late: True}], [])
-    result, errors = asyncio.run(materials.sync_materials({}, tmp_path, reviewed_policy={}))
-    assert result["materials"] == 0
-    assert [error.code for error in errors] == ["course-sync-failed"]
-    assert read_domain_catalog("materials", path)["materials"] == old_rows
-
-
-def test_paginated_archive_enumerates_all_posts(monkeypatch, tmp_path: Path) -> None:
-    posts = [
-        {
-            "board_item_id": f"board-{number}",
-            "title": f"Sample {number}",
-            "modal": [
-                {"data_id": f"file-{number}", "text": f"sample-{number}.pdf", "url": "javascript:;", "official": True}
-            ],
-        }
-        for number in range(11)
-    ]
-    case = {"name": "paginated", "posts": posts, "pages": [posts[:10], posts[10:]], "page_size": 10}
-    events: list[str] = []
-    _install_fake_session(monkeypatch, [case], events)
-    result, errors = asyncio.run(materials.sync_materials({}, tmp_path, reviewed_policy={}))
-    assert not errors and result["materials"] == 11
-    catalog = read_domain_catalog("materials", domain_catalog_path("materials", tmp_path))
-    assert len(catalog["materials"]) == 11
-    assert "evaluate:archiveMetadataPage" in events
-
-
-def test_unresolved_attachment_controls_keep_stale_course(monkeypatch, tmp_path: Path) -> None:
-    cases = {case["name"]: case for case in fixture()["cases"]}
-    _install_fake_session(monkeypatch, [cases["modal-multiple"]], [])
-    asyncio.run(materials.sync_materials({}, tmp_path, reviewed_policy={}))
-    path = domain_catalog_path("materials", tmp_path)
-    old_rows = read_domain_catalog("materials", path)["materials"]
-
-    events: list[str] = []
-    _install_fake_session(monkeypatch, [cases["unresolved-after-inline"]], events)
-    result, errors = asyncio.run(materials.sync_materials({}, tmp_path, reviewed_policy={}))
-    assert result["materials"] == 0
-    assert [error.code for error in errors] == ["course-sync-failed"]
-    assert "attachment controls were unresolved" in errors[0].message.lower()
-    assert read_domain_catalog("materials", path)["materials"] == old_rows
-    assert not any("archiveMetadataOpenDetail" in event for event in events)
 
 
 def test_material_collector_binds_entry_response_and_preserves_full_records() -> None:

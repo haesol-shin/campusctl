@@ -103,16 +103,16 @@ def test_browser_preflight_is_inside_lock_and_precedes_launch(tmp_path: Path, mo
 def test_refresh_runs_only_selected_domain_and_returns_updated_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from types import SimpleNamespace
-
     from campusctl import sync as sync_module
     from campusctl.domain_catalog import write_domain_catalog
+    from campusctl.providers.cnu.sync_all import DomainOutcome
 
     monkeypatch.setenv("CAMPUSCTL_DATA_DIR", str(tmp_path))
     monkeypatch.setattr(cli, "load_config", lambda: {})
     calls: list[str | None] = []
 
-    async def refresh(config: dict, root: Path, course_id: str | None, *, headless: bool):
+    async def refresh(config: dict, root: Path, domains: tuple[str, ...], course_id: str | None, **kwargs: object):
+        assert domains == ("assignments",)
         calls.append(course_id)
         write_domain_catalog(
             "assignments",
@@ -125,9 +125,9 @@ def test_refresh_runs_only_selected_domain_and_returns_updated_cache(
             },
             root / "catalog" / "assignments.json",
         )
-        return {"courses": 1, "assignments": 0}, []
+        return {"assignments": DomainOutcome({"courses": 1, "assignments": 0})}
 
-    monkeypatch.setattr(sync_module, "discover_domain_modules", lambda: {"assignments": SimpleNamespace(sync=refresh)})
+    monkeypatch.setattr(sync_module, "sync_all", refresh)
     code, output = _call(["assignments", "list", "--refresh", "--json"], capsys)
     response = json.loads(output)
     assert code == 0 and calls == [None]
@@ -136,12 +136,11 @@ def test_refresh_runs_only_selected_domain_and_returns_updated_cache(
     assert response["result"]["cache"]["generated_at"] == "2026-09-25T10:00:00Z"
 
 
-def test_numeric_course_remains_frozen_across_own_domain_writes(
+def test_numeric_course_is_resolved_before_combined_collection(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from types import SimpleNamespace
-
     from campusctl import sync as dispatcher
+    from campusctl.providers.cnu.sync_all import DomainOutcome
 
     monkeypatch.setenv("CAMPUSCTL_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("CAMPUSCTL_OUTPUT", "human")
@@ -150,28 +149,18 @@ def test_numeric_course_remains_frozen_across_own_domain_writes(
     monkeypatch.setattr(cli, "load_config", lambda: {})
     calls: list[str] = []
 
-    def module(name: str):
-        async def run(config: dict, root: Path, course_id: str | None, *, headless: bool):
-            assert course_id == "course-b"
-            calls.append(name)
-            if name == "assignments":
-                _catalog(root, [("course-b", "Beta"), ("course-c", "Gamma")])
-            return {"courses": 1}, []
+    async def collect(config: dict, root: Path, domains: tuple[str, ...], course_id: str | None, **kwargs: object):
+        assert domains == ("assignments", "notices")
+        assert course_id == "course-b"
+        _catalog(root, [("course-b", "Beta"), ("course-c", "Gamma")])
+        calls.append(course_id)
+        return {domain: DomainOutcome({"courses": 1}) for domain in domains}
 
-        return SimpleNamespace(sync=run)
-
-    monkeypatch.setattr(
-        dispatcher,
-        "discover_domain_modules",
-        lambda: {
-            "assignments": module("assignments"),
-            "notices": module("notices"),
-        },
-    )
+    monkeypatch.setattr(dispatcher, "sync_all", collect)
     code, output = _call(["sync", "--only", "assignments,notices", "--course", "1", "--json"], capsys)
     assert code == 2 and json.loads(output)["errors"][0]["code"] == "course-index-unavailable"
     code, output = _call(["sync", "--only", "assignments,notices", "--course", "1"], capsys)
-    assert code == 0 and calls == ["assignments", "notices"]
+    assert code == 0 and calls == ["course-b"]
 
 
 def test_filtered_status_preserves_invalid_source_coverage(
@@ -192,11 +181,10 @@ def test_filtered_status_preserves_invalid_source_coverage(
 def test_uncached_human_name_uses_live_roster_for_filtered_refresh(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from types import SimpleNamespace
-
     from campusctl import sync as dispatcher
     from campusctl.course_selection import resolve_course
     from campusctl.domain_catalog import write_domain_catalog
+    from campusctl.providers.cnu.sync_all import DomainOutcome
 
     monkeypatch.setenv("CAMPUSCTL_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("CAMPUSCTL_OUTPUT", "human")
@@ -207,7 +195,8 @@ def test_uncached_human_name_uses_live_roster_for_filtered_refresh(
         assert domain == "assignments" and not ids_only and not mode
         return resolve_course(selector, [{"course_id": "course-a", "label": "Alpha Study"}], ids_only=False)
 
-    async def provider(config: dict, root: Path, course_id: str | None, *, headless: bool):
+    async def provider(config: dict, root: Path, domains: tuple[str, ...], course_id: str | None, **kwargs: object):
+        assert domains == ("assignments",)
         selectors.append(course_id)
         write_domain_catalog(
             "assignments",
@@ -220,15 +209,9 @@ def test_uncached_human_name_uses_live_roster_for_filtered_refresh(
             },
             root / "catalog" / "assignments.json",
         )
-        return {"courses": 1, "assignments": 0}, []
+        return {"assignments": DomainOutcome({"courses": 1, "assignments": 0})}
 
     monkeypatch.setattr(cli, "_discover_live_course", discover)
-    monkeypatch.setattr(
-        dispatcher,
-        "discover_domain_modules",
-        lambda: {
-            "assignments": SimpleNamespace(sync=provider),
-        },
-    )
+    monkeypatch.setattr(dispatcher, "sync_all", provider)
     code, output = _call(["assignments", "list", "--course", "Alpha", "--refresh"], capsys)
     assert code == 0 and selectors == ["course-a"] and "0 assignments" in output

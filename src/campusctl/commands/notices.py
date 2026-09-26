@@ -164,6 +164,17 @@ CAPABILITY: dict[str, Any] = {
         "selected_file_routes": [],
     },
 }
+
+# Owner-held sanitized evidence (2026-09-27) approved the notice-sync pins
+# for lecture traversal, plus the bound /std/lecture -> /std/course document.
+# Keep a separate operation policy; never activate a union of section policies.
+LECTURES_SYNC_POLICY: dict[str, Any] = {
+    **CAPABILITY["policy"],
+    "read_only_evidence": "owner-held sanitized evidence (2026-09-27)",
+    "routes": [{**route, "operation": "lectures.sync"} for route in CAPABILITY["policy"]["routes"]]
+    + [{"origin": _ORIGIN, "path": "/std/course", "operation": "lectures.sync", "methods": ["GET"]}],
+    "suppress": [{**item, "operation": "lectures.sync"} for item in CAPABILITY["policy"]["suppress"]],
+}
 FETCH_POLICY: dict[str, Any] = {
     "approved": True,
     "read_only_evidence": "2026-09-25 sanitized LMS report §§1.6,2,3.1 and owner LMS pins decision",

@@ -858,6 +858,150 @@ def test_logging_route_without_reviewed_exemption_is_denied() -> None:
     assert caught.value.reason_code == "logging"
 
 
+def test_lecture_sync_reviewed_routes_and_suppressions_are_exact() -> None:
+    from campusctl.commands.notices import LECTURES_SYNC_POLICY
+
+    origin = "https://dcs-learning.cnu.ac.kr"
+    expected_get = {
+        "/std/myLecture",
+        "/std/lecture",
+        "/std/notice",
+        "/std/todo",
+        "/std/course",
+        "/properties/messages.properties",
+        "/properties/messages_ko.properties",
+    }
+    expected_post = {
+        "/api/v1/board/std/notice/list",
+        "/api/v1/week/getStdTodoList",
+        "/api/v1/course/getStdMyCourseList",
+        "/api/v1/term/getYearTermList",
+        "/api/v1/board/std/qna/list",
+        "/api/v1/boardM/getBoardItemList",
+        "/api/v1/common/checkEnableUrl",
+        "/api/v1/course/addSessionCourseInfo",
+        "/api/v1/board/courseNotice/list",
+        "/api/v1/week/getStdWeekList",
+        "/api/v1/week/getStdEtcList",
+        "/api/v1/survey/getApplyPopList",
+        "/api/v1/board/popup/noticeList",
+        "/api/v1/board/notice/list/top",
+        "/api/v1/board/notice/list",
+        "/api/v1/user/getUserInfo",
+        "/api/v1/user/getMenuList",
+        "/api/v1/alarm/getAlarmListByDate",
+        "/api/v1/course/get",
+        "/api/v1/course/getCeShortcuts",
+        "/api/v1/week/getStdActivityStatus",
+    }
+    assert LECTURES_SYNC_POLICY["approved"] is True
+    assert LECTURES_SYNC_POLICY["read_only_evidence"] == "owner-held sanitized evidence (2026-09-27)"
+    assert LECTURES_SYNC_POLICY["origins"] == [origin]
+    assert LECTURES_SYNC_POLICY["allowed_media"] == []
+    assert LECTURES_SYNC_POLICY["selected_file_routes"] == []
+    routes = LECTURES_SYNC_POLICY["routes"]
+    assert len(routes) == len(expected_get) + len(expected_post)
+    assert {(route["path"], tuple(route["methods"])) for route in routes} == {
+        *((path, ("GET",)) for path in expected_get),
+        *((path, ("POST",)) for path in expected_post),
+    }
+    assert all(route["origin"] == origin and route["operation"] == "lectures.sync" for route in routes)
+    assert {route["path"]: route["query"] for route in routes if "query" in route} == {
+        "/properties/messages.properties": {"_": "cachebuster"},
+        "/properties/messages_ko.properties": {"_": "cachebuster"},
+    }
+    assert [(route["path"], route["resource_type"]) for route in routes if route.get("logging_token_reviewed")] == [
+        ("/api/v1/week/getStdActivityStatus", "xhr")
+    ]
+    assert {
+        item["name"]: (item["origin"], item["path_template"], tuple(item["methods"]), item["reason"])
+        for item in LECTURES_SYNC_POLICY["suppress"]
+    } == {
+        "panopto-script": (origin, "/js/common/panopto-{hash}.js", ("GET",), "media-integration"),
+        "panopto-saml-script": (origin, "/js/common/panoptoSaml-{hash}.js", ("GET",), "media-integration"),
+        "panopto-sso-popup": (
+            "https://cnu.ap.panopto.com",
+            "/Panopto/Pages/Auth/Login.aspx",
+            ("POST",),
+            "panopto-sso-popup",
+        ),
+        "course-roster-image": (origin, "/upload/dunetadmin/college/{hash}.png", ("GET",), "course-roster-image"),
+        "favicon-icon": (origin, "/assets/images/favicon-{hash}.ico", ("GET",), "favicon"),
+        "external-telemetry": ("http://0.0.0.0:3000", "/v1/events", ("POST",), "telemetry"),
+        "panopto-disconnection-log": (origin, "/api/v1/panopto/addInternetDisconnectionLog", ("POST",), "logging"),
+        "panopto-connectivity-check": (origin, "/api/v1/panopto/checkInternetConnection", ("GET",), "logging"),
+    }
+    assert len(LECTURES_SYNC_POLICY["suppress"]) == 8
+    assert all(item["operation"] == "lectures.sync" for item in LECTURES_SYNC_POLICY["suppress"])
+    assert UiRequestPolicy.validate_reviewed_config(LECTURES_SYNC_POLICY)
+    policy = UiRequestPolicy.from_reviewed_config(LECTURES_SYNC_POLICY)
+    assert policy.approved
+    assert (
+        guard_ui_request(policy, origin + "/std/course", "GET", {}, operation="lectures.sync", resource_type="document")
+        == "allow"
+    )
+    assert (
+        guard_ui_request(
+            policy,
+            origin + "/api/v1/week/getStdActivityStatus",
+            "POST",
+            {},
+            operation="lectures.sync",
+            resource_type="xhr",
+        )
+        == "allow"
+    )
+    assert (
+        guard_ui_request(
+            policy,
+            "https://cnu.ap.panopto.com/Panopto/Pages/Auth/Login.aspx",
+            "POST",
+            {},
+            operation="lectures.sync",
+            resource_type="document",
+        )
+        == "suppress"
+    )
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"path": "/api/v1/week/getStdActivityStatusExtra"},
+        {"methods": ["GET"]},
+        {"resource_type": "fetch"},
+        {"operation": "lectures.play"},
+    ],
+)
+def test_lecture_sync_logging_exemption_rejects_unreviewed_variants(change: dict[str, Any]) -> None:
+    from campusctl.commands.notices import LECTURES_SYNC_POLICY
+
+    reviewed = {**LECTURES_SYNC_POLICY, "routes": [dict(route) for route in LECTURES_SYNC_POLICY["routes"]]}
+    route = next(route for route in reviewed["routes"] if route.get("logging_token_reviewed"))
+    route.update(change)
+    assert not UiRequestPolicy.validate_reviewed_config(reviewed)
+    assert not UiRequestPolicy.from_reviewed_config(reviewed).approved
+
+
+@pytest.mark.parametrize(
+    ("url", "method", "kind", "operation"),
+    [
+        ("https://dcs-learning.cnu.ac.kr/std/course", "POST", "document", "lectures.sync"),
+        ("https://dcs-learning.cnu.ac.kr/std/lectureDetail", "GET", "document", "lectures.sync"),
+        ("https://dcs-learning.cnu.ac.kr/api/v1/week/getStdActivityStatus", "POST", "fetch", "lectures.sync"),
+        ("https://dcs-learning.cnu.ac.kr/std/course", "GET", "document", "notices.sync"),
+        ("https://cnu.ap.panopto.com/Panopto/Pages/Auth/Login.aspx", "POST", "document", "lectures.play"),
+        ("https://dcs-learning.cnu.ac.kr/video/example.mp4", "GET", "media", "lectures.sync"),
+    ],
+)
+def test_lecture_sync_does_not_expand_other_authority(url: str, method: str, kind: str, operation: str) -> None:
+    from campusctl.commands.notices import LECTURES_SYNC_POLICY
+
+    policy = UiRequestPolicy.from_reviewed_config(LECTURES_SYNC_POLICY)
+    with pytest.raises(UiRequestDenied):
+        guard_ui_request(policy, url, method, {}, operation=operation, resource_type=kind)
+
+
 @pytest.mark.parametrize(
     ("domain", "operation"),
     [

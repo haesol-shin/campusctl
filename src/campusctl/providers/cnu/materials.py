@@ -9,35 +9,11 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from campusctl.browser import (
-    PROTOCOL_TIMEOUT_SECONDS,
-    bounded,
-    open_session,
-    profile_count,
-    profile_span,
-    settle_sso_popups,
-)
-from campusctl.domain_catalog import (
-    domain_catalog_path,
-    mark_enrollment_unknown,
-    merge_domain_catalog,
-    read_domain_catalog,
-    write_domain_catalog,
-)
+from campusctl.browser import PROTOCOL_TIMEOUT_SECONDS, bounded, profile_span
 from campusctl.envelope import CampusError
 from campusctl.identity import material_entity_id
 
-from .course_context import (
-    SECTION_RESPONSE_TIMEOUT_MS,
-    CourseSelection,
-    bind_on_commit,
-    open_course_section,
-    prepare_course_section,
-)
-from .courses import EXTRACT_COURSES_JS, parse_courses
-from .login import COURSE_LINK_SELECTOR, MY_LECTURE_URL, ensure_logged_in
-from .roster_diagnostics import capture_roster_failure, start_roster_requests, stop_roster_requests
-from .ui_policy import UiRequestDiagnostics, UiRequestPolicy, install_ui_request_interceptor
+from .course_context import SECTION_RESPONSE_TIMEOUT_MS, CourseSelection, bind_on_commit
 
 _MODAL = '#file_download.show, #file_download[style*="display: block"]'
 _ARCHIVE_MENU = 'a[href="/std/archive"]'
@@ -665,129 +641,7 @@ async def sync_materials(
     headless: bool = False,
     reviewed_policy: Mapping[str, Any],
 ) -> tuple[dict[str, Any], list[CampusError]]:
-    """Guard the roster and archive, then commit only fully enumerated courses."""
-    policy = UiRequestPolicy.from_reviewed_config(reviewed_policy)
-    if not policy.approved:
-        raise CampusError(
-            "policy-blocked",
-            "Materials sync policy has not been approved.",
-            "Use only an owner-reviewed operation.",
-            "error",
-        )
-    target = domain_catalog_path("materials", root)
-    async with open_session(config, data_dir=root, headless=headless, operation="materials.sync") as session:
-        page = session.page
-        with profile_span("auth", domain="materials"):
-            await ensure_logged_in(page, config, target_url=MY_LECTURE_URL, expected_selector=COURSE_LINK_SELECTOR)
-        diagnostics = UiRequestDiagnostics()
-        await settle_sso_popups(session, domain="materials")
-        guard = await install_ui_request_interceptor(
-            session.context,
-            policy,
-            operation="materials.sync",
-            diagnostics=diagnostics,
-        )
-        trace = start_roster_requests(page, headless=headless)
-        try:
-            try:
-                with profile_span("roster", domain="materials"):
-                    with profile_span("document-commit", domain="materials"):
-                        await _step(page.goto(MY_LECTURE_URL), guard, "opening guarded course roster")
-                    trace.step = "wait"
-                    with profile_span("dom-ready", domain="materials"):
-                        await _step(
-                            page.wait_for_selector(COURSE_LINK_SELECTOR, timeout=_WAIT_MS),
-                            guard,
-                            "waiting for guarded course roster",
-                        )
-                    trace.step = "evaluate"
-                    with profile_span("extract", domain="materials"):
-                        raw = await _step(page.evaluate(EXTRACT_COURSES_JS), guard, "reading guarded course roster")
-                trace.step = "parse"
-                if not isinstance(raw, list) or not raw:
-                    raise ValueError("incomplete course roster")
-                roster = parse_courses(raw)
-                if len(roster) != len(raw):
-                    raise ValueError("invalid or duplicate course roster")
-            except Exception as error:
-                guard.raise_if_denied()
-                if isinstance(error, CampusError) and error.code == "policy-blocked":
-                    raise
-                await capture_roster_failure(
-                    page, operation="materials.sync", step=trace.step, elapsed_s=trace.elapsed_s, root=root
-                )
-                mark_enrollment_unknown("materials", root)
-                raise CampusError(
-                    "course-discovery-failed",
-                    "Course roster could not be completely discovered.",
-                    "Check the LMS roster and retry.",
-                    "error",
-                ) from None
-            stop_roster_requests(page)
-            if course_id is not None and not any(course["course_id"] == course_id for course in roster):
-                raise CampusError(
-                    "course-not-found",
-                    "The requested course ID is not enrolled.",
-                    "Check the course ID and retry.",
-                    "user-action",
-                )
-            selected = [course for course in roster if course_id is None or course["course_id"] == course_id]
-            successful: set[str] = set()
-            rows: list[dict[str, Any]] = []
-            failures: list[dict[str, str]] = []
-            errors: list[CampusError] = []
-            for ordinal, course in enumerate(selected, 1):
-                try:
-                    await _step(page.goto(MY_LECTURE_URL), guard, "returning to guarded course roster")
-                    with profile_span("course-selection", domain="materials", course=ordinal):
-                        await _step(
-                            prepare_course_section(page, config, course["course_id"], "archive"),
-                            guard,
-                            "selecting guarded archive course",
-                        )
-                    profile_count("course_selections")
-                    with profile_span("document-commit", domain="materials", course=ordinal):
-                        await open_materials_section(page, guard, lambda: open_course_section(page, "archive"))
-                    course_rows = await collect_materials_rows(page, course, None, guard)
-                    guard.raise_if_denied()
-                except Exception as error:
-                    guard.raise_if_denied()
-                    if isinstance(error, CampusError) and error.code == "policy-blocked":
-                        raise
-                    reason = (
-                        error.code
-                        if isinstance(error, CampusError) and error.code == "item-identity-missing"
-                        else "course-sync-failed"
-                    )
-                    failures.append({"course_id": course["course_id"], "label": course["label"], "reason": reason})
-                    errors.append(
-                        error if isinstance(error, CampusError) and error.code == reason else _failure(reason, course)
-                    )
-                else:
-                    successful.add(course["course_id"])
-                    rows.extend(course_rows)
-            previous = read_domain_catalog("materials", target) if target.exists() else None
-            with profile_span("merge", domain="materials"):
-                merged = merge_domain_catalog(
-                    "materials",
-                    previous,
-                    roster,
-                    rows,
-                    successful_course_ids=successful,
-                    failed_courses=failures,
-                    selected_course_id=course_id,
-                )
-            with profile_span("serialize-write", domain="materials"):
-                write_domain_catalog("materials", merged, target)
-        finally:
-            stop_roster_requests(page)
-            try:
-                guard.raise_if_denied()
-            finally:
-                await guard.close()
-    return {
-        "courses": len(successful),
-        "materials": len(rows),
-        "failed_courses": failures,
-        "catalog": {"generated_at": merged["generated_at"], "enrollment_state": merged["enrollment_state"]},
-    }, errors
+    """Collect materials through the shared guarded course traversal."""
+    from .sync_all import sync_one
+
+    return await sync_one(config, root, "materials", course_id, headless=headless, reviewed_policy=reviewed_policy)
