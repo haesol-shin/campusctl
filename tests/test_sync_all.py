@@ -6,11 +6,12 @@ import asyncio
 import json
 import threading
 from collections import Counter
+from collections.abc import Iterator
 from contextlib import contextmanager
 from copy import deepcopy
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 import pytest
 

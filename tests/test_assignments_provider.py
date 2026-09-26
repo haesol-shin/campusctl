@@ -133,7 +133,9 @@ def test_standalone_rejects_unapproved_reviewed_policy_before_opening_browser(tm
 
 
 def test_standalone_sync_normalizes_all_browser_courses(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from test_sync_all import COURSES as BROWSER_COURSES, IDS, _expected_row, fixture_server
+    from test_sync_all import COURSES as BROWSER_COURSES
+    from test_sync_all import IDS, _expected_row, fixture_server
+
     from campusctl.commands.assignments import CAPABILITY
 
     with fixture_server() as server:

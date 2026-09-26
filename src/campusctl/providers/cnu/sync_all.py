@@ -15,6 +15,7 @@ from playwright.async_api import Error as PlaywrightError
 from campusctl import browser
 from campusctl.catalog import _validate_catalog as validate_lecture_catalog
 from campusctl.catalog import catalog_path, merge_catalog, read_catalog, write_catalog
+from campusctl.domain_catalog import _validate_catalog as validate_domain_catalog
 from campusctl.domain_catalog import (
     domain_catalog_path,
     mark_enrollment_unknown,
@@ -22,7 +23,6 @@ from campusctl.domain_catalog import (
     read_domain_catalog,
     write_domain_catalog,
 )
-from campusctl.domain_catalog import _validate_catalog as validate_domain_catalog
 from campusctl.envelope import CampusError
 from campusctl.providers.cnu import assignments, materials, notices
 from campusctl.providers.cnu.course_context import CourseSelection, _css_string, bind_on_commit
@@ -33,8 +33,8 @@ from campusctl.providers.cnu.roster_diagnostics import (
     start_roster_requests,
     stop_roster_requests,
 )
-from campusctl.providers.cnu.sync import COURSE_ROOM_URL_ANCHOR, _course_failure as lecture_failure
-from campusctl.providers.cnu.sync import _merge_health, collect_lectures_rows
+from campusctl.providers.cnu.sync import COURSE_ROOM_URL_ANCHOR, _merge_health, collect_lectures_rows
+from campusctl.providers.cnu.sync import _course_failure as lecture_failure
 from campusctl.providers.cnu.ui_policy import (
     UiRequestDiagnostics,
     UiRequestPolicy,
@@ -657,7 +657,7 @@ async def sync_all(
         if roster is None:
             raise CampusError("course-discovery-failed", "Course roster unavailable.", None, "error")
         prepared: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {}
-        for index, domain in enumerate(domains):
+        for domain in domains:
             try:
                 prepared[domain] = _stage_catalog(domain, staged[domain], roster, course_id, root)
             except CampusError as error:
