@@ -285,8 +285,16 @@ async def _stop_playwright(manager: Any, playwright: Any) -> None:
 
 @asynccontextmanager
 async def open_session(
-    config: dict[str, Any], *, data_dir: Path | None = None, headless: bool = False
+    config: dict[str, Any],
+    *,
+    data_dir: Path | None = None,
+    headless: bool = False,
+    operation: str | None = None,
 ) -> AsyncIterator[BrowserSession]:
+    if operation is not None:
+        from campusctl.browser_options import preflight_browser_mode
+
+        preflight_browser_mode(config, operation, override=headless)
     browser_config = config.get("browser", {})
     endpoint = browser_config.get("cdp_endpoint")
     mode = "cdp" if endpoint else "local"
