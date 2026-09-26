@@ -311,6 +311,7 @@ def test_board_rows_preserve_native_todo_identity_and_nullable_metadata() -> Non
     assert first == [
         {
             "entity_id": "cnu_notice:course-a:2026-09-01 12%3A00:7",
+            "native_id": native,
             "legacy_key": "Example Course_2026-09-01 12:00_7",
             "course": {"id": "course-a", "label": "Example Course"},
             "kind": "notice",
