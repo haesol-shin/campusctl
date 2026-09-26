@@ -27,7 +27,13 @@ from campusctl.domain_catalog import (
 from campusctl.envelope import CampusError
 from campusctl.identity import material_entity_id
 
-from .course_context import SECTION_RESPONSE_TIMEOUT_MS, CourseSelection, open_course_section, prepare_course_section
+from .course_context import (
+    SECTION_RESPONSE_TIMEOUT_MS,
+    CourseSelection,
+    bind_on_commit,
+    open_course_section,
+    prepare_course_section,
+)
 from .courses import EXTRACT_COURSES_JS, parse_courses
 from .login import COURSE_LINK_SELECTOR, MY_LECTURE_URL, ensure_logged_in
 from .roster_diagnostics import capture_roster_failure, start_roster_requests, stop_roster_requests
@@ -379,14 +385,29 @@ async def arm_materials_capture(page: Any, section_guard: Any) -> _RequestWindow
 
 
 async def open_materials_section(
-    page: Any, section_guard: Any, action: Callable[[], Any], *, capture: _RequestWindow | None = None
+    page: Any,
+    section_guard: Any,
+    action: Callable[[], Any],
+    *,
+    capture: _RequestWindow | None = None,
+    selection: CourseSelection | None = None,
 ) -> None:
-    """Open the archive with its entry observer already armed by the caller."""
-    try:
+    """Open the archive with its observer armed and bind before list XHRs."""
+
+    async def navigate() -> None:
         if capture is None:
             await _archive_navigation(page, section_guard, action)
         else:
             await _step(action(), section_guard, "opening archive section")
+
+    try:
+        if selection is None:
+            await navigate()
+        else:
+            async with bind_on_commit(
+                page, section_guard, frame=page.main_frame, expected_path="/std/archive", selection=selection
+            ):
+                await navigate()
     except BaseException:
         if capture is not None:
             capture.close()
@@ -525,25 +546,8 @@ async def _restore_archive_document(page: Any, guard: Any, selection: CourseSele
         navigation_path="/std/archive",
         settled=True,
     )
-    commits: list[Exception | None] = []
-
-    def bind(committed: Any) -> None:
-        if committed is frame:
-            try:
-                guard.bind_document(frame=frame, document_url=frame.url, selection=selection)
-            except Exception as error:
-                commits.append(error)
-            else:
-                commits.append(None)
-
-    page.on("framenavigated", bind)
-    try:
+    async with bind_on_commit(page, guard, frame=frame, expected_path="/std/archive", selection=selection):
         await _archive_navigation(page, guard, lambda: page.click(_ARCHIVE_MENU))
-        if len(commits) != 1 or commits[0] is not None:
-            raise ValueError("archive restoration document did not bind")
-        guard.raise_if_denied()
-    finally:
-        page.remove_listener("framenavigated", bind)
 
 
 async def enumerate_archive(
