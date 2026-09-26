@@ -324,10 +324,17 @@ class FakePage:
 
 
 def run_sync(
-    monkeypatch: pytest.MonkeyPatch, page: FakePage, root: Path, course_id: str | None = None
+    monkeypatch: pytest.MonkeyPatch,
+    page: FakePage,
+    root: Path,
+    course_id: str | None = None,
+    *,
+    headless: bool = False,
 ) -> tuple[Any, Any]:
     @asynccontextmanager
-    async def session(config: Any, *, data_dir: Any):
+    async def session(config: Any, *, data_dir: Any, headless: bool, operation: str):
+        assert data_dir == root and operation == "notices.sync"
+        page.open_headless = headless
         yield SimpleNamespace(page=page)
 
     async def login(page: Any, config: Any) -> None:
@@ -338,7 +345,7 @@ def run_sync(
     monkeypatch.setattr(notices, "_ORIGIN", L)
     monkeypatch.setattr(notices, "_TODO_URL", L + "/std/todo")
     monkeypatch.setattr(notices, "MY_LECTURE_URL", L + "/std/myLecture")
-    return asyncio.run(notices.sync_notices({}, root, course_id, reviewed_policy=policy()))
+    return asyncio.run(notices.sync_notices({}, root, course_id, headless=headless, reviewed_policy=policy()))
 
 
 def catalog(root: Path) -> dict[str, Any]:
@@ -361,6 +368,29 @@ def test_legacy_parser_golden_fixture() -> None:
             case["title"],
             case["is_unread"],
         )
+
+
+@pytest.mark.parametrize("headless", [False, True])
+def test_modes_keep_filtered_records_and_stale_board_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, headless: bool
+) -> None:
+    page = FakePage()
+    result, errors = run_sync(monkeypatch, page, tmp_path, headless=headless)
+    assert page.open_headless is headless
+    assert result["courses"] == 2 and not errors
+    old_b = [row for row in catalog(tmp_path)["notices"] if row["course"]["id"] == "course-b"]
+    assert len(old_b) == 1
+    page.paginated.add("course-b")
+    page.boards["course-b"] = [row("3", native_board_id(300))]
+    result, errors = run_sync(monkeypatch, page, tmp_path, headless=headless)
+    assert result["courses"] == 1 and [error.code for error in errors] == ["notice-board-paginated"]
+    stored = catalog(tmp_path)
+    assert [row for row in stored["notices"] if row["course"]["id"] == "course-b"] == old_b
+    assert stored["failed_courses"][0]["reason"] == "notice-board-paginated"
+    page.paginated.clear()
+    result, errors = run_sync(monkeypatch, page, tmp_path, "course-a", headless=headless)
+    assert result["courses"] == 1 and result["notices"] == 1 and not errors
+    assert [row for row in catalog(tmp_path)["notices"] if row["course"]["id"] == "course-b"] == old_b
 
 
 def test_two_course_board_rows_without_todo_and_no_details(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

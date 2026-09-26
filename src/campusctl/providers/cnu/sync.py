@@ -91,10 +91,10 @@ def _merge_health(
 
 
 async def sync_lectures(
-    config: dict[str, Any], root: Path, course_id: str | None = None
+    config: dict[str, Any], root: Path, course_id: str | None = None, *, headless: bool = False
 ) -> tuple[dict[str, Any], list[CampusError]]:
     """Scrape enrolled-course lecture rows and merge them into the local catalog."""
-    async with open_session(config, data_dir=root) as session:
+    async with open_session(config, data_dir=root, headless=headless, operation="lectures.sync") as session:
         page = session.page
         try:
             discovered_courses = await discover_courses(page, config)

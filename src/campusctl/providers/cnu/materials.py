@@ -489,13 +489,6 @@ async def sync_materials(
     reviewed_policy: Mapping[str, Any],
 ) -> tuple[dict[str, Any], list[CampusError]]:
     """Guard the roster and archive, then commit only fully enumerated courses."""
-    if headless:
-        raise CampusError(
-            "headless-unavailable",
-            "CNU materials headless operation has not been reviewed.",
-            "Use a visible browser session.",
-            "user-action",
-        )
     policy = UiRequestPolicy.from_reviewed_config(reviewed_policy)
     if not policy.approved:
         raise CampusError(
@@ -505,7 +498,7 @@ async def sync_materials(
             "error",
         )
     target = domain_catalog_path("materials", root)
-    async with open_session(config, data_dir=root, headless=False) as session:
+    async with open_session(config, data_dir=root, headless=headless, operation="materials.sync") as session:
         page = session.page
         await ensure_logged_in(page, config, target_url=MY_LECTURE_URL, expected_selector=COURSE_LINK_SELECTOR)
         diagnostics = UiRequestDiagnostics()

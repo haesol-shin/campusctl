@@ -312,18 +312,11 @@ async def sync_assignments(
     reviewed_policy: dict[str, Any],
 ) -> tuple[dict[str, Any], list[CampusError]]:
     """Sync only complete courses; an unpinned request prevents all publication."""
-    if headless:
-        raise CampusError(
-            "headless-unavailable",
-            "CNU assignment sync has not been verified in headless mode.",
-            "Use a visible local browser until CNU headless support is verified.",
-            "user-action",
-        )
     policy = UiRequestPolicy.from_reviewed_config(reviewed_policy)
     if not policy.approved or not any(route.operation == "assignments.sync" for route in policy.routes):
         raise CampusError("policy-unapproved", "Assignment request policy is not approved.", None, "user-action")
     diagnostics = UiRequestDiagnostics()
-    async with open_session(config, data_dir=root) as session:
+    async with open_session(config, data_dir=root, headless=headless, operation="assignments.sync") as session:
         page = session.page
         await ensure_logged_in(page, config, target_url=MY_LECTURE_URL, expected_selector=COURSE_LINK_SELECTOR)
         interceptor = await install_ui_request_interceptor(
