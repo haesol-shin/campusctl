@@ -13,6 +13,8 @@ from urllib.parse import unquote, urlsplit
 from campusctl.browser import current_profile, profile_span
 from campusctl.envelope import CampusError
 
+from .course_context import CourseSelection
+
 _REASON_CODES = frozenset({"logging", "range", "origin", "route", "method", "media", "redirect"})
 _LOG_WORDS = frozenset({"activity", "activities", "analytics", "beacon", "log", "logs", "logging", "telemetry"})
 _REVIEWED_LOGGING_READS = frozenset(
@@ -689,6 +691,20 @@ class UiRequestDiagnostics:
     suppressed_reasons: dict[str, int] = field(default_factory=dict)
 
 
+@dataclass(frozen=True, slots=True)
+class OperationEpoch:
+    """Reviewed operation window tied to a committed document and one selected course."""
+
+    number: int
+    operation: str
+    policy: UiRequestPolicy
+    course_id: str | None = None
+    selection_epoch: int | None = None
+    frame: Any | None = None
+    document_url: str | None = None
+    navigation_path: str | None = None
+
+
 class UiRequestInterceptor:
     """One installed route handler; retain denials that Playwright callback dispatch swallows."""
 
@@ -701,6 +717,7 @@ class UiRequestInterceptor:
         diagnostics: UiRequestDiagnostics,
         selected_file: SelectedFileRequest | None = None,
         selected_file_id: str | None = None,
+        require_selection: bool = False,
     ) -> None:
         self._target = page_or_context
         self._policy = policy
@@ -711,6 +728,130 @@ class UiRequestInterceptor:
         self._denial: UiRequestDenied | None = None
         self._capture: tuple[str, Callable[[Any, Any], Awaitable[None]]] | None = None
         self._installed = False
+        self._epoch = OperationEpoch(1, operation, policy)
+        self._quarantined = False
+        self._require_selection = require_selection
+        self._selection: CourseSelection | None = None
+
+    @property
+    def epoch(self) -> OperationEpoch:
+        return self._epoch
+
+    def quarantine(self) -> None:
+        """Stop old authority before admitting any request from another section."""
+        self._quarantined = True
+        self._capture = None
+        self._selected_file = None
+        self._selected_file_id = None
+
+    def bind_selection(self, selection: Any, *, frame: Any, document_url: str) -> None:
+        """Arm the first committed course-entry document of the installed route."""
+        self.raise_if_denied()
+        if (
+            self._quarantined
+            or self._epoch.course_id is not None
+            or not isinstance(selection, CourseSelection)
+            or not isinstance(selection.course_id, str)
+            or not selection.course_id
+            or selection.epoch < 1
+            or frame is None
+            or _request_parts(document_url)[1] is None
+        ):
+            raise UiRequestDenied("route")
+        epoch = self._epoch
+        self._epoch = OperationEpoch(
+            epoch.number, epoch.operation, epoch.policy, selection.course_id, selection.epoch, frame, document_url
+        )
+        self._selection = selection
+
+    def activate(
+        self,
+        policy: UiRequestPolicy,
+        *,
+        operation: str,
+        selection: Any,
+        frame: Any,
+        document_url: str,
+        navigation_path: str,
+        settled: bool,
+    ) -> OperationEpoch:
+        """Switch only after the old section settled and its selection remains bound.
+
+        The navigation path is one exact reviewed next document, never a route union.
+        A caller must re-establish the committed page/selection after navigating.
+        """
+        self.raise_if_denied()
+        if (
+            not settled
+            or not self._quarantined
+            or not policy.approved
+            or selection is not self._selection
+            or not isinstance(selection.course_id, str)
+            or selection.course_id != self._epoch.course_id
+            or not selection.course_id
+            or not document_url
+            or not navigation_path.startswith("/")
+            or not _is_exact_path(navigation_path)
+            or _request_parts(document_url)[1] is None
+            or frame is None
+        ):
+            raise UiRequestDenied("route")
+        next_epoch = OperationEpoch(
+            self._epoch.number + 1,
+            operation,
+            policy,
+            selection.course_id,
+            selection.epoch,
+            frame,
+            document_url,
+            navigation_path,
+        )
+        self._epoch = next_epoch
+        self._policy = policy
+        self._operation = operation
+        self._quarantined = False
+        return next_epoch
+
+    def bind_document(self, *, frame: Any, document_url: str, selection: Any) -> None:
+        """Replace the navigation window only after a selected document commits."""
+        epoch = self._epoch
+        self.raise_if_denied()
+        if (
+            self._quarantined
+            or frame is not epoch.frame
+            or selection is not self._selection
+            or selection.course_id != epoch.course_id
+            or _request_parts(document_url)[1] != epoch.navigation_path
+        ):
+            raise UiRequestDenied("route")
+        self._epoch = OperationEpoch(
+            epoch.number, epoch.operation, epoch.policy, epoch.course_id, epoch.selection_epoch, frame, document_url
+        )
+
+    def _check_epoch_request(self, request: Any, headers: Mapping[str, str], epoch: OperationEpoch) -> None:
+        if self._denial is not None:
+            raise self._denial
+        if self._quarantined or epoch is not self._epoch:
+            raise UiRequestDenied("route")
+        if epoch.frame is None:
+            if self._require_selection:
+                raise UiRequestDenied("route")
+            return  # Existing single-operation interceptors do not switch epochs.
+        try:
+            frame = request.frame
+        except Exception:
+            raise UiRequestDenied("route") from None
+        if frame is not epoch.frame:
+            raise UiRequestDenied("route")
+        origin, path, _, _ = _request_parts(request.url)
+        referer = next((value for key, value in headers.items() if key.casefold() == "referer"), None)
+        if request.resource_type == "document":
+            if path != epoch.navigation_path or origin != _request_parts(epoch.document_url)[0]:
+                raise UiRequestDenied("route")
+            if referer is not None and referer != epoch.document_url:
+                raise UiRequestDenied("route")
+        elif epoch.navigation_path is not None or referer != epoch.document_url:
+            raise UiRequestDenied("route")
 
     async def install(self) -> UiRequestInterceptor:
         await self._target.route("**/*", self._handle)
@@ -770,6 +911,10 @@ class UiRequestInterceptor:
 
     async def _handle_request(self, route: Any) -> None:
         request = route.request
+        epoch = self._epoch
+        capture = self._capture
+        selected_file = self._selected_file
+        selected_file_id = self._selected_file_id
         recorder = current_profile()
         resource_type = request.resource_type
         category = (
@@ -783,17 +928,18 @@ class UiRequestInterceptor:
             previous = request.redirected_from
             with profile_span("guard-headers"):
                 headers = await request.all_headers()
+            self._check_epoch_request(request, headers, epoch)
             with profile_span("guard-decision"):
                 decision = guard_ui_request(
-                    self._policy,
+                    epoch.policy,
                     request.url,
                     request.method,
                     headers,
-                    operation=self._operation,
+                    operation=epoch.operation,
                     resource_type=resource_type,
                     redirected_from=previous.url if previous is not None else None,
-                    selected_file=self._selected_file,
-                    selected_file_id=self._selected_file_id,
+                    selected_file=selected_file,
+                    selected_file_id=selected_file_id,
                 )
         except UiRequestDenied as denial:
             if self._denial is None:
@@ -802,12 +948,12 @@ class UiRequestInterceptor:
                 recorder.request(category, "blocked")
             await route.abort()
             return
-        capture = self._capture
+        # Capture and authority are fixed before awaiting request headers.
         if decision == "suppress":
             origin, path, query, _ = _request_parts(request.url)
             reason = (
                 _suppression_reason(
-                    self._policy, origin, path, query, request.method.upper(), self._operation, request.resource_type
+                    epoch.policy, origin, path, query, request.method.upper(), epoch.operation, request.resource_type
                 )
                 or "third-party-asset"
             )
@@ -829,9 +975,9 @@ class UiRequestInterceptor:
             if reason == "panopto-sso-popup":
                 await self._close_sso_popup(popup)
         elif (
-            self._selected_file is not None
+            selected_file is not None
             and request.method == "GET"
-            and request.url == f"{self._selected_file.origin}{self._selected_file.path}"
+            and request.url == f"{selected_file.origin}{selected_file.path}"
         ):
             if request.resource_type != "document":
                 if self._denial is None:
@@ -877,6 +1023,7 @@ async def install_ui_request_interceptor(
     diagnostics: UiRequestDiagnostics,
     selected_file: SelectedFileRequest | None = None,
     selected_file_id: str | None = None,
+    require_selection: bool = False,
 ) -> UiRequestInterceptor:
     """Install before the first guarded navigation; close in a finally block."""
     return await UiRequestInterceptor(
@@ -886,4 +1033,5 @@ async def install_ui_request_interceptor(
         diagnostics=diagnostics,
         selected_file=selected_file,
         selected_file_id=selected_file_id,
+        require_selection=require_selection,
     ).install()

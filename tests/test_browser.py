@@ -582,3 +582,44 @@ def test_cdp_response_size_is_limited_and_https_endpoints_are_rejected() -> None
             await server.wait_closed()
 
     _run(scenario())
+
+
+@pytest.mark.parametrize("mode", ["local", "cdp"])
+def test_owned_lock_retains_exclusion_through_cleanup_and_publication(
+    mode: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    context = FakeContext()
+    existing = FakePage(context)
+    context.pages.append(existing)
+    playwright = install_fake_playwright(monkeypatch, FakeChromium(context))
+    config: dict[str, Any] = {"browser": {"lock_path": str(tmp_path / "shared.lock")}}
+    if mode == "cdp":
+        config["browser"]["cdp_endpoint"] = "http://127.0.0.1:9223/json/version"
+
+        async def resolver(_endpoint: str) -> str:
+            return "ws://127.0.0.1:9223/devtools/browser/synthetic"
+
+        monkeypatch.setattr(browser, "resolve_cdp_ws_url", resolver)
+    else:
+        executable = tmp_path / "chromium"
+        executable.touch()
+        config["browser"]["executable_path"] = str(executable)
+
+    async def scenario() -> None:
+        published: list[bool] = []
+        with browser.session_lock(config, data_dir=tmp_path):
+            async with browser.open_session(config, data_dir=tmp_path, headless=mode != "cdp"):
+                with pytest.raises(RuntimeError, match="already active"):
+                    async with browser.open_session(config, data_dir=tmp_path, headless=mode != "cdp"):
+                        pass
+            assert playwright.stopped == 1
+            assert context.closed == (1 if mode == "local" else 0)
+            assert existing.closed == 0
+            with pytest.raises(CampusError) as caught, exclusive_lock(tmp_path / "shared.lock"):
+                pass
+            assert caught.value.code == "session-busy"
+            published.append(True)
+        with exclusive_lock(tmp_path / "shared.lock"):
+            assert published == [True]
+
+    _run(scenario())
