@@ -7,7 +7,7 @@ from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
-from campusctl.browser import pre_browser_check
+from campusctl.browser import pre_browser_check, profile_context
 from campusctl.browser_options import preflight_browser_mode
 from campusctl.catalog_view import DOMAINS, assert_course_snapshot_current
 from campusctl.commands import discover_domain_modules
@@ -44,9 +44,7 @@ def run_sync(
         raise CampusError("unsupported-domain", "Unknown sync domain.", "Use a supported --only subset.", "user-action")
     modes = {}
     for domain in selected:
-        preflight_span = profile.span("course-selection", domain=domain) if profile is not None else nullcontext()
-        with preflight_span:
-            modes[domain] = preflight_browser_mode(config, f"{domain}.sync", override=headless)
+        modes[domain] = preflight_browser_mode(config, f"{domain}.sync", override=headless)
     modules = discover_domain_modules()
 
     async def collect() -> tuple[dict[str, Any], CampusError | list[CampusError] | None]:
@@ -65,8 +63,7 @@ def run_sync(
                     if course_snapshot is not None and not entered
                     else nullcontext()
                 )
-                span = profile.span("roster", domain=domain) if profile is not None else nullcontext()
-                with check, span:
+                with check:
                     if domain == "lectures":
                         from campusctl.providers.cnu.sync import sync_lectures
 
@@ -74,8 +71,6 @@ def run_sync(
                     else:
                         result, errors = await modules[domain].sync(config, root, course_id, headless=modes[domain])
                 entered = True
-                if profile is not None and isinstance(result.get("courses"), int):
-                    profile.count("course_selections", max(result["courses"], 0))
             except CampusError as error:
                 result, errors = {}, [error]
             errors = errors or []
@@ -95,4 +90,5 @@ def run_sync(
             return {"domains": outcomes}, flattened[0]
         return {"domains": outcomes}, flattened or None
 
-    return asyncio.run(collect())
+    with profile_context(profile):
+        return asyncio.run(collect())

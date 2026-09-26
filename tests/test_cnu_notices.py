@@ -10,9 +10,11 @@ from typing import Any
 
 import pytest
 
+from campusctl.browser import profile_context
 from campusctl.commands.notices import CAPABILITY
 from campusctl.domain_catalog import domain_catalog_path, read_domain_catalog
 from campusctl.envelope import CampusError
+from campusctl.profiling import SpanRecorder
 from campusctl.providers.cnu import notices
 from campusctl.providers.cnu.ui_policy import (
     UiRequestDenied,
@@ -368,6 +370,26 @@ def test_legacy_parser_golden_fixture() -> None:
             case["title"],
             case["is_unread"],
         )
+
+
+def test_profiled_roster_steps_and_course_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    recorder = SpanRecorder(enabled=True, scope=("notices",))
+    with profile_context(recorder):
+        result, errors = run_sync(monkeypatch, FakePage(), tmp_path)
+    assert result["courses"] == 2 and not errors
+    report = recorder.finish()
+    assert report is not None
+    phases = [item["phase"] for item in report["spans"]]
+    assert phases.index("auth") < phases.index("roster") < phases.index("document-commit")
+    assert phases.index("document-commit") < phases.index("dom-ready") < phases.index("extract")
+    assert phases.index("todo") < phases.index("course-selection") < phases.index("merge")
+    assert phases.index("merge") < phases.index("serialize-write")
+    assert report["counts"]["course_selections"] == 2
+    output = capsys.readouterr()
+    assert output.out == "" and output.err.startswith("campusctl-profile: ")
+    assert "course-a" not in output.err and "Example Course" not in output.err
 
 
 @pytest.mark.parametrize("headless", [False, True])

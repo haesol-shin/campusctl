@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from campusctl.browser import PROTOCOL_TIMEOUT_SECONDS, bounded, open_session
+from campusctl.browser import PROTOCOL_TIMEOUT_SECONDS, bounded, open_session, profile_count, profile_span
 from campusctl.domain_catalog import (
     domain_catalog_path,
     mark_enrollment_unknown,
@@ -223,15 +223,19 @@ async def _course_rows(page: Any, config: dict[str, Any], course: dict[str, Any]
         )
         if activity.std_before_document:
             raise ValueError("A task response preceded this course navigation")
-        await prepare_course_section(page, config, course["course_id"], section="task")
+        with profile_span("course-selection", domain="assignments"):
+            await prepare_course_section(page, config, course["course_id"], section="task")
+        profile_count("course_selections")
         async with page.expect_response(
             activity.own_task_response, timeout=SECTION_RESPONSE_TIMEOUT_MS
         ) as response_info:
-            await open_course_section(page, "task")
+            with profile_span("document-commit", domain="assignments"):
+                await open_course_section(page, "task")
         response = await bounded(response_info.value, PROTOCOL_TIMEOUT_SECONDS, "waiting for the CNU task response")
-        completion_error = await bounded(
-            response.finished(), PROTOCOL_TIMEOUT_SECONDS, "finishing the CNU task response"
-        )
+        with profile_span("response-completion", domain="assignments"):
+            completion_error = await bounded(
+                response.finished(), PROTOCOL_TIMEOUT_SECONDS, "finishing the CNU task response"
+            )
         if completion_error is not None or response.status != 200:
             raise ValueError("Task response failed")
         headers = await bounded(
@@ -269,9 +273,10 @@ async def _course_rows(page: Any, config: dict[str, Any], course: dict[str, Any]
         )
         if page_course_id != course["course_id"]:
             raise ValueError("Task page belongs to another course")
-        extracted = await bounded(
-            page.evaluate(EXTRACT_ASSIGNMENT_ROWS_JS), PROTOCOL_TIMEOUT_SECONDS, "extracting CNU tasks"
-        )
+        with profile_span("extract", domain="assignments"):
+            extracted = await bounded(
+                page.evaluate(EXTRACT_ASSIGNMENT_ROWS_JS), PROTOCOL_TIMEOUT_SECONDS, "extracting CNU tasks"
+            )
         if (
             not isinstance(extracted, dict)
             or type(extracted.get("row_count")) is not int
@@ -318,21 +323,29 @@ async def sync_assignments(
     diagnostics = UiRequestDiagnostics()
     async with open_session(config, data_dir=root, headless=headless, operation="assignments.sync") as session:
         page = session.page
-        await ensure_logged_in(page, config, target_url=MY_LECTURE_URL, expected_selector=COURSE_LINK_SELECTOR)
+        with profile_span("auth", domain="assignments"):
+            await ensure_logged_in(page, config, target_url=MY_LECTURE_URL, expected_selector=COURSE_LINK_SELECTOR)
         interceptor = await install_ui_request_interceptor(
             session.context, policy, operation="assignments.sync", diagnostics=diagnostics
         )
         try:
             try:
-                await bounded(page.goto(MY_LECTURE_URL), PROTOCOL_TIMEOUT_SECONDS, "opening the CNU course roster")
-                await bounded(
-                    page.wait_for_selector(COURSE_LINK_SELECTOR, state="attached", timeout=COURSE_WAIT_MS),
-                    PROTOCOL_TIMEOUT_SECONDS,
-                    "waiting for the CNU course roster",
-                )
-                roster = parse_courses(
-                    await bounded(page.evaluate(EXTRACT_COURSES_JS), PROTOCOL_TIMEOUT_SECONDS, "extracting CNU courses")
-                )
+                with profile_span("roster", domain="assignments"):
+                    with profile_span("document-commit", domain="assignments"):
+                        await bounded(
+                            page.goto(MY_LECTURE_URL), PROTOCOL_TIMEOUT_SECONDS, "opening the CNU course roster"
+                        )
+                    with profile_span("dom-ready", domain="assignments"):
+                        await bounded(
+                            page.wait_for_selector(COURSE_LINK_SELECTOR, state="attached", timeout=COURSE_WAIT_MS),
+                            PROTOCOL_TIMEOUT_SECONDS,
+                            "waiting for the CNU course roster",
+                        )
+                    roster = parse_courses(
+                        await bounded(
+                            page.evaluate(EXTRACT_COURSES_JS), PROTOCOL_TIMEOUT_SECONDS, "extracting CNU courses"
+                        )
+                    )
                 interceptor.raise_if_denied()
             except Exception as error:
                 interceptor.raise_if_denied()
@@ -371,7 +384,8 @@ async def sync_assignments(
                             "course-discovery-failed", "The CNU course roster became unavailable.", None, "error"
                         ) from None
                 try:
-                    course_rows = await _course_rows(page, config, course)
+                    with profile_span("extract", domain="assignments", course=index + 1):
+                        course_rows = await _course_rows(page, config, course)
                     interceptor.raise_if_denied()
                 except Exception as error:
                     interceptor.raise_if_denied()
@@ -390,17 +404,19 @@ async def sync_assignments(
             interceptor.raise_if_denied()
             target = domain_catalog_path("assignments", root)
             previous = read_domain_catalog("assignments", target) if target.exists() else None
-            merged = merge_domain_catalog(
-                "assignments",
-                previous,
-                roster,
-                rows,
-                successful_course_ids=successful,
-                failed_courses=failures,
-                selected_course_id=course_id,
-            )
+            with profile_span("merge", domain="assignments"):
+                merged = merge_domain_catalog(
+                    "assignments",
+                    previous,
+                    roster,
+                    rows,
+                    successful_course_ids=successful,
+                    failed_courses=failures,
+                    selected_course_id=course_id,
+                )
             interceptor.raise_if_denied()
-            write_domain_catalog("assignments", merged, target)
+            with profile_span("serialize-write", domain="assignments"):
+                write_domain_catalog("assignments", merged, target)
             result = {
                 "courses": len(successful),
                 "assignments": len(rows),

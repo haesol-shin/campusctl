@@ -12,6 +12,7 @@ import pytest
 from campusctl import browser
 from campusctl.envelope import CampusError
 from campusctl.lock import exclusive_lock
+from campusctl.profiling import SpanRecorder
 
 
 class FakeCdpSession:
@@ -324,6 +325,37 @@ def test_local_mode_uses_headed_persistent_profile_and_normal_user_agent(
         assert context.closed == 1
 
     _run(scenario())
+
+
+def test_profiled_session_orders_bounded_browser_phases_and_keeps_stdout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    executable = tmp_path / "chromium"
+    executable.touch()
+    install_fake_playwright(monkeypatch, FakeChromium())
+    recorder = SpanRecorder(enabled=True, scope=("lectures",))
+
+    async def scenario() -> None:
+        with browser.profile_context(recorder):
+            async with browser.open_session(
+                {"browser": {"executable_path": str(executable)}}, data_dir=tmp_path, headless=True
+            ):
+                pass
+
+    _run(scenario())
+    report = recorder.finish()
+    assert report is not None
+    assert [span["phase"] for span in report["spans"]] == [
+        "lock",
+        "playwright",
+        "launch-connect",
+        "user-agent",
+        "teardown",
+    ]
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert output.err.startswith("campusctl-profile: ")
+    assert str(tmp_path) not in output.err
 
 
 def test_config_headless_does_not_opt_in_legacy_session_without_operation(

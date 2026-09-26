@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from campusctl.browser import PROTOCOL_TIMEOUT_SECONDS, bounded
+from campusctl.browser import PROTOCOL_TIMEOUT_SECONDS, bounded, profile_span
 
 COURSE_LINK_SELECTOR = '[data-act="moveLecture"]'
 EXTRACT_COURSES_JS = r"""() => {
@@ -44,19 +44,23 @@ def parse_courses(raw: list[dict]) -> list[dict]:
 async def discover_courses(page: object, config: dict) -> list[dict]:
     from .login import ensure_logged_in
 
-    await ensure_logged_in(page, config)
-    await bounded(
-        page.wait_for_selector(
-            COURSE_LINK_SELECTOR,
-            state="attached",
-            timeout=int(PROTOCOL_TIMEOUT_SECONDS * 1000),
-        ),
-        PROTOCOL_TIMEOUT_SECONDS,
-        "waiting for CNU course links",
-    )
-    raw = await bounded(
-        page.evaluate(EXTRACT_COURSES_JS),
-        PROTOCOL_TIMEOUT_SECONDS,
-        "extracting CNU courses",
-    )
+    with profile_span("auth", domain="lectures"):
+        await ensure_logged_in(page, config)
+    with profile_span("roster", domain="lectures"):
+        with profile_span("dom-ready", domain="lectures"):
+            await bounded(
+                page.wait_for_selector(
+                    COURSE_LINK_SELECTOR,
+                    state="attached",
+                    timeout=int(PROTOCOL_TIMEOUT_SECONDS * 1000),
+                ),
+                PROTOCOL_TIMEOUT_SECONDS,
+                "waiting for CNU course links",
+            )
+        with profile_span("extract", domain="lectures"):
+            raw = await bounded(
+                page.evaluate(EXTRACT_COURSES_JS),
+                PROTOCOL_TIMEOUT_SECONDS,
+                "extracting CNU courses",
+            )
     return parse_courses(raw)

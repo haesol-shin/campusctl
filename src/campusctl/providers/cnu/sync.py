@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from campusctl.browser import PROTOCOL_TIMEOUT_SECONDS, bounded, open_session
+from campusctl.browser import PROTOCOL_TIMEOUT_SECONDS, bounded, open_session, profile_count, profile_span
 from campusctl.catalog import catalog_path, merge_catalog, read_catalog, write_catalog
 from campusctl.envelope import CampusError
 
@@ -30,7 +30,8 @@ _LOGIN_ERRORS = {
 
 async def _open_course_list(page: Any, config: dict[str, Any]) -> None:
     """Return to the authenticated course list before entering another room."""
-    await ensure_logged_in(page, config, target_url=MY_LECTURE_URL, expected_selector=COURSE_LINK_SELECTOR)
+    with profile_span("auth", domain="lectures"):
+        await ensure_logged_in(page, config, target_url=MY_LECTURE_URL, expected_selector=COURSE_LINK_SELECTOR)
 
 
 def _is_timeout(error: Exception) -> bool:
@@ -127,26 +128,29 @@ async def sync_lectures(
         failed_course_ids: set[str] = set()
         errors: list[CampusError] = []
 
-        for course in courses:
+        for ordinal, course in enumerate(courses, 1):
             # Login and course-list failures abort before touching the catalog.
             await _open_course_list(page, config)
             current_course_id = str(course.get("course_id", ""))
             try:
-                await bounded(
-                    page.click(f'[data-act="moveLecture"][data-courseid="{current_course_id}"]'),
-                    PROTOCOL_TIMEOUT_SECONDS,
-                    "opening a CNU course",
-                )
+                with profile_span("course-selection", domain="lectures", course=ordinal):
+                    await bounded(
+                        page.click(f'[data-act="moveLecture"][data-courseid="{current_course_id}"]'),
+                        PROTOCOL_TIMEOUT_SECONDS,
+                        "opening a CNU course",
+                    )
+                profile_count("course_selections")
                 await bounded(
                     page.wait_for_selector(COURSE_ROOM_URL_ANCHOR, timeout=COURSE_ROOM_TIMEOUT_MS),
                     COURSE_ROOM_TIMEOUT_MS / 1000 + PROTOCOL_TIMEOUT_SECONDS,
                     "waiting for the CNU course lecture menu",
                 )
-                await bounded(
-                    page.click(COURSE_ROOM_URL_ANCHOR),
-                    PROTOCOL_TIMEOUT_SECONDS,
-                    "opening the CNU course lecture page",
-                )
+                with profile_span("document-commit", domain="lectures", course=ordinal):
+                    await bounded(
+                        page.click(COURSE_ROOM_URL_ANCHOR),
+                        PROTOCOL_TIMEOUT_SECONDS,
+                        "opening the CNU course lecture page",
+                    )
                 try:
                     await bounded(
                         page.wait_for_selector(
@@ -162,11 +166,12 @@ async def sync_lectures(
                         raise
                     raw_rows = []
                 else:
-                    raw_rows = await bounded(
-                        page.evaluate(EXTRACT_LEARNING_ROWS_JS),
-                        PROTOCOL_TIMEOUT_SECONDS,
-                        "extracting CNU lecture rows",
-                    )
+                    with profile_span("extract", domain="lectures", course=ordinal):
+                        raw_rows = await bounded(
+                            page.evaluate(EXTRACT_LEARNING_ROWS_JS),
+                            PROTOCOL_TIMEOUT_SECONDS,
+                            "extracting CNU lecture rows",
+                        )
                 course_lectures = parse_learning_rows(raw_rows, course)
             except CampusError as error:
                 if error.code in _LOGIN_ERRORS:
@@ -195,14 +200,16 @@ async def sync_lectures(
                     if str(lecture.get("course", {}).get("id")) in enrolled_ids
                 ],
             }
-        merged = merge_catalog(
-            previous,
-            successful_courses,
-            lectures,
-            failed_course_ids=failed_course_ids,
-        )
+        with profile_span("merge", domain="lectures"):
+            merged = merge_catalog(
+                previous,
+                successful_courses,
+                lectures,
+                failed_course_ids=failed_course_ids,
+            )
         _merge_health(merged, previous, discovered_courses, failed_courses, course_id)
-        write_catalog(merged, target)
+        with profile_span("serialize-write", domain="lectures"):
+            write_catalog(merged, target)
 
     result = {
         "courses": len(successful_courses),
