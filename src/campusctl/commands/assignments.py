@@ -301,7 +301,7 @@ async def _fetch_assignment(
     out: Path | None = None,
     headless: bool = False,
 ) -> dict[str, Any]:
-    from campusctl.browser import open_session
+    from campusctl.browser import open_session, settle_sso_popups
     from campusctl.providers.cnu.assignment_detail import capture_assignment_detail
     from campusctl.providers.cnu.login import ensure_logged_in
     from campusctl.providers.cnu.request_policy import RequestPolicy
@@ -317,8 +317,9 @@ async def _fetch_assignment(
     async with open_session(config, data_dir=root, headless=headless, operation="assignments.fetch") as session:
         page = session.page
         await ensure_logged_in(page, config)
+        await settle_sso_popups(session, domain="assignments")
         interceptor = await install_ui_request_interceptor(
-            page,
+            session.context,
             ui_policy,
             operation="assignments.fetch",
             diagnostics=diagnostics,

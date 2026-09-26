@@ -394,7 +394,7 @@ async def _fetch_notice(
     out: Path | None = None,
     headless: bool = False,
 ) -> dict[str, Any]:
-    from campusctl.browser import open_session
+    from campusctl.browser import open_session, settle_sso_popups
     from campusctl.providers.cnu.login import ensure_logged_in
     from campusctl.providers.cnu.notice_detail import capture_notice_detail
     from campusctl.providers.cnu.request_policy import RequestPolicy
@@ -410,8 +410,9 @@ async def _fetch_notice(
     async with open_session(config, data_dir=root, headless=headless, operation="notices.fetch") as session:
         page = session.page
         await ensure_logged_in(page, config)
+        await settle_sso_popups(session, domain="notices")
         interceptor = await install_ui_request_interceptor(
-            page,
+            session.context,
             ui_policy,
             operation="notices.fetch",
             diagnostics=diagnostics,

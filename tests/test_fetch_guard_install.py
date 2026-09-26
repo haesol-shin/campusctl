@@ -13,6 +13,7 @@ import pytest
 from campusctl.commands import assignments, notices
 from campusctl.envelope import CampusError
 
+CONTEXT = object()
 ROW = {"entity_id": "cnu_notice:course-1:item-1", "course": {"id": "course-1", "label": "Course 1"}}
 
 
@@ -28,12 +29,17 @@ class Guard:
 def _patch_session(monkeypatch: pytest.MonkeyPatch, guard: Guard, calls: list[str]) -> None:
     @contextlib.asynccontextmanager
     async def open_session(*args: Any, **kwargs: Any):
-        yield SimpleNamespace(page=object())
+        yield SimpleNamespace(page=object(), context=CONTEXT)
 
     async def ensure_logged_in(*args: Any) -> None:
         calls.append("login")
 
-    async def install(page: object, policy: Any, *, operation: str, diagnostics: Any) -> Guard:
+    async def settle(session: Any, *, domain: str) -> None:
+        calls.append("settle")
+
+    async def install(target: object, policy: Any, *, operation: str, diagnostics: Any) -> Guard:
+        # Context-wide routing is required so the reviewed SSO popup is guarded too.
+        assert target is CONTEXT
         calls.append(f"guard:{operation}")
         return guard
 
@@ -47,6 +53,7 @@ def _patch_session(monkeypatch: pytest.MonkeyPatch, guard: Guard, calls: list[st
         return {"status": "ok"}
 
     monkeypatch.setattr("campusctl.browser.open_session", open_session)
+    monkeypatch.setattr("campusctl.browser.settle_sso_popups", settle)
     monkeypatch.setattr("campusctl.providers.cnu.login.ensure_logged_in", ensure_logged_in)
     monkeypatch.setattr("campusctl.providers.cnu.ui_policy.install_ui_request_interceptor", install)
     monkeypatch.setattr("campusctl.providers.cnu.notice_detail.capture_notice_detail", capture)
@@ -64,7 +71,7 @@ def test_fetch_installs_guard_before_detail(
     calls: list[str] = []
     _patch_session(monkeypatch, Guard(denied=False), calls)
     assert asyncio.run(fetch({}, tmp_path, ROW)) == {"status": "ok"}
-    assert calls == ["login", f"guard:{operation}", "capture", "build"]
+    assert calls == ["login", "settle", f"guard:{operation}", "capture", "build"]
 
 
 @pytest.mark.parametrize("fetch", [notices._fetch_notice, assignments._fetch_assignment])
