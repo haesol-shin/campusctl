@@ -8,6 +8,8 @@ import json
 import os
 import shutil
 import tempfile
+import time
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -17,6 +19,7 @@ from campusctl.catalog import catalog_path
 from campusctl.domain_catalog import _validate_catalog as _validate_domain
 from campusctl.domain_catalog import domain_catalog_path
 from campusctl.envelope import CampusError
+from campusctl.lock import exclusive_lock
 from campusctl.paths import ensure_private_dir
 
 DOMAINS = ("lectures", "assignments", "notices", "materials")
@@ -141,6 +144,30 @@ def cache_metadata(catalog: dict[str, Any], *, now: datetime, domain: str | None
     }
 
 
+@contextlib.contextmanager
+def _selection_lock(root: Path, kind: str) -> Iterator[None]:
+    error = CampusError(
+        "selection-write-failed",
+        f"The printed {kind} selection could not be saved.",
+        f"Run 'campusctl {kind} list' again.",
+        "error",
+    )
+    try:
+        ensure_private_dir(root)
+    except OSError:
+        raise error from None
+    deadline = time.monotonic() + 0.4
+    while True:
+        try:
+            with exclusive_lock(root / "selection.lock"):
+                yield
+            return
+        except CampusError as failure:
+            if failure.code != "session-busy" or time.monotonic() >= deadline:
+                raise error from None
+            time.sleep(0.01)
+
+
 def _fsync_directory(path: Path) -> None:
     if hasattr(os, "O_DIRECTORY"):
         directory_fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
@@ -151,8 +178,12 @@ def _fsync_directory(path: Path) -> None:
 
 
 def _write_selection(target: Path, payload: dict[str, Any], kind: str) -> None:
+    with _selection_lock(target.parent.parent, kind):
+        _write_selection_locked(target, payload, kind)
+
+
+def _write_selection_locked(target: Path, payload: dict[str, Any], kind: str) -> None:
     backup: Path | None = None
-    published_identity: tuple[int, int] | None = None
     replaced = False
     try:
         ensure_private_dir(target.parent)
@@ -171,28 +202,18 @@ def _write_selection(target: Path, payload: dict[str, Any], kind: str) -> None:
                     shutil.copyfileobj(source, old)
                     old.flush()
                     os.fsync(old.fileno())
-            published = temp.stat()
-            published_identity = (published.st_dev, published.st_ino)
             os.replace(temp, target)
             replaced = True
             _fsync_directory(target.parent)
         except BaseException:
-            # Another successful list may have replaced ours during directory sync.
-            # Never roll that writer back to our older backup.
-            if replaced and published_identity is not None:
-                try:
-                    current = target.stat()
-                    still_ours = (current.st_dev, current.st_ino) == published_identity
-                except FileNotFoundError:
-                    still_ours = False
-                if still_ours:
-                    if backup is not None:
-                        os.replace(backup, target)
-                        backup = None
-                    else:
-                        target.unlink(missing_ok=True)
-                    with contextlib.suppress(OSError):
-                        _fsync_directory(target.parent)
+            if replaced:
+                if backup is not None:
+                    os.replace(backup, target)
+                    backup = None
+                else:
+                    target.unlink(missing_ok=True)
+                with contextlib.suppress(OSError):
+                    _fsync_directory(target.parent)
             with contextlib.suppress(OSError):
                 temp.unlink(missing_ok=True)
             raise

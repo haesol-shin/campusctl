@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -24,6 +26,7 @@ from campusctl.catalog_view import (
 )
 from campusctl.domain_catalog import domain_catalog_path, write_domain_catalog
 from campusctl.envelope import CampusError
+from campusctl.lock import exclusive_lock
 
 NOW = datetime(2026, 1, 1, 12, tzinfo=UTC)
 
@@ -203,24 +206,57 @@ def test_failed_post_replace_sync_preserves_last_material_number(
     assert list(material_snapshot_path(tmp_path).parent.glob("*.bak")) == []
 
 
-def test_failed_writer_does_not_undo_newer_successful_list(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_failed_writer_serializes_newer_successful_list(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = domain_catalog_path("materials", tmp_path)
     write_domain_catalog("materials", {"courses": [_course("id-a", "A")]}, path)
     generation = catalog_snapshot("materials", tmp_path)[1]
     publish_material_snapshot(tmp_path, generation, ["material:a"])
+    b_installed = threading.Event()
+    release_b = threading.Event()
+    c_started = threading.Event()
+    c_done = threading.Event()
     calls = 0
 
-    def newer_writer_then_fail(_path: Path) -> None:
+    def fail_b_after_c_starts(_path: Path) -> None:
         nonlocal calls
         calls += 1
         if calls == 1:
-            publish_material_snapshot(tmp_path, generation, ["material:c"])
-            raise OSError("synthetic older writer failure")
+            b_installed.set()
+            assert release_b.wait(2)
+            raise OSError("synthetic B directory sync failure")
 
-    monkeypatch.setattr("campusctl.catalog_view._fsync_directory", newer_writer_then_fail)
-    with pytest.raises(CampusError) as failure:
-        publish_material_snapshot(tmp_path, generation, ["material:b"])
-    assert failure.value.code == "selection-write-failed"
+    monkeypatch.setattr("campusctl.catalog_view._fsync_directory", fail_b_after_c_starts)
+
+    def writer_c() -> None:
+        c_started.set()
+        publish_material_snapshot(tmp_path, generation, ["material:c"])
+        c_done.set()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        failing_b = pool.submit(publish_material_snapshot, tmp_path, generation, ["material:b"])
+        try:
+            assert b_installed.wait(2)
+            succeeding_c = pool.submit(writer_c)
+            assert c_started.wait(2)
+            assert not c_done.wait(0.05)
+        finally:
+            release_b.set()
+        with pytest.raises(CampusError) as failure:
+            failing_b.result(timeout=2)
+        assert failure.value.code == "selection-write-failed"
+        succeeding_c.result(timeout=2)
+    assert c_done.is_set()
     assert resolve_material_number(tmp_path, "1")[0] == "material:c"
-    assert calls == 2
+    assert calls == 3
     assert list(material_snapshot_path(tmp_path).parent.glob("*.bak")) == []
+
+
+def test_selection_lock_timeout_keeps_previous_list(tmp_path: Path) -> None:
+    path = domain_catalog_path("materials", tmp_path)
+    write_domain_catalog("materials", {"courses": [_course("id-a", "A")]}, path)
+    generation = catalog_snapshot("materials", tmp_path)[1]
+    publish_material_snapshot(tmp_path, generation, ["material:a"])
+    with exclusive_lock(tmp_path / "selection.lock"), pytest.raises(CampusError) as failure:
+        publish_material_snapshot(tmp_path, generation, ["material:b"])
+    assert (failure.value.code, failure.value.status) == ("selection-write-failed", "error")
+    assert resolve_material_number(tmp_path, "1")[0] == "material:a"
