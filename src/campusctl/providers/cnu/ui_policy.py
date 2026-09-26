@@ -30,6 +30,7 @@ _REVIEWED_LOGGING_READS = frozenset(
         "materials.sync",
         "materials.download",
         "notices.sync",
+        "lectures.sync",
         # Owner-approved 2026-09-27: fetch course entry needs the same read to avoid a blocking modal.
         "assignments.fetch",
         "notices.fetch",
@@ -91,7 +92,15 @@ _FILE_TEMPLATES = {
 }
 _PANOPTO_ORIGIN = "https://cnu.ap.panopto.com"
 _PANOPTO_OPERATIONS = frozenset(
-    {"assignments.sync", "notices.sync", "materials.sync", "materials.download", "assignments.fetch", "notices.fetch"}
+    {
+        "assignments.sync",
+        "notices.sync",
+        "lectures.sync",
+        "materials.sync",
+        "materials.download",
+        "assignments.fetch",
+        "notices.fetch",
+    }
 )
 _QUERY_KINDS = {"_": "cachebuster", "e": "encrypted", "curPage": "page", "no": "board-item-id"}
 _POLICY_KEYS = frozenset(

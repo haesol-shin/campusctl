@@ -9,35 +9,11 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from campusctl.browser import (
-    PROTOCOL_TIMEOUT_SECONDS,
-    bounded,
-    open_session,
-    profile_count,
-    profile_span,
-    settle_sso_popups,
-)
-from campusctl.domain_catalog import (
-    domain_catalog_path,
-    mark_enrollment_unknown,
-    merge_domain_catalog,
-    read_domain_catalog,
-    write_domain_catalog,
-)
+from campusctl.browser import PROTOCOL_TIMEOUT_SECONDS, bounded, profile_span
 from campusctl.envelope import CampusError
 from campusctl.identity import assignment_entity_id
 
-from .course_context import (
-    SECTION_RESPONSE_TIMEOUT_MS,
-    CourseSelection,
-    bind_on_commit,
-    open_course_section,
-    prepare_course_section,
-)
-from .courses import COURSE_LINK_SELECTOR, EXTRACT_COURSES_JS, parse_courses
-from .login import MY_LECTURE_URL, ensure_logged_in
-from .roster_diagnostics import capture_roster_failure, start_roster_requests, stop_roster_requests
-from .ui_policy import UiRequestDiagnostics, UiRequestPolicy, install_ui_request_interceptor
+from .course_context import SECTION_RESPONSE_TIMEOUT_MS, CourseSelection, bind_on_commit
 
 TASK_TABLE_SELECTOR = "#table_list tbody#tbody"
 TASK_RESPONSE_PATH = "/api/v1/task/stdList"
@@ -165,7 +141,6 @@ class _PageActivity:
         self.document_count = 0
         self.responses: list[Any] = []
         self.response_seen = asyncio.Event()
-        self.legacy_response: Any | None = None
         self.closed = False
 
     def start(self) -> None:
@@ -294,13 +269,12 @@ async def collect_assignment_rows(
         ):
             raise ValueError("Task selection belongs to another course")
         section_guard.raise_if_denied()
-        if activity.legacy_response is None:
-            await bounded(
-                asyncio.wait_for(activity.response_seen.wait(), SECTION_RESPONSE_TIMEOUT_MS / 1000),
-                SECTION_RESPONSE_TIMEOUT_MS / 1000 + PROTOCOL_TIMEOUT_SECONDS,
-                "waiting for the CNU task response",
-            )
-        response = activity.legacy_response or activity.responses[0]
+        await bounded(
+            asyncio.wait_for(activity.response_seen.wait(), SECTION_RESPONSE_TIMEOUT_MS / 1000),
+            SECTION_RESPONSE_TIMEOUT_MS / 1000 + PROTOCOL_TIMEOUT_SECONDS,
+            "waiting for the CNU task response",
+        )
+        response = activity.responses[0]
         return await _collect_assignment_rows(page, course, activity, response, section_guard)
     finally:
         activity.close()
@@ -380,33 +354,6 @@ async def _collect_assignment_rows(
     return parse_assignment_rows(raw, course)
 
 
-async def _course_rows(page: Any, config: dict[str, Any], course: dict[str, Any], guard: Any) -> list[dict[str, Any]]:
-    """Legacy one-domain traversal, sharing the collector's section proof."""
-    activity = arm_assignment_capture(page, guard)
-    try:
-        await bounded(
-            page.wait_for_load_state("networkidle", timeout=COURSE_WAIT_MS),
-            PROTOCOL_TIMEOUT_SECONDS,
-            "waiting for the previous CNU course requests to settle",
-        )
-        if activity.std_before_document:
-            raise ValueError("A task response preceded this course navigation")
-        with profile_span("course-selection", domain="assignments"):
-            await prepare_course_section(page, config, course["course_id"], section="task")
-        profile_count("course_selections")
-        async with page.expect_response(
-            activity.own_task_response, timeout=SECTION_RESPONSE_TIMEOUT_MS
-        ) as response_info:
-            with profile_span("document-commit", domain="assignments"):
-                await open_assignment_section(page, guard, lambda: open_course_section(page, "task"), capture=activity)
-        activity.legacy_response = await bounded(
-            response_info.value, PROTOCOL_TIMEOUT_SECONDS, "waiting for the CNU task response"
-        )
-        return await collect_assignment_rows(page, course, None, guard, capture=activity)
-    finally:
-        activity.close()
-
-
 def _course_failure(course: dict[str, Any], reason: str) -> CampusError:
     return CampusError(
         reason,
@@ -422,132 +369,9 @@ async def sync_assignments(
     course_id: str | None = None,
     *,
     headless: bool = False,
-    reviewed_policy: dict[str, Any],
+    reviewed_policy: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], list[CampusError]]:
-    """Sync only complete courses; an unpinned request prevents all publication."""
-    policy = UiRequestPolicy.from_reviewed_config(reviewed_policy)
-    if not policy.approved or not any(route.operation == "assignments.sync" for route in policy.routes):
-        raise CampusError("policy-unapproved", "Assignment request policy is not approved.", None, "user-action")
-    diagnostics = UiRequestDiagnostics()
-    async with open_session(config, data_dir=root, headless=headless, operation="assignments.sync") as session:
-        page = session.page
-        with profile_span("auth", domain="assignments"):
-            await ensure_logged_in(page, config, target_url=MY_LECTURE_URL, expected_selector=COURSE_LINK_SELECTOR)
-        await settle_sso_popups(session, domain="assignments")
-        interceptor = await install_ui_request_interceptor(
-            session.context, policy, operation="assignments.sync", diagnostics=diagnostics
-        )
-        trace = start_roster_requests(page, headless=headless)
-        try:
-            try:
-                with profile_span("roster", domain="assignments"):
-                    with profile_span("document-commit", domain="assignments"):
-                        await bounded(
-                            page.goto(MY_LECTURE_URL), PROTOCOL_TIMEOUT_SECONDS, "opening the CNU course roster"
-                        )
-                    trace.step = "wait"
-                    with profile_span("dom-ready", domain="assignments"):
-                        await bounded(
-                            page.wait_for_selector(COURSE_LINK_SELECTOR, state="attached", timeout=COURSE_WAIT_MS),
-                            PROTOCOL_TIMEOUT_SECONDS,
-                            "waiting for the CNU course roster",
-                        )
-                    trace.step = "evaluate"
-                    raw_roster = await bounded(
-                        page.evaluate(EXTRACT_COURSES_JS), PROTOCOL_TIMEOUT_SECONDS, "extracting CNU courses"
-                    )
-                    trace.step = "parse"
-                    roster = parse_courses(raw_roster)
-                interceptor.raise_if_denied()
-            except Exception as error:
-                interceptor.raise_if_denied()
-                if isinstance(error, CampusError) and error.code in {"login-action-required", "login-failed"}:
-                    raise
-                await capture_roster_failure(
-                    page, operation="assignments.sync", step=trace.step, elapsed_s=trace.elapsed_s, root=root
-                )
-                if course_id is None:
-                    mark_enrollment_unknown("assignments", root)
-                raise CampusError(
-                    "course-discovery-failed",
-                    "Assignment course discovery did not complete.",
-                    "Retry assignment sync after the LMS course list loads.",
-                    "error",
-                ) from None
-            stop_roster_requests(page)
-            courses = roster if course_id is None else [course for course in roster if course["course_id"] == course_id]
-            if not courses and course_id is not None:
-                raise CampusError(
-                    "course-not-found",
-                    "The requested course ID was not found among enrolled courses.",
-                    "Check the course ID and retry.",
-                    "user-action",
-                )
-            rows: list[dict[str, Any]] = []
-            failures: list[dict[str, str]] = []
-            errors: list[CampusError] = []
-            successful: set[str] = set()
-            for index, course in enumerate(courses):
-                if index:
-                    trace = start_roster_requests(page, headless=headless)
-                    try:
-                        await bounded(
-                            page.goto(MY_LECTURE_URL), PROTOCOL_TIMEOUT_SECONDS, "returning to the CNU course roster"
-                        )
-                        interceptor.raise_if_denied()
-                    except Exception:
-                        interceptor.raise_if_denied()
-                        await capture_roster_failure(
-                            page, operation="assignments.sync", step="goto", elapsed_s=trace.elapsed_s, root=root
-                        )
-                        raise CampusError(
-                            "course-discovery-failed", "The CNU course roster became unavailable.", None, "error"
-                        ) from None
-                    finally:
-                        stop_roster_requests(page)
-                try:
-                    with profile_span("extract", domain="assignments", course=index + 1):
-                        course_rows = await _course_rows(page, config, course, interceptor)
-                    interceptor.raise_if_denied()
-                except Exception as error:
-                    interceptor.raise_if_denied()
-                    if isinstance(error, CampusError) and error.code in {"login-action-required", "login-failed"}:
-                        raise
-                    reason = (
-                        "item-identity-missing"
-                        if isinstance(error, CampusError) and error.code == "item-identity-missing"
-                        else "course-sync-failed"
-                    )
-                    failures.append({"course_id": course["course_id"], "label": course["label"], "reason": reason})
-                    errors.append(_course_failure(course, reason))
-                else:
-                    successful.add(course["course_id"])
-                    rows.extend(course_rows)
-            interceptor.raise_if_denied()
-            target = domain_catalog_path("assignments", root)
-            previous = read_domain_catalog("assignments", target) if target.exists() else None
-            with profile_span("merge", domain="assignments"):
-                merged = merge_domain_catalog(
-                    "assignments",
-                    previous,
-                    roster,
-                    rows,
-                    successful_course_ids=successful,
-                    failed_courses=failures,
-                    selected_course_id=course_id,
-                )
-            interceptor.raise_if_denied()
-            with profile_span("serialize-write", domain="assignments"):
-                write_domain_catalog("assignments", merged, target)
-            result = {
-                "courses": len(successful),
-                "assignments": len(rows),
-                "failed_courses": failures,
-                "catalog": {"generated_at": merged["generated_at"], "enrollment_state": merged["enrollment_state"]},
-                "suppressed_count": diagnostics.suppressed_count,
-                "suppressed_reasons": dict(diagnostics.suppressed_reasons),
-            }
-            return result, errors
-        finally:
-            stop_roster_requests(page)
-            await interceptor.close()
+    """Sync assignment rows through the shared guarded course traversal."""
+    from .sync_all import sync_one
+
+    return await sync_one(config, root, "assignments", course_id, headless=headless, reviewed_policy=reviewed_policy)

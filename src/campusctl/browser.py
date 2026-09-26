@@ -424,6 +424,7 @@ async def open_session(
     data_dir: Path | None = None,
     headless: bool | None = None,
     operation: str | None = None,
+    require_owned_page: bool = False,
 ) -> AsyncIterator[BrowserSession]:
     if operation is not None:
         headless = preflight_browser_mode(config, operation, override=headless)
@@ -501,11 +502,13 @@ async def open_session(
                     )
                 context = contexts[0]
                 pages = context.pages
-                if pages:
-                    page = pages[0]
-                else:
+                if require_owned_page or not pages:
+                    # Combined sync owns a fresh page even when CDP has parked tabs.
+                    # Cleanup closes this page beneath the still-installed request guard.
                     page = await bounded(context.new_page(), PROTOCOL_TIMEOUT_SECONDS, "opening a browser page")
                     owns_page = True
+                else:
+                    page = pages[0]
             else:
                 _check_chromium(playwright, browser_config.get("executable_path"))
                 profile_dir = root / "profile" / str(config.get("provider", "cnu"))
@@ -538,6 +541,7 @@ async def open_session(
                 )
 
             if operation in {
+                "lectures.sync",
                 "assignments.sync",
                 "notices.sync",
                 "materials.sync",

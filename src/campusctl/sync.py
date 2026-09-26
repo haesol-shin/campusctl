@@ -3,15 +3,14 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
-from campusctl.browser import pre_browser_check, profile_context
+from campusctl.browser import profile_context
 from campusctl.browser_options import preflight_browser_mode
-from campusctl.catalog_view import DOMAINS, assert_course_snapshot_current
-from campusctl.commands import discover_domain_modules
+from campusctl.catalog_view import DOMAINS
 from campusctl.envelope import CampusError, error_item
+from campusctl.providers.cnu.sync_all import DomainOutcome, sync_all
 
 
 def parse_domains(value: str | None) -> tuple[str, ...]:
@@ -38,57 +37,40 @@ def run_sync(
     profile: Any = None,
     course_snapshot: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], CampusError | list[CampusError] | None]:
-    """Validate every mode before dispatch; keep committed domain outcomes visible."""
+    """Validate all requested modes, then collect in one guarded session."""
     selected = tuple(domain for domain in DOMAINS if domain in domains)
     if len(selected) != len(set(domains)) or not selected:
         raise CampusError("unsupported-domain", "Unknown sync domain.", "Use a supported --only subset.", "user-action")
-    modes = {}
-    for domain in selected:
-        modes[domain] = preflight_browser_mode(config, f"{domain}.sync", override=headless)
-    modules = discover_domain_modules()
+    modes = {domain: preflight_browser_mode(config, f"{domain}.sync", override=headless) for domain in selected}
 
     async def collect() -> tuple[dict[str, Any], CampusError | list[CampusError] | None]:
-        outcomes: dict[str, dict[str, Any]] = {}
-        flattened: list[CampusError] = []
-        committed = False
-        halted = False
-        entered = False
-        for domain in selected:
-            if halted:
-                outcomes[domain] = {"status": "not-started", "result": {}, "errors": []}
-                continue
-            try:
-                check = (
-                    pre_browser_check(lambda: assert_course_snapshot_current(root, course_snapshot))
-                    if course_snapshot is not None and not entered
-                    else nullcontext()
-                )
-                with check:
-                    if domain == "lectures":
-                        from campusctl.providers.cnu.sync import sync_lectures
-
-                        result, errors = await sync_lectures(config, root, course_id, headless=modes[domain])
-                    else:
-                        result, errors = await modules[domain].sync(config, root, course_id, headless=modes[domain])
-                entered = True
-            except CampusError as error:
-                result, errors = {}, [error]
-            errors = errors or []
-            flattened.extend(errors)
-            status = "partial" if result and errors else errors[0].status if errors else "ok"
-            outcomes[domain] = {"status": status, "result": result, "errors": [error_item(error) for error in errors]}
-            committed |= bool(result)
-            halted = any(
-                error.status in {"busy", "user-action"}
-                or error.code in {"policy-blocked", "authentication-failed", "auth-failed", "login-failed"}
-                for error in errors
+        try:
+            outcomes = await sync_all(
+                config, root, selected, course_id, headless=modes[selected[0]], course_snapshot=course_snapshot
             )
+        except CampusError as error:
+            outcomes = {selected[0]: DomainOutcome(errors=[error], status=error.status)}
+            outcomes.update({domain: DomainOutcome(status="not-started") for domain in selected[1:]})
+        flattened: list[CampusError] = []
+        visible: dict[str, dict[str, Any]] = {}
+        committed = False
+        for domain in selected:
+            outcome = outcomes[domain]
+            flattened.extend(outcome.errors)
+            committed |= bool(outcome.result)
+            status = outcome.status or (
+                "partial" if outcome.result and outcome.errors else outcome.errors[0].status if outcome.errors else "ok"
+            )
+            visible[domain] = {
+                "status": status,
+                "result": outcome.result,
+                "errors": [error_item(error) for error in outcome.errors],
+            }
         if len(selected) == 1:
-            outcome = outcomes[selected[0]]
-            return outcome["result"], (flattened[0] if flattened and not outcome["result"] else flattened or None)
-        if flattened and not committed:
-            return {"domains": outcomes}, flattened[0]
-        return {"domains": outcomes}, flattened or None
+            result = visible[selected[0]]["result"]
+            return result, (flattened[0] if flattened and not result else flattened or None)
+        result = {"domains": visible}
+        return result, flattened[0] if flattened and not committed else flattened or None
 
     with profile_context(profile):
         return asyncio.run(collect())

@@ -1,0 +1,918 @@
+"""P2f public sync against a loopback LMS and real Chromium, never a live account."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import threading
+from collections import Counter
+from contextlib import contextmanager
+from copy import deepcopy
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from typing import Any, Iterator
+
+import pytest
+
+from campusctl.catalog import catalog_path, read_catalog, write_catalog
+from campusctl.commands import assignments as assignment_command
+from campusctl.commands import materials as material_command
+from campusctl.commands import notices as notice_command
+from campusctl.domain_catalog import domain_catalog_path, read_domain_catalog, write_domain_catalog
+from campusctl.providers.cnu import assignments, login, materials, notices, sync_all
+from campusctl.providers.cnu.sync import sync_lectures
+from campusctl.sync import run_sync
+
+IDS = tuple(f"course-{n}.invalid" for n in range(1, 8))
+COURSES = [{"course_id": cid, "label": f"Fixture Course {n}", "class_no": "01"} for n, cid in enumerate(IDS, 1)]
+DOMAINS = ("lectures", "assignments", "notices", "materials")
+
+
+def _topbar(*, wrong_selection: bool = False) -> str:
+    links = "".join(
+        f'<a data-act="changeLecture" data-courseid="{cid}">Fixture Course {i}</a>' for i, cid in enumerate(IDS, 1)
+    )
+    selected = f"'{IDS[1]}'" if wrong_selection else "sessionStorage.selected"
+    return f"""<span id="topbarCurrentLecture"></span><div id="topbarLectureDropdown">{links}</div>
+<script>document.getElementById('topbarCurrentLecture').textContent =
+ document.querySelector('#topbarLectureDropdown [data-courseid="' + {selected} + '"]').textContent;</script>"""
+
+
+def _roster() -> str:
+    links = "".join(
+        f'<a data-act="moveLecture" data-courseid="{cid}" data-coursenm="Fixture Course {i}" '
+        f'data-classno="01" href="/std/lecture">Fixture Course {i}</a>'
+        for i, cid in enumerate(IDS, 1)
+    )
+    return f"""{links}<script>
+for (const a of document.querySelectorAll('[data-act="moveLecture"]')) a.addEventListener('click', async e => {{
+ e.preventDefault(); const id = a.dataset.courseid;
+ const response = await fetch('/api/v1/course/addSessionCourseInfo', {{method:'POST',
+ headers:{{'Content-Type':'application/json'}}, body:JSON.stringify({{course_id:id}})}});
+ await response.json(); sessionStorage.selected=id;
+ await new Promise(resolve => setTimeout(resolve, 100));
+ location.href='/std/lecture';
+}});
+</script>"""
+
+
+def _menu() -> str:
+    return '<nav><a href="/std/course">Lectures</a><a href="/std/task">Tasks</a><a href="/std/notice">Notices</a><a href="/std/archive">Archive</a></nav>'
+
+
+def _document(
+    path: str,
+    *,
+    unreviewed: bool = False,
+    wrong_topbar: bool = False,
+    archive_count_mismatch: bool = False,
+    malformed_todo: bool = False,
+) -> str:
+    if path == "/std/myLecture":
+        body = _roster()
+    elif path == "/std/lecture":
+        body = _topbar(wrong_selection=wrong_topbar) + _menu()
+    elif path == "/std/course":
+        body = (
+            _topbar()
+            + _menu()
+            + """<div class="learningRow" id="LV1" data-moduletype="LV"
+ data-state="N" data-openyn="Y" data-weekno="2" data-seqno="1">
+ <span data-act="titleDetailContents">Fixture lesson</span></div>"""
+        )
+    elif path == "/std/task":
+        body = (
+            _topbar()
+            + _menu()
+            + """<table id="table_list"><tbody id="tbody">
+<tr><td><a data-act="detail" data-id="TB_L_REPORT101"><strong>Fixture task</strong></a>
+ 2026-09-01 ~ 2026-09-30</td><td>미완료</td></tr></tbody></table>
+<script>fetch('/api/v1/task/stdList',{method:'POST',body:JSON.stringify({course_id:sessionStorage.selected})});</script>"""
+        )
+        if unreviewed:
+            body += '<script>fetch("/api/v1/unreviewedMetadata",{method:"POST"});</script>'
+    elif path == "/std/todo":
+        rows = "".join(
+            f"""<div class="tabulator-row"><span class="tabulator-cell" tabulator-field="no">{i}</span>
+<span class="tabulator-cell" tabulator-field="course_nm">Fixture Course {i}</span>
+<span class="tabulator-cell" tabulator-field="title">Fixture notice</span>
+<span class="tabulator-cell" tabulator-field="date">{"invalid-date" if malformed_todo and i == 1 else "2026-09-02 09:00"}</span>
+<span class="tabulator-cell" tabulator-field="read_yn">읽지않음</span>
+<a data-boarditem_no="TB_L_BOARDITEM{i}01">Notice</a></div>"""
+            for i in range(1, 8)
+        )
+        body = f"""<div id="noticeList"><div class="tabulator">{rows}</div></div>
+<script>fetch('/api/v1/board/std/notice/list',{{method:'POST'}});</script>"""
+    elif path == "/std/notice":
+        body = (
+            _topbar()
+            + _menu()
+            + """<main class="card"><table class="table mb-0" data-page-size="10">
+<tbody id="table-body"></tbody></table><div class="pagination"><a data-page="1">1</a></div></main>
+<script>
+const n=Number(sessionStorage.selected.match(/(\\d+)\\.invalid$/)[1]);
+document.getElementById('table-body').innerHTML='<tr><td><a href="/std/noticeDetail?no=TB_L_BOARDITEM'+n+'01">Fixture notice</a></td></tr>';
+fetch('/api/v1/board/notice/list/top',{method:'POST',headers:{'X-Fixture-Course':sessionStorage.selected}});
+fetch('/api/v1/board/notice/list',{method:'POST',headers:{'X-Fixture-Course':sessionStorage.selected}});
+</script>"""
+        )
+    elif path == "/std/archive":
+        body = (
+            _topbar()
+            + _menu()
+            + """<div id="totalCnt"><strong>1</strong></div>
+<table id="table_list" data-page-size="10"><tbody id="listBody"><tr><td>
+<a data-act="detail" data-id="post-1">Fixture handout</a>
+<button data-act="file" data-boarditem_no="post-1" onclick="showFiles()">Files</button>
+</td></tr></tbody></table><div id="listPage"><div class="page-item active"><a data-page="1">1</a></div></div>
+<div id="listBlankDiv" style="display:none"></div>
+<div id="file_download" style="display:none"><a data-act="downloadFile" data-id="file-1"
+ data-mime="application/pdf" data-size="123">Handout.pdf</a></div>
+<script>
+fetch('/api/v1/archive/list',{method:'POST'});
+async function showFiles(){await fetch('/api/v1/archive/getAttachFileList?e=fixture',
+ {headers:{'X-Fixture-Course':sessionStorage.selected}});
+ document.getElementById('file_download').style.display='block';}
+</script>"""
+        )
+        if archive_count_mismatch:
+            body += """<script>if (sessionStorage.selected === 'course-4.invalid')
+ document.querySelector('#totalCnt strong').textContent = '2';</script>"""
+    else:
+        raise AssertionError(path)
+    return '<!doctype html><html><head><meta charset="utf-8"></head><body>' + body + "</body></html>"
+
+
+class FixtureServer(ThreadingHTTPServer):
+    def __init__(self) -> None:
+        self.requests: list[tuple[str, str, str | None]] = []
+        self.unreviewed = False
+        self.board_paginated = False
+        self.task_count_mismatch = False
+        self.archive_count_mismatch = False
+        self.wrong_topbar = False
+        self.malformed_todo = False
+        super().__init__(("127.0.0.1", 0), FixtureHandler)
+
+
+class FixtureHandler(BaseHTTPRequestHandler):
+    server: FixtureServer
+
+    def _respond(self, body: str | dict[str, Any], status: int = 200) -> None:
+        data = (json.dumps(body) if isinstance(body, dict) else body).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json" if isinstance(body, dict) else "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _handle(self) -> None:
+        path = self.path.split("?", 1)[0]
+        size = int(self.headers.get("Content-Length", 0))
+        payload = self.rfile.read(size) if size else b""
+        incoming = json.loads(payload) if payload and path == "/api/v1/course/addSessionCourseInfo" else {}
+        selected = incoming.get("course_id") if incoming else self.headers.get("X-Fixture-Course")
+        self.server.requests.append((self.command, path, selected))
+        if self.command == "GET" and path.startswith("/std/") and path != "/std/noticeDetail":
+            self._respond(
+                _document(
+                    path,
+                    unreviewed=self.server.unreviewed,
+                    wrong_topbar=self.server.wrong_topbar,
+                    archive_count_mismatch=self.server.archive_count_mismatch,
+                    malformed_todo=self.server.malformed_todo,
+                )
+            )
+        elif path == "/api/v1/course/addSessionCourseInfo":
+            self._respond({"header": {"code": 200}, "body": {"result": "Y", "data": {"course_id": selected}}})
+        elif path == "/api/v1/board/notice/list/top":
+            self._respond({"header": {"code": 200}, "body": {"list": []}})
+        elif path == "/api/v1/board/notice/list":
+            assert selected in IDS
+            n = IDS.index(selected) + 1
+            item = {
+                "course_id": selected,
+                "delete_yn": "N",
+                "boarditem_no": f"TB_L_BOARDITEM{n}01",
+                "boarditem_title": "Fixture notice",
+                "row_idx": n,
+                "insert_dt": "2026-09-02",
+                "insert_dt_addtime": "2026-09-02 09:00",
+                "boarditem_viewcnt": 7,
+                "file_yn": 0,
+                "writeruser_name": "Fixture Author",
+            }
+            self._respond(
+                {
+                    "header": {"code": 200},
+                    "body": {"total": 11 if self.server.board_paginated and n == 4 else 1, "list": [item]},
+                }
+            )
+        elif path == "/api/v1/task/stdList":
+            cid = json.loads(payload).get("course_id")
+            if self.server.task_count_mismatch and cid == IDS[3]:
+                self._respond({"body": {"total": 2, "course_id": cid}})
+            else:
+                self._respond({"body": {"list": [{"course_id": cid}]}})
+        elif path == "/api/v1/archive/list":
+            self._respond({"body": {"list": [{}], "total": 1}})
+        elif path == "/api/v1/archive/getAttachFileList":
+            self._respond({"body": [{"file_id": "file-1", "file_name": "Handout.pdf"}]})
+        elif path == "/api/v1/board/std/notice/list":
+            self._respond({"header": {"code": 200}, "body": {"list": []}})
+        else:
+            self._respond("Unreviewed fixture request", status=404)
+
+    def do_GET(self) -> None:
+        self._handle()
+
+    def do_POST(self) -> None:
+        self._handle()
+
+    def log_message(self, *_args: object) -> None:
+        pass
+
+
+@contextmanager
+def fixture_server() -> Iterator[FixtureServer]:
+    server = FixtureServer()
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield server
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=3)
+
+
+def _policy(source: dict[str, Any], origin: str) -> dict[str, Any]:
+    """Copy reviewed paths/methods to loopback, omitting origin-pinned unused extras."""
+    policy = deepcopy(source)
+    live = "https://dcs-learning.cnu.ac.kr"
+    policy["origins"] = [origin]
+    # Static, suppression, download and logging-token approvals are tied to fixed
+    # production origins. The fixture makes none of those requests.
+    policy["static_asset_origins"] = []
+    policy["suppress"] = []
+    policy["selected_file_routes"] = []
+    policy["routes"] = [
+        {**route, "origin": origin if route["origin"] == live else route["origin"]}
+        for route in policy["routes"]
+        if not route.get("logging_token_reviewed")
+    ]
+    return policy
+
+
+def _chromium() -> str:
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        pytest.skip("Playwright is not installed")
+    with sync_playwright() as playwright:
+        executable = Path(playwright.chromium.executable_path)
+        if not executable.is_file():
+            pytest.skip("local Playwright Chromium is not installed")
+        return str(executable)
+
+
+def _install_fixture(monkeypatch: pytest.MonkeyPatch, server: FixtureServer) -> dict[str, Any]:
+    origin = f"http://127.0.0.1:{server.server_port}"
+    login_calls: list[str] = []
+
+    async def login_once(page: Any, _config: dict[str, Any], **_kwargs: Any) -> None:
+        login_calls.append("login")
+        await page.goto(origin + "/std/myLecture")
+
+    monkeypatch.setattr(login, "ensure_logged_in", login_once)
+    monkeypatch.setattr(login, "MY_LECTURE_URL", origin + "/std/myLecture")
+    monkeypatch.setattr(sync_all, "MY_LECTURE_URL", origin + "/std/myLecture")
+    monkeypatch.setattr(sync_all, "ensure_logged_in", login_once)
+    roster_calls: list[int] = []
+    original_parse = sync_all.parse_courses
+
+    def record_roster(raw: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        roster_calls.append(len(raw))
+        return original_parse(raw)
+
+    monkeypatch.setattr(sync_all, "parse_courses", record_roster)
+    monkeypatch.setattr(notices, "_ORIGIN", origin)
+    monkeypatch.setattr(notices, "_TODO_URL", origin + "/std/todo")
+    monkeypatch.setattr(
+        materials._RequestWindow,
+        "_archive_referer",
+        staticmethod(lambda request: request.headers.get("referer", "") == origin + "/std/archive"),
+    )
+    # Mutable policy dictionaries remain local to this test; production pins are untouched.
+    monkeypatch.setitem(
+        assignment_command.CAPABILITY, "policy", _policy(assignment_command.CAPABILITY["policy"], origin)
+    )
+    monkeypatch.setitem(notice_command.CAPABILITY, "policy", _policy(notice_command.CAPABILITY["policy"], origin))
+    monkeypatch.setitem(material_command.CAPABILITY, "policy", _policy(material_command.CAPABILITY["policy"], origin))
+    monkeypatch.setattr(notice_command, "LECTURES_SYNC_POLICY", _policy(notice_command.LECTURES_SYNC_POLICY, origin))
+    monkeypatch.setattr(sync_all, "_fixture_roster_calls", roster_calls, raising=False)
+    return {"browser": {"executable_path": _chromium(), "headless": True}, "_fixture_login_calls": login_calls}
+
+
+def _catalogs(root: Path) -> dict[str, dict[str, Any]]:
+    return {
+        "lectures": read_catalog(catalog_path(root)),
+        **{domain: read_domain_catalog(domain, domain_catalog_path(domain, root)) for domain in DOMAINS[1:]},
+    }
+
+
+def _expected_row(domain: str, cid: str, n: int) -> dict[str, Any]:
+    course = {"id": cid, "label": f"Fixture Course {n}"}
+    if domain == "lectures":
+        return {
+            "entity_id": f"cnu_lecture:{cid}:LV1",
+            "course": course,
+            "kind": "lecture",
+            "title": "Fixture lesson",
+            "week": "2",
+            "sequence": "1",
+            "progress_text": None,
+            "duration_minutes": None,
+            "available_from": None,
+            "due_date": None,
+            "late_until": None,
+            "media": "other",
+            "attendance_counted": None,
+            "open": True,
+            "completion": "incomplete",
+            "provider_state": "N",
+        }
+    if domain == "assignments":
+        return {
+            "entity_id": f"cnu_assignment:{cid}:TB_L_REPORT101",
+            "task_id": "TB_L_REPORT101",
+            "course": course,
+            "kind": "assignment",
+            "title": "Fixture task",
+            "due_date": "2026-09-30",
+            "is_submitted": False,
+        }
+    if domain == "notices":
+        return {
+            "entity_id": f"cnu_notice:{cid}:2026-09-02 09%3A00:{n}",
+            "legacy_key": f"Fixture Course {n}_2026-09-02 09:00_{n}",
+            "course": course,
+            "kind": "notice",
+            "title": "Fixture notice",
+            "date": "2026-09-02 09:00",
+            "status": "읽지않음",
+            "is_unread": True,
+            "posted_date": None,
+            "author_role": None,
+            "author": "Fixture Author",
+            "view_count": 7,
+            "has_attachments": False,
+        }
+    return {
+        "entity_id": f"cnu_lms_material:{cid}:file-1",
+        "course": course,
+        "archive_entry": {"board_item_id": "post-1", "title": "Fixture handout"},
+        "file_id": "file-1",
+        "display_name": "Handout.pdf",
+        "filename": "Handout.pdf",
+        "media_type": "application/pdf",
+        "size_bytes": 123,
+        "downloadable": True,
+        "unavailable_reason": None,
+    }
+
+
+def test_seven_courses_one_guarded_session_and_full_normalized_catalogs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with fixture_server() as server:
+        config = _install_fixture(monkeypatch, server)
+        result, errors = run_sync(config, tmp_path, DOMAINS, None, headless=True)
+        assert errors is None, (getattr(errors, "reason_code", None), server.requests, result)
+        assert list(result["domains"]) == list(DOMAINS)
+        assert all(result["domains"][domain]["status"] == "ok" for domain in DOMAINS)
+        catalogs = _catalogs(tmp_path)
+        assert all(catalog["courses"] == COURSES for catalog in catalogs.values())
+        for domain, catalog in catalogs.items():
+            assert catalog["enrollment_state"] == "known"
+            assert catalog["failed_courses"] == []
+            assert catalog[domain] == [_expected_row(domain, cid, n) for n, cid in enumerate(IDS, 1)]
+        paths = Counter((method, path) for method, path, _ in server.requests)
+        assert config["_fixture_login_calls"] == ["login"]
+        assert sync_all._fixture_roster_calls == [7]
+        # One discovery; guarded roster returns between selections require six more navigations.
+        assert paths[("GET", "/std/myLecture")] == 8
+        assert paths[("GET", "/std/todo")] == 1
+        assert paths[("POST", "/api/v1/board/std/notice/list")] == 1
+        assert [
+            cid
+            for method, path, cid in server.requests
+            if (method, path) == ("POST", "/api/v1/course/addSessionCourseInfo")
+        ] == list(IDS)
+        for path in ("/std/lecture", "/std/course", "/std/task", "/std/notice"):
+            assert paths[("GET", path)] == 7
+        assert paths[("GET", "/std/archive")] == 14
+        selection_positions = [
+            index
+            for index, (method, path, _) in enumerate(server.requests)
+            if (method, path) == ("POST", "/api/v1/course/addSessionCourseInfo")
+        ]
+        for ordinal, start in enumerate(selection_positions):
+            end = selection_positions[ordinal + 1] if ordinal + 1 < 7 else len(server.requests)
+            visits = [path for method, path, _ in server.requests[start:end] if method == "GET"]
+            section_positions = [
+                visits.index(path)
+                for path in ("/std/lecture", "/std/course", "/std/task", "/std/notice", "/std/archive")
+            ]
+            assert section_positions == sorted(section_positions)
+            assert visits.count("/std/archive") == 2
+            if ordinal == 0:
+                assert visits.index("/std/task") < visits.index("/std/todo") < visits.index("/std/notice")
+            else:
+                assert "/std/todo" not in visits
+        assert all("log" not in path.lower() and "video" not in path.lower() for _, path, _ in server.requests)
+
+
+def test_guard_denial_before_receipt_publishes_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    with fixture_server() as server:
+        server.unreviewed = True
+        config = _install_fixture(monkeypatch, server)
+        result, errors = run_sync(config, tmp_path, DOMAINS, None, headless=True)
+        codes = [error.code for error in errors] if isinstance(errors, list) else [errors.code]
+        assert codes == ["policy-blocked"]
+        assert all(not (tmp_path / "catalog" / f"{domain}.json").exists() for domain in DOMAINS)
+        assert ("POST", "/api/v1/unreviewedMetadata", None) not in server.requests
+        assert all(result["domains"][domain]["status"] == "not-started" for domain in DOMAINS[1:])
+
+
+def test_selected_entry_topbar_mismatch_aborts_every_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with fixture_server() as server:
+        server.wrong_topbar = True
+        config = _install_fixture(monkeypatch, server)
+        result, errors = run_sync(config, tmp_path, DOMAINS, None, headless=True)
+        codes = [error.code for error in errors] if isinstance(errors, list) else [errors.code]
+        assert codes == ["course-sync-failed"]
+        assert all(not (tmp_path / "catalog" / f"{domain}.json").exists() for domain in DOMAINS)
+        assert [
+            cid
+            for method, path, cid in server.requests
+            if (method, path) == ("POST", "/api/v1/course/addSessionCourseInfo")
+        ] == [IDS[0]]
+        assert not any(
+            path in {"/std/course", "/std/task", "/std/notice", "/std/archive"} for _, path, _ in server.requests
+        )
+        assert all(result["domains"][domain]["status"] == "not-started" for domain in DOMAINS[1:])
+
+
+def test_filtered_selection_and_unknown_course_do_not_claim_full_enrollment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with fixture_server() as server:
+        config = _install_fixture(monkeypatch, server)
+        selected = IDS[3]
+        result, errors = run_sync(config, tmp_path, DOMAINS, selected, headless=True)
+        assert errors is None, (errors, server.requests, result)
+        catalogs = _catalogs(tmp_path)
+        for domain, catalog in catalogs.items():
+            assert catalog["enrollment_state"] == "unknown"
+            assert catalog["failed_courses"] == []
+            assert catalog["courses"] == [COURSES[3]]
+            assert catalog[domain] == [_expected_row(domain, selected, 4)]
+        assert [
+            cid
+            for method, path, cid in server.requests
+            if (method, path) == ("POST", "/api/v1/course/addSessionCourseInfo")
+        ] == [selected]
+        before = {domain: (tmp_path / "catalog" / f"{domain}.json").read_bytes() for domain in DOMAINS}
+        result, errors = run_sync(config, tmp_path, DOMAINS, "not-enrolled.invalid", headless=True)
+        codes = [error.code for error in errors] if isinstance(errors, list) else [errors.code]
+        assert codes == ["course-not-found"]
+        assert all(result["domains"][domain]["status"] == "not-started" for domain in DOMAINS[1:])
+        assert {domain: (tmp_path / "catalog" / f"{domain}.json").read_bytes() for domain in DOMAINS} == before
+
+
+def test_discovery_failure_preserves_rows_and_marks_every_catalog_unknown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    old_course = COURSES[0]
+    for domain in DOMAINS:
+        record = {
+            "schema_version": 1,
+            "generated_at": "2026-08-01T00:00:00Z",
+            "enrollment_state": "known",
+            "courses": [old_course],
+            "failed_courses": [],
+            domain: [_expected_row(domain, IDS[0], 1)],
+        }
+        if domain == "lectures":
+            write_catalog(record, catalog_path(tmp_path))
+        else:
+            write_domain_catalog(domain, record, domain_catalog_path(domain, tmp_path))
+    with fixture_server() as server:
+        config = _install_fixture(monkeypatch, server)
+
+        def broken_roster(_raw: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            raise ValueError("Synthetic roster could not be decoded")
+
+        monkeypatch.setattr(sync_all, "parse_courses", broken_roster)
+        result, errors = run_sync(config, tmp_path, DOMAINS, None, headless=True)
+        codes = [error.code for error in errors] if isinstance(errors, list) else [errors.code]
+        assert codes == ["course-discovery-failed"]
+        assert all(result["domains"][domain]["status"] == "not-started" for domain in DOMAINS[1:])
+        for domain, catalog in _catalogs(tmp_path).items():
+            assert catalog["enrollment_state"] == "unknown"
+            assert catalog["courses"] == [old_course]
+            assert catalog["failed_courses"] == []
+            assert catalog[domain] == [_expected_row(domain, IDS[0], 1)]
+        assert [
+            path
+            for method, path, _ in server.requests
+            if (method, path) == ("POST", "/api/v1/course/addSessionCourseInfo")
+        ] == []
+
+
+def test_second_domain_atomic_write_failure_reports_only_committed_truth(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from campusctl.envelope import CampusError
+
+    with fixture_server() as server:
+        config = _install_fixture(monkeypatch, server)
+
+        def fail_second(domain: str, _value: dict[str, Any], _path: Path) -> Path:
+            assert domain == "assignments"
+            raise CampusError("catalog-write-failed", "Synthetic disk failure.", None, "error")
+
+        monkeypatch.setattr(sync_all, "write_domain_catalog", fail_second)
+        result, errors = run_sync(config, tmp_path, DOMAINS, IDS[0], headless=True)
+        codes = [error.code for error in errors] if isinstance(errors, list) else [errors.code]
+        assert codes == ["catalog-write-failed"]
+        outcomes = result["domains"]
+        assert outcomes["lectures"]["status"] == "ok"
+        assert outcomes["lectures"]["result"]["lectures"] == 1
+        assert outcomes["assignments"]["status"] == "error"
+        assert outcomes["assignments"]["result"] == {}
+        assert all(outcomes[domain]["status"] == "not-started" for domain in ("notices", "materials"))
+        lecture = read_catalog(catalog_path(tmp_path))
+        assert lecture["courses"] == [COURSES[0]]
+        assert lecture["lectures"] == [_expected_row("lectures", IDS[0], 1)]
+        assert all(not domain_catalog_path(domain, tmp_path).exists() for domain in DOMAINS[1:])
+
+
+def test_single_course_board_failure_retains_prior_row_and_other_courses_complete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    old_notice = {**_expected_row("notices", IDS[3], 4), "title": "Previously saved notice"}
+    write_domain_catalog(
+        "notices",
+        {
+            "schema_version": 1,
+            "generated_at": "2026-08-01T00:00:00Z",
+            "enrollment_state": "known",
+            "courses": [COURSES[3]],
+            "failed_courses": [],
+            "notices": [old_notice],
+        },
+        domain_catalog_path("notices", tmp_path),
+    )
+    with fixture_server() as server:
+        server.board_paginated = True
+        config = _install_fixture(monkeypatch, server)
+        result, errors = run_sync(config, tmp_path, ("notices", "materials"), None, headless=True)
+        codes = [error.code for error in errors] if isinstance(errors, list) else [errors.code]
+        assert codes == ["notice-board-paginated"]
+        assert result["domains"]["notices"]["status"] == "partial"
+        assert result["domains"]["materials"]["status"] == "ok"
+        notices_catalog = read_domain_catalog("notices", domain_catalog_path("notices", tmp_path))
+        assert notices_catalog["enrollment_state"] == "known"
+        assert notices_catalog["courses"] == COURSES
+        assert notices_catalog["failed_courses"] == [
+            {"course_id": IDS[3], "label": "Fixture Course 4", "reason": "notice-board-paginated"}
+        ]
+        assert notices_catalog["notices"] == [
+            old_notice,
+            *[_expected_row("notices", cid, n) for n, cid in enumerate(IDS, 1) if n != 4],
+        ]
+        materials_catalog = read_domain_catalog("materials", domain_catalog_path("materials", tmp_path))
+        assert materials_catalog["courses"] == COURSES
+        assert materials_catalog["failed_courses"] == []
+        assert materials_catalog["materials"] == [_expected_row("materials", cid, n) for n, cid in enumerate(IDS, 1)]
+        assert [
+            cid
+            for method, path, cid in server.requests
+            if (method, path) == ("POST", "/api/v1/course/addSessionCourseInfo")
+        ] == list(IDS)
+
+
+def test_failed_task_response_retains_only_that_courses_previous_assignment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    old_task = {**_expected_row("assignments", IDS[3], 4), "title": "Previously saved task"}
+    write_domain_catalog(
+        "assignments",
+        {
+            "schema_version": 1,
+            "generated_at": "2026-08-01T00:00:00Z",
+            "enrollment_state": "known",
+            "courses": [COURSES[3]],
+            "failed_courses": [],
+            "assignments": [old_task],
+        },
+        domain_catalog_path("assignments", tmp_path),
+    )
+    with fixture_server() as server:
+        server.task_count_mismatch = True
+        config = _install_fixture(monkeypatch, server)
+        result, errors = run_sync(config, tmp_path, ("assignments", "materials"), None, headless=True)
+        codes = [error.code for error in errors] if isinstance(errors, list) else [errors.code]
+        assert codes == ["course-sync-failed"]
+        assert result["domains"]["assignments"]["status"] == "partial"
+        assert result["domains"]["materials"]["status"] == "ok"
+        task_catalog = read_domain_catalog("assignments", domain_catalog_path("assignments", tmp_path))
+        assert task_catalog["enrollment_state"] == "known"
+        assert task_catalog["courses"] == COURSES
+        assert task_catalog["failed_courses"] == [
+            {"course_id": IDS[3], "label": "Fixture Course 4", "reason": "course-sync-failed"}
+        ]
+        assert task_catalog["assignments"] == [
+            old_task,
+            *[_expected_row("assignments", cid, n) for n, cid in enumerate(IDS, 1) if n != 4],
+        ]
+        materials_catalog = read_domain_catalog("materials", domain_catalog_path("materials", tmp_path))
+        assert materials_catalog["courses"] == COURSES
+        assert materials_catalog["failed_courses"] == []
+        assert materials_catalog["materials"] == [_expected_row("materials", cid, n) for n, cid in enumerate(IDS, 1)]
+        assert [
+            cid
+            for method, path, cid in server.requests
+            if (method, path) == ("POST", "/api/v1/course/addSessionCourseInfo")
+        ] == list(IDS)
+
+
+def test_incomplete_archive_list_retains_only_failed_courses_previous_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    old_material = {**_expected_row("materials", IDS[3], 4), "display_name": "Earlier handout.pdf"}
+    write_domain_catalog(
+        "materials",
+        {
+            "schema_version": 1,
+            "generated_at": "2026-08-01T00:00:00Z",
+            "enrollment_state": "known",
+            "courses": [COURSES[3]],
+            "failed_courses": [],
+            "materials": [old_material],
+        },
+        domain_catalog_path("materials", tmp_path),
+    )
+    with fixture_server() as server:
+        server.archive_count_mismatch = True
+        config = _install_fixture(monkeypatch, server)
+        result, errors = run_sync(config, tmp_path, ("assignments", "materials"), None, headless=True)
+        codes = [error.code for error in errors] if isinstance(errors, list) else [errors.code]
+        assert codes == ["course-sync-failed"]
+        assert result["domains"]["assignments"]["status"] == "ok"
+        assert result["domains"]["materials"]["status"] == "partial"
+        assignments_catalog = read_domain_catalog("assignments", domain_catalog_path("assignments", tmp_path))
+        assert assignments_catalog["courses"] == COURSES
+        assert assignments_catalog["failed_courses"] == []
+        assert assignments_catalog["assignments"] == [
+            _expected_row("assignments", cid, n) for n, cid in enumerate(IDS, 1)
+        ]
+        material_catalog = read_domain_catalog("materials", domain_catalog_path("materials", tmp_path))
+        assert material_catalog["courses"] == COURSES
+        assert material_catalog["enrollment_state"] == "known"
+        assert material_catalog["failed_courses"] == [
+            {"course_id": IDS[3], "label": "Fixture Course 4", "reason": "course-sync-failed"}
+        ]
+        assert material_catalog["materials"] == [
+            old_material,
+            *[_expected_row("materials", cid, n) for n, cid in enumerate(IDS, 1) if n != 4],
+        ]
+        assert [
+            cid
+            for method, path, cid in server.requests
+            if (method, path) == ("POST", "/api/v1/course/addSessionCourseInfo")
+        ] == list(IDS)
+
+
+def test_partial_cli_exit_reflects_paginated_notice_and_committed_material(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from campusctl import cli
+
+    old_notice = {**_expected_row("notices", IDS[3], 4), "title": "Previously saved notice"}
+    write_catalog(
+        {"schema_version": 1, "courses": [COURSES[3]], "lectures": [], "generated_at": "2026-08-01T00:00:00Z"},
+        catalog_path(tmp_path),
+    )
+    write_domain_catalog(
+        "notices",
+        {
+            "schema_version": 1,
+            "generated_at": "2026-08-01T00:00:00Z",
+            "enrollment_state": "known",
+            "courses": [COURSES[3]],
+            "failed_courses": [],
+            "notices": [old_notice],
+        },
+        domain_catalog_path("notices", tmp_path),
+    )
+    with fixture_server() as server:
+        server.board_paginated = True
+        config = _install_fixture(monkeypatch, server)
+        monkeypatch.setenv("CAMPUSCTL_DATA_DIR", str(tmp_path))
+        monkeypatch.setattr(cli, "load_config", lambda: config)
+        code = cli.main(["--headless", "sync", "--only", "notices,materials", "--course", IDS[3], "--json"])
+        output = capsys.readouterr()
+        assert output.err == ""
+        envelope = json.loads(output.out)
+        assert code == 1
+        assert envelope["status"] == "partial"
+        assert [error["code"] for error in envelope["errors"]] == ["notice-board-paginated"]
+        assert envelope["result"]["domains"]["notices"]["status"] == "partial"
+        assert envelope["result"]["domains"]["materials"]["status"] == "ok"
+        stale = read_domain_catalog("notices", domain_catalog_path("notices", tmp_path))
+        assert stale["notices"] == [old_notice]
+        assert stale["failed_courses"] == [
+            {"course_id": IDS[3], "label": "Fixture Course 4", "reason": "notice-board-paginated"}
+        ]
+        material = read_domain_catalog("materials", domain_catalog_path("materials", tmp_path))
+        assert material["materials"] == [_expected_row("materials", IDS[3], 4)]
+        assert [
+            cid
+            for method, path, cid in server.requests
+            if (method, path) == ("POST", "/api/v1/course/addSessionCourseInfo")
+        ] == [IDS[3]]
+
+
+@pytest.mark.parametrize("domain", DOMAINS)
+def test_standalone_provider_wrapper_preserves_guarded_selection_and_rows(
+    domain: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with fixture_server() as server:
+        config = _install_fixture(monkeypatch, server)
+        wrappers = {
+            "lectures": sync_lectures,
+            "assignments": assignments.sync_assignments,
+            "notices": notices.sync_notices,
+            "materials": materials.sync_materials,
+        }
+        kwargs: dict[str, Any] = {"headless": True}
+        if domain != "lectures":
+            policies = {
+                "assignments": assignment_command.CAPABILITY["policy"],
+                "notices": notice_command.CAPABILITY["policy"],
+                "materials": material_command.CAPABILITY["policy"],
+            }
+            kwargs["reviewed_policy"] = policies[domain]
+        result, errors = asyncio.run(wrappers[domain](config, tmp_path, IDS[0], **kwargs))
+        assert errors == []
+        assert result[domain] == 1
+        catalog = (
+            read_catalog(catalog_path(tmp_path))
+            if domain == "lectures"
+            else read_domain_catalog(domain, domain_catalog_path(domain, tmp_path))
+        )
+        assert catalog["courses"] == [COURSES[0]]
+        assert catalog[domain] == [_expected_row(domain, IDS[0], 1)]
+        assert [
+            cid
+            for method, path, cid in server.requests
+            if (method, path) == ("POST", "/api/v1/course/addSessionCourseInfo")
+        ] == [IDS[0]]
+        assert config["_fixture_login_calls"] == ["login"]
+
+
+def test_lecture_extraction_failure_retains_only_failed_courses_prior_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prior = {**_expected_row("lectures", IDS[3], 4), "title": "Previously saved lecture"}
+    write_catalog(
+        {
+            "schema_version": 1,
+            "generated_at": "2026-08-01T00:00:00Z",
+            "enrollment_state": "known",
+            "courses": [COURSES[3]],
+            "failed_courses": [],
+            "lectures": [prior],
+        },
+        catalog_path(tmp_path),
+    )
+    with fixture_server() as server:
+        config = _install_fixture(monkeypatch, server)
+        collector = sync_all.collect_lectures_rows
+
+        async def collect_or_fail(
+            page: Any, course: dict[str, Any], selection: Any, guard: Any
+        ) -> list[dict[str, Any]]:
+            if course["course_id"] == IDS[3]:
+                assert page.main_frame.url.endswith("/std/course")
+                raise ValueError("Synthetic lecture extractor failed after selected document commit")
+            return await collector(page, course, selection, guard)
+
+        monkeypatch.setattr(sync_all, "collect_lectures_rows", collect_or_fail)
+        result, errors = run_sync(config, tmp_path, ("lectures", "assignments"), None, headless=True)
+        codes = [error.code for error in errors] if isinstance(errors, list) else [errors.code]
+        assert codes == ["course-sync-failed"]
+        assert result["domains"]["lectures"]["status"] == "partial"
+        assert result["domains"]["lectures"]["result"]["failed_courses"] == [
+            {"course_id": IDS[3], "label": "Fixture Course 4"}
+        ]
+        assert result["domains"]["assignments"]["status"] == "ok"
+        lecture_catalog = read_catalog(catalog_path(tmp_path))
+        assert sorted(lecture_catalog["courses"], key=lambda course: course["course_id"]) == COURSES
+        assert lecture_catalog["enrollment_state"] == "known"
+        assert lecture_catalog["failed_courses"] == [
+            {"course_id": IDS[3], "label": "Fixture Course 4", "reason": "course-sync-failed"}
+        ]
+        assert lecture_catalog["lectures"] == [
+            prior,
+            *[_expected_row("lectures", cid, n) for n, cid in enumerate(IDS, 1) if n != 4],
+        ]
+        assignment_catalog = read_domain_catalog("assignments", domain_catalog_path("assignments", tmp_path))
+        assert assignment_catalog["courses"] == COURSES
+        assert assignment_catalog["failed_courses"] == []
+        assert assignment_catalog["assignments"] == [
+            _expected_row("assignments", cid, n) for n, cid in enumerate(IDS, 1)
+        ]
+        assert [
+            cid
+            for method, path, cid in server.requests
+            if (method, path) == ("POST", "/api/v1/course/addSessionCourseInfo")
+        ] == list(IDS)
+
+
+def test_first_course_todo_failure_preserves_notice_and_continues_archive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    old_notice = {**_expected_row("notices", IDS[0], 1), "title": "Previously saved notice"}
+    write_domain_catalog(
+        "notices",
+        {
+            "schema_version": 1,
+            "generated_at": "2026-08-01T00:00:00Z",
+            "enrollment_state": "known",
+            "courses": [COURSES[0]],
+            "failed_courses": [],
+            "notices": [old_notice],
+        },
+        domain_catalog_path("notices", tmp_path),
+    )
+    with fixture_server() as server:
+        server.malformed_todo = True
+        config = _install_fixture(monkeypatch, server)
+        result, errors = run_sync(config, tmp_path, ("notices", "materials"), None, headless=True)
+        codes = [error.code for error in errors] if isinstance(errors, list) else [errors.code]
+        assert codes == ["course-sync-failed"]
+        assert result["domains"]["notices"]["status"] == "partial"
+        assert result["domains"]["materials"]["status"] == "ok"
+        notice_catalog = read_domain_catalog("notices", domain_catalog_path("notices", tmp_path))
+        assert notice_catalog["courses"] == COURSES
+        assert notice_catalog["failed_courses"] == [
+            {"course_id": IDS[0], "label": "Fixture Course 1", "reason": "course-sync-failed"}
+        ]
+        assert notice_catalog["notices"] == [
+            old_notice,
+            *[_expected_row("notices", cid, n) for n, cid in enumerate(IDS, 1) if n != 1],
+        ]
+        material_catalog = read_domain_catalog("materials", domain_catalog_path("materials", tmp_path))
+        assert material_catalog["courses"] == COURSES
+        assert material_catalog["failed_courses"] == []
+        assert material_catalog["materials"] == [_expected_row("materials", cid, n) for n, cid in enumerate(IDS, 1)]
+        assert [
+            cid
+            for method, path, cid in server.requests
+            if (method, path) == ("POST", "/api/v1/course/addSessionCourseInfo")
+        ] == list(IDS)
+        assert ("GET", "/std/todo", None) in server.requests and sum(
+            path == "/std/todo" for _, path, _ in server.requests
+        ) == 1
+        assert sum(path == "/std/archive" and method == "GET" for method, path, _ in server.requests) == 14
+
+
+def test_later_invalid_catalog_blocks_all_publication_and_names_later_domain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = domain_catalog_path("notices", tmp_path)
+    target.parent.mkdir(parents=True)
+    target.write_text("{invalid JSON", encoding="utf-8")
+    original = target.read_bytes()
+    with fixture_server() as server:
+        config = _install_fixture(monkeypatch, server)
+        result, errors = run_sync(config, tmp_path, ("lectures", "notices"), IDS[0], headless=True)
+        codes = [error.code for error in errors] if isinstance(errors, list) else [errors.code]
+        assert codes == ["catalog-invalid"]
+        assert result["domains"]["lectures"]["status"] == "not-started"
+        assert result["domains"]["notices"]["status"] == "user-action"
+        assert result["domains"]["lectures"]["result"] == {}
+        assert result["domains"]["notices"]["result"] == {}
+        assert target.read_bytes() == original
+        assert not catalog_path(tmp_path).exists()
+        assert [
+            cid
+            for method, path, cid in server.requests
+            if (method, path) == ("POST", "/api/v1/course/addSessionCourseInfo")
+        ] == [IDS[0]]

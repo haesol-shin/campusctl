@@ -317,6 +317,69 @@ def test_cdp_reuses_external_context_and_closes_only_its_page(tmp_path: Path, mo
     _run(scenario())
 
 
+@pytest.mark.parametrize("require_owned_page", [False, True])
+def test_cdp_owned_page_preserves_parked_tabs_and_default_reuse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, require_owned_page: bool
+) -> None:
+    endpoint = "http://browser.invalid:9223/json/version"
+    context = FakeContext()
+    existing = FakePage(context)
+    context.pages.append(existing)
+    playwright = install_fake_playwright(monkeypatch, FakeChromium(context))
+
+    async def fake_resolver(_endpoint: str) -> str:
+        return "ws://browser.invalid:9223/devtools/browser/synthetic"
+
+    monkeypatch.setattr(browser, "resolve_cdp_ws_url", fake_resolver)
+
+    async def scenario() -> None:
+        async with browser.open_session(
+            _cdp_config(endpoint),
+            data_dir=tmp_path,
+            operation="lectures.sync",
+            require_owned_page=require_owned_page,
+        ) as session:
+            assert session.page is (context.new_pages[0] if require_owned_page else existing)
+        assert existing.closed == 0
+        assert context.closed == 0 and playwright.stopped == 1
+        if require_owned_page:
+            assert len(context.new_pages) == 1 and context.new_pages[0].closed == 1
+            assert existing.cdp_session.commands == []
+            assert context.new_pages[0].cdp_session.commands == [
+                ("Network.setUserAgentOverride", {"userAgent": browser.NORMAL_CHROME_USER_AGENT})
+            ]
+        else:
+            assert context.new_pages == []
+            assert existing.cdp_session.commands == [
+                ("Network.setUserAgentOverride", {"userAgent": browser.NORMAL_CHROME_USER_AGENT})
+            ]
+
+    _run(scenario())
+
+
+def test_owned_cdp_sync_closes_its_only_page(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    endpoint = "http://browser.invalid:9223/json/version"
+    context = FakeContext()
+    playwright = install_fake_playwright(monkeypatch, FakeChromium(context))
+
+    async def fake_resolver(_endpoint: str) -> str:
+        return "ws://browser.invalid:9223/devtools/browser/synthetic"
+
+    monkeypatch.setattr(browser, "resolve_cdp_ws_url", fake_resolver)
+
+    async def scenario() -> None:
+        async with browser.open_session(
+            _cdp_config(endpoint), data_dir=tmp_path, operation="lectures.sync", require_owned_page=True
+        ) as session:
+            assert session.page is context.new_pages[0]
+            assert len(context.listeners["page"]) == 1
+        assert context.new_pages[0].closed == 1
+        assert context.listeners["page"] == []
+        assert context.closed == 0 and playwright.stopped == 1
+
+    _run(scenario())
+
+
 def test_local_mode_uses_headed_persistent_profile_and_normal_user_agent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -346,7 +409,7 @@ def test_local_mode_uses_headed_persistent_profile_and_normal_user_agent(
     _run(scenario())
 
 
-@pytest.mark.parametrize("operation", ["assignments.sync", "assignments.fetch", "notices.fetch"])
+@pytest.mark.parametrize("operation", ["assignments.sync", "lectures.sync", "assignments.fetch", "notices.fetch"])
 def test_guarded_session_removes_popup_listener_on_close(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
 ) -> None:
