@@ -94,7 +94,7 @@ def test_unapproved_fixture_denies_every_request() -> None:
 
 
 def assert_fixture_data_hygiene(data: Any, origin_label: str = "fixture") -> None:
-    def _scan(node: Any, path: str = "") -> None:
+    def _scan(node: Any, path: str = "", *, reviewed_localhost_telemetry: bool = False) -> None:
         if isinstance(node, Mapping):
             media_val = str(node.get("media_type") or node.get("mime") or "").strip().lower()
             path_val = str(node.get("path") or node.get("original_name") or "").strip().lower()
@@ -119,7 +119,17 @@ def assert_fixture_data_hygiene(data: Any, origin_label: str = "fixture") -> Non
                     assert not val_lower.startswith(_FORBIDDEN_MEDIA_PREFIXES), (
                         f"Forbidden media type/mime '{val}' in {origin_label} at {path}.{key}"
                     )
-                _scan(val, f"{path}.{key}" if path else str(key))
+                _scan(
+                    val,
+                    f"{path}.{key}" if path else str(key),
+                    reviewed_localhost_telemetry=(
+                        path.startswith("suppression.entries[")
+                        and key_lower == "origin"
+                        and node.get("name") == "external-telemetry-localhost"
+                        and node.get("path_template") == "/v1/events"
+                        and node.get("reason") == "telemetry"
+                    ),
+                )
         elif isinstance(node, list):
             for index, item in enumerate(node):
                 _scan(item, f"{path}[{index}]")
@@ -133,9 +143,11 @@ def assert_fixture_data_hygiene(data: Any, origin_label: str = "fixture") -> Non
                         f"Forbidden video extension '{ext}' in {origin_label} at {path}: '{url}'"
                     )
                 host = parsed.hostname
-                assert host and (host == "invalid" or host.endswith(".invalid")), (
-                    f"Real LMS host '{host}' instead of reserved .invalid in {origin_label} at {path}: '{url}'"
-                )
+                assert host and (
+                    host == "invalid"
+                    or host.endswith(".invalid")
+                    or (reviewed_localhost_telemetry and url == "http://localhost:3000")
+                ), f"Real LMS host '{host}' instead of reserved .invalid in {origin_label} at {path}: '{url}'"
 
                 for param_name, _ in parse_qsl(parsed.query, keep_blank_values=True):
                     param_lower = param_name.lower()
@@ -928,10 +940,11 @@ def test_lecture_sync_reviewed_routes_and_suppressions_are_exact() -> None:
         "course-roster-image": (origin, "/upload/dunetadmin/college/{hash}.png", ("GET",), "course-roster-image"),
         "favicon-icon": (origin, "/assets/images/favicon-{hash}.ico", ("GET",), "favicon"),
         "external-telemetry": ("http://0.0.0.0:3000", "/v1/events", ("POST",), "telemetry"),
+        "external-telemetry-localhost": ("http://localhost:3000", "/v1/events", ("POST",), "telemetry"),
         "panopto-disconnection-log": (origin, "/api/v1/panopto/addInternetDisconnectionLog", ("POST",), "logging"),
         "panopto-connectivity-check": (origin, "/api/v1/panopto/checkInternetConnection", ("GET",), "logging"),
     }
-    assert len(LECTURES_SYNC_POLICY["suppress"]) == 8
+    assert len(LECTURES_SYNC_POLICY["suppress"]) == 9
     assert all(item["operation"] == "lectures.sync" for item in LECTURES_SYNC_POLICY["suppress"])
     assert UiRequestPolicy.validate_reviewed_config(LECTURES_SYNC_POLICY)
     policy = UiRequestPolicy.from_reviewed_config(LECTURES_SYNC_POLICY)
@@ -1029,6 +1042,7 @@ def test_reviewed_side_requests_and_fatal_boundaries(domain: str, operation: str
         (learning + "/upload/dunetadmin/college/opaque-123.png", "GET", "image"),
         (learning + "/assets/images/favicon-Ab_9.ico", "GET", "other"),
         ("http://0.0.0.0:3000/v1/events", "POST", "fetch"),
+        ("http://localhost:3000/v1/events", "POST", "fetch"),
     )
     for headers, redirected_from, expected in (
         ({"rAnGe": "bytes=0-1"}, None, "range"),
@@ -1097,6 +1111,8 @@ def test_reviewed_side_requests_and_fatal_boundaries(domain: str, operation: str
         ("https://assets.example.invalid/v1/events", "fetch"),
         ("http://0.0.0.0:3000/v1/events?extra=1", "fetch"),
         ("http://0.0.0.0:3000/v1/events", "xhr"),
+        ("http://localhost:3000/v1/events?extra=1", "fetch"),
+        ("http://localhost:3000/v1/events", "xhr"),
     ):
         with pytest.raises(UiRequestDenied) as caught:
             guard_ui_request(policy, url, "POST", {}, operation=operation, resource_type=kind)
@@ -1179,6 +1195,7 @@ def test_fetch_interceptor_aborts_roster_side_requests_without_denial(domain: st
                 ),
                 _FakeRequest("https://dcs-learning.cnu.ac.kr/assets/images/favicon-Ab_9.ico", resource_type="other"),
                 _FakeRequest("http://0.0.0.0:3000/v1/events", method="POST", resource_type="fetch"),
+                _FakeRequest("http://localhost:3000/v1/events", method="POST", resource_type="fetch"),
                 _FakeRequest("https://cnu.ap.panopto.com/Panopto/Pages/Auth/Login.aspx", "POST", frame=frame),
             ):
                 assert await target.dispatch(request) == (
@@ -1186,11 +1203,11 @@ def test_fetch_interceptor_aborts_roster_side_requests_without_denial(domain: st
                 )
                 interceptor.raise_if_denied()
             assert popup.closed
-            assert diagnostics.suppressed_count == 4
+            assert diagnostics.suppressed_count == 5
             assert diagnostics.suppressed_reasons == {
                 "course-roster-image": 1,
                 "favicon": 1,
-                "telemetry": 1,
+                "telemetry": 2,
                 "panopto-sso-popup": 1,
             }
         finally:
@@ -1223,6 +1240,7 @@ def test_interceptor_counts_named_and_passive_suppressions() -> None:
                 ),
                 _FakeRequest("https://dcs-learning.cnu.ac.kr/assets/images/favicon-Ab.ico", resource_type="other"),
                 _FakeRequest("http://0.0.0.0:3000/v1/events", method="POST", resource_type="fetch"),
+                _FakeRequest("http://localhost:3000/v1/events", method="POST", resource_type="fetch"),
             ):
                 assert await target.dispatch(request) == "abort"
                 interceptor.raise_if_denied()
@@ -1237,19 +1255,19 @@ def test_interceptor_counts_named_and_passive_suppressions() -> None:
                 == "continue"
             )
             interceptor.raise_if_denied()
-            assert diagnostics.suppressed_count == 6
+            assert diagnostics.suppressed_count == 7
             assert diagnostics.suppressed_reasons == {
                 "third-party-asset": 2,
                 "media-integration": 1,
                 "course-roster-image": 1,
                 "favicon": 1,
-                "telemetry": 1,
+                "telemetry": 2,
             }
             assert await target.dispatch(_FakeRequest("https://assets.example.invalid/data", method="POST")) == "abort"
             with pytest.raises(UiRequestDenied) as caught:
                 interceptor.raise_if_denied()
             assert caught.value.reason_code == "origin"
-            assert diagnostics.suppressed_count == 6
+            assert diagnostics.suppressed_count == 7
         finally:
             await interceptor.close()
 

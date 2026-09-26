@@ -133,6 +133,7 @@ CAPABILITY: dict[str, Any] = {
                 ),
                 (_LEARNING, "favicon-icon", "/assets/images/favicon-{hash}.ico", "GET", "favicon"),
                 ("http://0.0.0.0:3000", "external-telemetry", "/v1/events", "POST", "telemetry"),
+                ("http://localhost:3000", "external-telemetry-localhost", "/v1/events", "POST", "telemetry"),
                 (
                     _LEARNING,
                     "panopto-disconnection-log",

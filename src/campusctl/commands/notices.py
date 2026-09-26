@@ -143,6 +143,14 @@ CAPABILITY: dict[str, Any] = {
                 "reason": "telemetry",
             },
             {
+                "name": "external-telemetry-localhost",
+                "origin": "http://localhost:3000",
+                "path_template": "/v1/events",
+                "operation": _OPERATION,
+                "methods": ["POST"],
+                "reason": "telemetry",
+            },
+            {
                 "name": "panopto-disconnection-log",
                 "origin": _ORIGIN,
                 "path_template": "/api/v1/panopto/addInternetDisconnectionLog",
@@ -310,6 +318,14 @@ FETCH_POLICY: dict[str, Any] = {
         {
             "name": "external-telemetry",
             "origin": "http://0.0.0.0:3000",
+            "path_template": "/v1/events",
+            "operation": _FETCH_OPERATION,
+            "methods": ["POST"],
+            "reason": "telemetry",
+        },
+        {
+            "name": "external-telemetry-localhost",
+            "origin": "http://localhost:3000",
             "path_template": "/v1/events",
             "operation": _FETCH_OPERATION,
             "methods": ["POST"],

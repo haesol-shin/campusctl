@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -25,7 +24,7 @@ from campusctl.domain_catalog import (
 )
 from campusctl.envelope import CampusError
 from campusctl.providers.cnu import assignments, materials, notices
-from campusctl.providers.cnu.course_context import CourseSelection, _css_string, bind_on_commit
+from campusctl.providers.cnu.course_context import _TOPBAR_COURSE_JS, _css_string
 from campusctl.providers.cnu.courses import COURSE_LINK_SELECTOR, EXTRACT_COURSES_JS, parse_courses
 from campusctl.providers.cnu.login import MY_LECTURE_URL, ensure_logged_in
 from campusctl.providers.cnu.roster_diagnostics import (
@@ -48,13 +47,6 @@ _SECTION_PATH = {
     "materials": "/std/archive",
 }
 _SELECTION_PATH = "/api/v1/course/addSessionCourseInfo"
-_TOPBAR_COURSE_JS = """() => {
-    const current = document.querySelector('#topbarCurrentLecture');
-    const name = current?.textContent?.replace(/\\s+/g, '').trim();
-    const matches = [...document.querySelectorAll('#topbarLectureDropdown a[data-act="changeLecture"][data-courseid]')]
-        .filter(link => link.textContent.replace(/\\s+/g, '').trim() === name);
-    return matches.length === 1 ? matches[0].getAttribute('data-courseid') : null;
-}"""
 
 
 @dataclass(slots=True)
@@ -147,7 +139,7 @@ async def _roster(page: Any, guard: Any, root: Path, headless: bool, domain: str
     trace = start_roster_requests(page, headless=headless)
     try:
         try:
-            guard.arm_roster(frame=page.main_frame, document_url=page.main_frame.url)
+            guard.raise_if_denied()
             with browser.profile_span("roster", domain=domain):
                 with browser.profile_span("document-commit", domain=domain):
                     await browser.bounded(
@@ -163,7 +155,6 @@ async def _roster(page: Any, guard: Any, root: Path, headless: bool, domain: str
                         "waiting for course roster",
                     )
                 await _settle(page, guard)
-                guard.bind_roster(frame=page.main_frame, document_url=page.main_frame.url)
                 trace.step = "evaluate"
                 with browser.profile_span("extract", domain=domain):
                     raw = await browser.bounded(
@@ -191,45 +182,31 @@ async def _roster(page: Any, guard: Any, root: Path, headless: bool, domain: str
         stop_roster_requests(page)
 
 
-async def _select_course(page: Any, guard: Any, course: dict[str, Any], ordinal: int, domain: str) -> CourseSelection:
+async def _select_course(page: Any, guard: Any, course: dict[str, Any], ordinal: int, domain: str) -> None:
+    """Prove the selected course from its committed entry page, not the navigating POST body."""
     await _settle(page, guard)
     frame = page.main_frame
-    roster_url = frame.url
-    epoch = guard.arm_selection(frame=frame, document_url=roster_url)
     sequence = 0
     requests: list[tuple[int, Any]] = []
     documents: list[tuple[int, Any]] = []
-    responses: list[Any] = []
-    committed = False
-    captured: asyncio.Future[tuple[Any, Any, Any]] = asyncio.get_running_loop().create_future()
+    commits = 0
 
     def on_request(request: Any) -> None:
         nonlocal sequence
         sequence += 1
         path = urlsplit(request.url).path
-        if path == _SELECTION_PATH:
+        if path == _SELECTION_PATH and request.method == "POST":
             requests.append((sequence, request))
         elif path == "/std/lecture" and request.resource_type == "document" and request.frame is frame:
             documents.append((sequence, request))
 
-    def on_response(response: Any) -> None:
-        if urlsplit(response.request.url).path == _SELECTION_PATH:
-            responses.append(response)
-
     def on_navigate(committed_frame: Any) -> None:
-        nonlocal committed
+        nonlocal commits
         if committed_frame is frame and urlsplit(frame.url).path == "/std/lecture":
-            committed = True
-
-    async def capture(request: Any, response: Any) -> None:
-        payload = await browser.bounded(response.json(), browser.PROTOCOL_TIMEOUT_SECONDS, "decoding course selection")
-        if not captured.done():
-            captured.set_result((request, response, payload))
+            commits += 1
 
     page.on("request", on_request)
-    page.on("response", on_response)
     page.on("framenavigated", on_navigate)
-    guard.capture_response(_SELECTION_PATH, capture)
     try:
         with browser.profile_span("course-selection", domain=domain, course=ordinal):
             await browser.bounded(
@@ -238,9 +215,6 @@ async def _select_course(page: Any, guard: Any, course: dict[str, Any], ordinal:
                 "selecting a roster course",
             )
         browser.profile_count("course_selections")
-        request, response, payload = await browser.bounded(
-            captured, browser.PROTOCOL_TIMEOUT_SECONDS, "waiting for course selection proof"
-        )
         await _settle(page, guard)
         await browser.bounded(
             page.wait_for_selector('a[href="/std/course"]', state="attached"),
@@ -251,71 +225,35 @@ async def _select_course(page: Any, guard: Any, course: dict[str, Any], ordinal:
             page.evaluate(_TOPBAR_COURSE_JS), browser.PROTOCOL_TIMEOUT_SECONDS, "checking selected course topbar"
         )
         if (
-            not committed
+            commits != 1
             or len(requests) != 1
-            or requests[0][1] is not request
-            or len(responses) != 1
-            or responses[0] is not response
             or len(documents) != 1
             or requests[0][0] >= documents[0][0]
             or urlsplit(frame.url).path != "/std/lecture"
+            or topbar_id != course["course_id"]
         ):
-            raise ValueError("Course selection was stale or duplicated")
-        selection = CourseSelection.from_response(
-            course_id=course["course_id"],
-            roster_course_id=course["course_id"],
-            topbar_course_id=topbar_id,
-            ordinal=ordinal,
-            epoch=epoch.selection_epoch,
-            response_identity=requests[0][0],
-            document_identity=documents[0][0],
-            response_status=response.status,
-            response_body=payload,
-            response_count=len(responses),
-            document_committed=committed,
-        )
-        guard.bind_selection(selection, frame=frame, document_url=frame.url)
+            raise ValueError("Course entry does not match its roster selection")
         guard.raise_if_denied()
-        return selection
     finally:
-        guard.stop_capture()
-        if not captured.done():
-            captured.cancel()
         page.remove_listener("request", on_request)
-        page.remove_listener("response", on_response)
         page.remove_listener("framenavigated", on_navigate)
 
 
-async def _return_to_roster(page: Any, guard: Any, selection: CourseSelection) -> None:
+async def _return_to_roster(page: Any, guard: Any) -> None:
     await _settle(page, guard)
-    frame = page.main_frame
-    previous = frame.url
-    if guard.epoch.phase != "bound" or guard.epoch.document_url != previous:
-        raise ValueError("Selected course document is no longer bound")
-    guard.quarantine()
-    guard.activate(
-        guard.epoch.policy,
-        operation=guard.epoch.operation,
-        selection=selection,
-        frame=frame,
-        document_url=previous,
-        navigation_path="/std/myLecture",
-        settled=True,
+    previous = page.main_frame.url
+    await browser.bounded(
+        page.goto(MY_LECTURE_URL, wait_until="domcontentloaded", referer=previous),
+        browser.PROTOCOL_TIMEOUT_SECONDS,
+        "returning to the guarded roster",
     )
-    async with bind_on_commit(page, guard, frame=frame, expected_path="/std/myLecture", selection=selection):
-        await browser.bounded(
-            page.goto(MY_LECTURE_URL, wait_until="domcontentloaded", referer=previous),
-            browser.PROTOCOL_TIMEOUT_SECONDS,
-            "returning to the guarded roster",
-        )
     await _settle(page, guard)
-    guard.quarantine()
 
 
 async def _section(
     page: Any,
     guard: Any,
-    selection: CourseSelection,
+    ordinal: int,
     domain: str,
     policy: UiRequestPolicy,
     course: dict[str, Any],
@@ -323,36 +261,24 @@ async def _section(
     todo: dict[str, list[dict[str, Any]]],
 ) -> list[dict[str, Any]]:
     await _settle(page, guard)
+    guard.set_policy(policy, operation=f"{domain}.sync")
     frame = page.main_frame
-    if guard.epoch.phase != "bound" or guard.epoch.document_url != frame.url:
-        raise ValueError("Previous section is not bound")
-    guard.quarantine()
-    guard.activate(
-        policy,
-        operation=f"{domain}.sync",
-        selection=selection,
-        frame=frame,
-        document_url=frame.url,
-        navigation_path=_SECTION_PATH[domain],
-        settled=True,
-    )
     if domain == "lectures":
-        with browser.profile_span("document-commit", domain=domain, course=selection.ordinal):
-            async with bind_on_commit(page, guard, frame=frame, expected_path="/std/course", selection=selection):
-                await browser.bounded(
-                    page.click(COURSE_ROOM_URL_ANCHOR), browser.PROTOCOL_TIMEOUT_SECONDS, "opening lecture section"
-                )
-        return await collect_lectures_rows(page, course, selection, guard)
+        with browser.profile_span("document-commit", domain=domain, course=ordinal):
+            await browser.bounded(
+                page.click(COURSE_ROOM_URL_ANCHOR), browser.PROTOCOL_TIMEOUT_SECONDS, "opening lecture section"
+            )
+        return await collect_lectures_rows(page, course, guard, ordinal=ordinal)
     if domain == "assignments":
         capture = assignments.arm_assignment_capture(page, guard)
-        with browser.profile_span("document-commit", domain=domain, course=selection.ordinal):
+        with browser.profile_span("document-commit", domain=domain, course=ordinal):
             await assignments.open_assignment_section(
-                page, guard, lambda: page.click('a[href="/std/task"]'), capture=capture, selection=selection
+                page, guard, lambda: page.click('a[href="/std/task"]'), capture=capture
             )
-        return await assignments.collect_assignment_rows(page, course, selection, guard, capture=capture)
+        return await assignments.collect_assignment_rows(page, course, guard, capture=capture)
     if domain == "notices":
         capture = notices.arm_notice_capture(page, guard)
-        with browser.profile_span("document-commit", domain=domain, course=selection.ordinal):
+        with browser.profile_span("document-commit", domain=domain, course=ordinal):
             await notices.open_notice_section(
                 page,
                 guard,
@@ -362,10 +288,9 @@ async def _section(
                     wait_until="domcontentloaded",
                 ),
                 capture=capture,
-                selection=selection,
             )
         return await notices.collect_notice_rows(
-            page, course, selection, guard, capture=capture, courses=courses, todo_rows=todo[course["course_id"]]
+            page, course, guard, capture=capture, courses=courses, todo_rows=todo[course["course_id"]]
         )
     capture = await materials.arm_materials_capture(page, guard)
 
@@ -381,32 +306,21 @@ async def _section(
         else:
             await page.click('a[href="/std/archive"]')
 
-    with browser.profile_span("document-commit", domain=domain, course=selection.ordinal):
-        await materials.open_materials_section(page, guard, open_archive, capture=capture, selection=selection)
-    return await materials.collect_materials_rows(page, course, selection, guard, capture=capture)
+    with browser.profile_span("document-commit", domain=domain, course=ordinal):
+        await materials.open_materials_section(page, guard, open_archive, capture=capture)
+    return await materials.collect_materials_rows(page, course, guard, capture=capture)
 
 
 async def _todo(
     page: Any,
     guard: Any,
-    selection: CourseSelection,
     policy: UiRequestPolicy,
     courses: list[dict[str, Any]],
     selected_course_id: str | None,
 ) -> tuple[dict[str, list[dict[str, Any]]], set[str]]:
     await _settle(page, guard)
-    frame = page.main_frame
-    guard.quarantine()
-    guard.activate(
-        policy,
-        operation="notices.sync",
-        selection=selection,
-        frame=frame,
-        document_url=frame.url,
-        navigation_path="/std/todo",
-        settled=True,
-    )
-    capture = await notices.open_notice_todo(page, guard, selection=selection)
+    guard.set_policy(policy, operation="notices.sync")
+    capture = await notices.open_notice_todo(page, guard)
     return await notices.collect_notice_todo(
         page, guard, courses, capture=capture, selected_course_id=selected_course_id
     )
@@ -523,7 +437,6 @@ async def sync_all(
                     policies[domains[0]],
                     operation=operation,
                     diagnostics=diagnostics,
-                    require_selection=True,
                 )
                 try:
                     roster = await _roster(page, guard, root, headless, domains[0])
@@ -541,14 +454,15 @@ async def sync_all(
                         "Check the course ID and retry.",
                         "user-action",
                     )
-                previous_selection: CourseSelection | None = None
+                selected_before = False
                 todo_rows: dict[str, list[dict[str, Any]]] = {}
                 todo_failures: set[str] = set()
                 todo_completed = False
                 for ordinal, course in enumerate(selected_courses, 1):
-                    if previous_selection is not None:
+                    if selected_before:
                         try:
-                            await _return_to_roster(page, guard, previous_selection)
+                            guard.set_policy(policies[domains[0]], operation=operation)
+                            await _return_to_roster(page, guard)
                         except Exception as error:
                             guard.raise_if_denied()
                             if isinstance(error, CampusError) and error.code == "policy-blocked":
@@ -560,34 +474,33 @@ async def sync_all(
                                 "error",
                             ) from None
                     try:
-                        selection = await _select_course(page, guard, course, ordinal, domains[0])
+                        await _select_course(page, guard, course, ordinal, domains[0])
                     except Exception as error:
                         guard.raise_if_denied()
                         if isinstance(error, CampusError) and error.code == "policy-blocked":
                             raise
-                        # Until the response and committed entry agree, no course owns this epoch.
-                        # Do not downgrade an unbound selection to publishable stale catalog rows.
+                        # A mismatched committed entry cannot supply rows to any domain.
                         raise CampusError(
                             "course-sync-failed",
                             "Course selection could not be validated.",
                             "Check the course in the LMS and retry sync.",
                             "error",
                         ) from None
-                    previous_selection = selection
+                    selected_before = True
                     for domain in domains:
                         if domain == "notices" and not todo_completed:
                             try:
                                 todo_rows, todo_failures = await _todo(
-                                    page, guard, selection, policies["notices"], roster, course_id
+                                    page, guard, policies["notices"], roster, course_id
                                 )
                             except Exception as error:
                                 guard.raise_if_denied()
                                 if isinstance(error, CampusError) and error.code == "policy-blocked":
                                     raise
-                                if guard.epoch.phase != "bound" or guard.epoch.document_url != page.main_frame.url:
+                                if urlsplit(page.main_frame.url).path != "/std/todo":
                                     raise CampusError(
                                         "course-sync-failed",
-                                        "The global to-do document lost its course binding.",
+                                        "The global to-do navigation did not commit.",
                                         "Retry sync after the course page settles.",
                                         "error",
                                     ) from None
@@ -600,18 +513,18 @@ async def sync_all(
                         before_reasons = dict(diagnostics.suppressed_reasons)
                         try:
                             rows = await _section(
-                                page, guard, selection, domain, policies[domain], course, roster, todo_rows
+                                page, guard, ordinal, domain, policies[domain], course, roster, todo_rows
                             )
                             guard.raise_if_denied()
                         except Exception as error:
                             guard.raise_if_denied()
                             if isinstance(error, CampusError) and error.code == "policy-blocked":
                                 raise
-                            if guard.epoch.phase != "bound" or guard.epoch.document_url != page.main_frame.url:
-                                # Unproven navigation is a run-wide security failure, never stale success.
+                            path = urlsplit(page.main_frame.url).path
+                            if path != _SECTION_PATH[domain] and (domain != "lectures" or path != "/std/lecture"):
                                 raise CampusError(
                                     "course-sync-failed",
-                                    "A section document lost its course binding.",
+                                    "A section navigation did not commit.",
                                     "Retry sync after the course page settles.",
                                     "error",
                                 ) from None

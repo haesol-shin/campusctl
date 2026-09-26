@@ -82,6 +82,7 @@ CAPABILITY = {
             _suppress("course-roster-image", "/upload/dunetadmin/college/{hash}.png", "GET", "course-roster-image"),
             _suppress("favicon-icon", "/assets/images/favicon-{hash}.ico", "GET", "favicon"),
             _suppress("external-telemetry", "/v1/events", "POST", "telemetry", "http://0.0.0.0:3000"),
+            _suppress("external-telemetry-localhost", "/v1/events", "POST", "telemetry", "http://localhost:3000"),
             _suppress("panopto-disconnection-log", "/api/v1/panopto/addInternetDisconnectionLog", "POST", "logging"),
             _suppress("panopto-connectivity-check", "/api/v1/panopto/checkInternetConnection", "GET", "logging"),
         ],
@@ -191,6 +192,14 @@ FETCH_POLICY = {
         {
             "name": "external-telemetry",
             "origin": "http://0.0.0.0:3000",
+            "path_template": "/v1/events",
+            "operation": _FETCH_OPERATION,
+            "methods": ["POST"],
+            "reason": "telemetry",
+        },
+        {
+            "name": "external-telemetry-localhost",
+            "origin": "http://localhost:3000",
             "path_template": "/v1/events",
             "operation": _FETCH_OPERATION,
             "methods": ["POST"],

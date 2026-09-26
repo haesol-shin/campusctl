@@ -10,7 +10,7 @@ from campusctl.browser import PROTOCOL_TIMEOUT_SECONDS, bounded, profile_span
 from campusctl.catalog import catalog_path, read_catalog, write_catalog
 from campusctl.envelope import CampusError
 
-from .course_context import CourseSelection
+from .course_context import _TOPBAR_COURSE_JS
 from .lectures import EXTRACT_LEARNING_ROWS_JS, LEARNING_ROW_SELECTOR, parse_learning_rows
 
 COURSE_ROOM_URL_ANCHOR = 'a[href="/std/course"]'
@@ -75,26 +75,18 @@ def _merge_health(
 
 
 async def collect_lectures_rows(
-    page: Any, course: dict[str, Any], selection: CourseSelection | None, section_guard: Any
+    page: Any, course: dict[str, Any], section_guard: Any, *, ordinal: int | None = None
 ) -> list[dict[str, Any]]:
     """Read LV rows on the committed course section without selecting again."""
-    if selection is not None and selection.course_id != course.get("course_id"):
-        raise ValueError("lecture selection belongs to a different course")
     if section_guard is not None:
         section_guard.raise_if_denied()
-        if selection is not None:
-            if urlsplit(page.main_frame.url).path != "/std/course":
-                raise ValueError("lecture section document is not the selected course page")
-            epoch = section_guard.epoch
-            if (
-                epoch.phase != "bound"
-                or epoch.course_id != selection.course_id
-                or epoch.selection_epoch != selection.epoch
-                or epoch.frame is not page.main_frame
-                or epoch.document_url != page.main_frame.url
-            ):
-                raise ValueError("lecture section is not bound to the selected course")
-    ordinal = selection.ordinal if selection is not None else None
+    if urlsplit(page.main_frame.url).path != "/std/course":
+        raise ValueError("Lecture section document did not commit")
+    page_course_id = await bounded(
+        page.evaluate(_TOPBAR_COURSE_JS), PROTOCOL_TIMEOUT_SECONDS, "checking active lecture course"
+    )
+    if page_course_id != course["course_id"]:
+        raise ValueError("Lecture section belongs to another course")
     try:
         await bounded(
             page.wait_for_selector(LEARNING_ROW_SELECTOR, state="attached", timeout=COURSE_ROOM_TIMEOUT_MS),

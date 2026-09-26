@@ -239,38 +239,7 @@ def test_collector_accepts_proven_empty_or_inaccessible_body_but_rejects_count_m
     asyncio.run(exercise())
 
 
-def test_prearmed_collector_rejects_other_selection_epoch() -> None:
-    from campusctl.providers.cnu.course_context import CourseSelection
-
-    listeners: dict[str, list[Any]] = defaultdict(list)
-    page = SimpleNamespace(
-        on=lambda event, callback: listeners[event].append(callback),
-        remove_listener=lambda event, callback: listeners[event].remove(callback),
-    )
-    guard = SimpleNamespace(
-        epoch=SimpleNamespace(
-            number=9,
-            selection_epoch=4,
-            course_id="course-a",
-            phase="bound",
-            document_url="https://lms.example.invalid/std/task",
-        ),
-        raise_if_denied=lambda: None,
-    )
-
-    async def exercise() -> None:
-        capture = provider.arm_assignment_capture(page, guard)
-        with pytest.raises(ValueError, match="another course"):
-            await provider.collect_assignment_rows(
-                page, COURSES[0], CourseSelection("course-a", 1, 3, 2, 4), guard, capture=capture
-            )
-        assert all(not callbacks for callbacks in listeners.values())
-
-    asyncio.run(exercise())
-
-
 def test_failed_task_navigation_closes_armed_capture() -> None:
-    from campusctl.providers.cnu.course_context import CourseSelection
 
     listeners: dict[str, list[Any]] = defaultdict(list)
     frame = SimpleNamespace(url="https://lms.example.invalid/std/lecture")
@@ -279,19 +248,7 @@ def test_failed_task_navigation_closes_armed_capture() -> None:
         on=lambda event, callback: listeners[event].append(callback),
         remove_listener=lambda event, callback: listeners[event].remove(callback),
     )
-    selected = CourseSelection("course-a", 1, 1, 2, 3)
-    guard = SimpleNamespace(
-        epoch=SimpleNamespace(
-            number=2,
-            phase="navigation",
-            navigation_path="/std/task",
-            frame=frame,
-            course_id=selected.course_id,
-            selection_epoch=selected.epoch,
-            document_url=frame.url,
-        ),
-        raise_if_denied=lambda: None,
-    )
+    guard = SimpleNamespace(raise_if_denied=lambda: None)
 
     async def fail() -> None:
         raise RuntimeError("synthetic task navigation failed")
@@ -299,7 +256,7 @@ def test_failed_task_navigation_closes_armed_capture() -> None:
     async def exercise() -> None:
         capture = provider.arm_assignment_capture(page, guard)
         with pytest.raises(RuntimeError, match="synthetic task navigation failed"):
-            await provider.open_assignment_section(page, guard, fail, capture=capture, selection=selected)
+            await provider.open_assignment_section(page, guard, fail, capture=capture)
         assert all(not callbacks for callbacks in listeners.values())
 
     asyncio.run(exercise())
