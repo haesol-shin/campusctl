@@ -387,6 +387,8 @@ def test_profiled_archive_roster_wait_and_course_selection(
     phases = [item["phase"] for item in report["spans"]]
     assert phases.index("course-selection") < phases.index("merge") < phases.index("serialize-write")
     assert report["counts"]["course_selections"] == 1
+    assert any(span["phase"] == "sso-settle" and span["domain"] == "materials" for span in report["spans"])
+    assert report["counts"]["sso_settles"] == 1
     output = capsys.readouterr()
     assert output.out == "" and output.err.startswith("campusctl-profile: ")
     assert "course-0" not in output.err

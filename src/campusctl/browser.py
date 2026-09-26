@@ -76,9 +76,9 @@ class BrowserSession:
     sso_pending: set[asyncio.Task[Any]] | None = None
 
 
-async def settle_sso_popups(session: BrowserSession, *, timeout: float = 8.0) -> None:
+async def settle_sso_popups(session: BrowserSession, *, domain: str | None = None, timeout: float = 8.0) -> None:
     """Allow pre-guard roster SSO popups to finish without changing guarded policy."""
-    with profile_span("sso-settle"):
+    with profile_span("sso-settle", domain=domain):
         profile_count("sso_settles")
         try:
             async with asyncio.timeout(timeout):
@@ -96,11 +96,6 @@ async def settle_sso_popups(session: BrowserSession, *, timeout: float = 8.0) ->
             pass
 
 
-def _sso_page_url(url: str) -> bool:
-    parts = urllib.parse.urlsplit(url)
-    return parts.scheme == "https" and parts.hostname == "dcs-learning.cnu.ac.kr" and parts.path == "/SSOServiceLogin"
-
-
 def _roster_page_url(url: str) -> bool:
     parts = urllib.parse.urlsplit(url)
     return parts.scheme == "https" and parts.hostname == "dcs-learning.cnu.ac.kr" and parts.path == "/std/myLecture"
@@ -109,20 +104,8 @@ def _roster_page_url(url: str) -> bool:
 def _track_sso_popups(context: Any) -> tuple[set[Any], set[asyncio.Task[Any]], Callable[[], None]]:
     popups: set[Any] = set()
     pending: set[asyncio.Task[Any]] = set()
-    listeners: list[tuple[Any, Callable[..., None]]] = []
 
     def inspect(candidate: Any) -> None:
-        if _sso_page_url(candidate.url):
-            popups.add(candidate)
-        if hasattr(candidate, "on"):
-
-            def navigated(frame: Any) -> None:
-                if frame is candidate.main_frame and _sso_page_url(frame.url):
-                    popups.add(candidate)
-
-            candidate.on("framenavigated", navigated)
-            listeners.append((candidate, navigated))
-
         async def inspect_opener() -> None:
             try:
                 opener = await candidate.opener()
@@ -131,19 +114,14 @@ def _track_sso_popups(context: Any) -> tuple[set[Any], set[asyncio.Task[Any]], C
             except Exception:
                 pass
 
-        if hasattr(candidate, "opener"):
-            task = asyncio.create_task(inspect_opener())
-            pending.add(task)
-            task.add_done_callback(pending.discard)
+        task = asyncio.create_task(inspect_opener())
+        pending.add(task)
+        task.add_done_callback(pending.discard)
 
     context.on("page", inspect)
-    for existing in context.pages:
-        inspect(existing)
 
     def remove() -> None:
         context.remove_listener("page", inspect)
-        for candidate, listener in listeners:
-            candidate.remove_listener("framenavigated", listener)
         for task in pending:
             task.cancel()
 

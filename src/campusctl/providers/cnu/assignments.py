@@ -333,7 +333,7 @@ async def sync_assignments(
         page = session.page
         with profile_span("auth", domain="assignments"):
             await ensure_logged_in(page, config, target_url=MY_LECTURE_URL, expected_selector=COURSE_LINK_SELECTOR)
-        await settle_sso_popups(session)
+        await settle_sso_popups(session, domain="assignments")
         interceptor = await install_ui_request_interceptor(
             session.context, policy, operation="assignments.sync", diagnostics=diagnostics
         )

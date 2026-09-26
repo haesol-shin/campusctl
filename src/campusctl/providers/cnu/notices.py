@@ -746,7 +746,7 @@ async def sync_notices(
         with profile_span("auth", domain="notices"):
             await ensure_logged_in(page, config)
         diagnostics = UiRequestDiagnostics()
-        await settle_sso_popups(session)
+        await settle_sso_popups(session, domain="notices")
         interceptor = await install_ui_request_interceptor(
             page, policy, operation="notices.sync", diagnostics=diagnostics, selected_file=None
         )

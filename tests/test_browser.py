@@ -366,19 +366,17 @@ def test_guarded_session_removes_popup_listener_on_close(tmp_path: Path, monkeyp
     _run(scenario())
 
 
-def test_existing_sso_page_is_tracked_and_listener_is_removed(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(browser, "_sso_page_url", lambda url: url == "https://lms.invalid/SSOServiceLogin")
-
+def test_existing_sso_tab_is_not_treated_as_a_session_popup() -> None:
     async def scenario() -> None:
         context = FakeContext()
         page = FakePage(context)
         page.url = "https://lms.invalid/SSOServiceLogin"
         context.pages.append(page)
-        popups, _pending, remove = browser._track_sso_popups(context)
-        assert page in popups
+        popups, pending, remove = browser._track_sso_popups(context)
+        assert not popups and not pending
+        await browser.settle_sso_popups(browser.BrowserSession(page, context, "cdp", popups, pending))
         remove()
         assert context.listeners["page"] == []
-        assert page.listeners["framenavigated"] == []
 
     _run(scenario())
 

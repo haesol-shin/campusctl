@@ -525,7 +525,7 @@ async def sync_materials(
         with profile_span("auth", domain="materials"):
             await ensure_logged_in(page, config, target_url=MY_LECTURE_URL, expected_selector=COURSE_LINK_SELECTOR)
         diagnostics = UiRequestDiagnostics()
-        await settle_sso_popups(session)
+        await settle_sso_popups(session, domain="materials")
         guard = await install_ui_request_interceptor(
             session.context,
             policy,
