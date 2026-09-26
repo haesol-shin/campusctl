@@ -363,6 +363,9 @@ async def build_source_package(
             "omitted_resources": omitted,
         }
         digest = _digest(manifest, content, files)
+        if interceptor is not None:
+            # A latched guard denial anywhere in the selected run forbids publication.
+            interceptor.raise_if_denied()
         destination = Path(out).absolute() if out is not None else parent / digest
         if destination.exists() or destination.is_symlink():
             previous = _verified_existing(destination, digest) if out is None else None

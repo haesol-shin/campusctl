@@ -346,7 +346,10 @@ def test_local_mode_uses_headed_persistent_profile_and_normal_user_agent(
     _run(scenario())
 
 
-def test_guarded_session_removes_popup_listener_on_close(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("operation", ["assignments.sync", "assignments.fetch", "notices.fetch"])
+def test_guarded_session_removes_popup_listener_on_close(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
+) -> None:
     monkeypatch.setenv("DISPLAY", ":99")
     executable = tmp_path / "chromium"
     executable.touch()
@@ -357,7 +360,7 @@ def test_guarded_session_removes_popup_listener_on_close(tmp_path: Path, monkeyp
         async with browser.open_session(
             {"browser": {"executable_path": str(executable)}},
             data_dir=tmp_path,
-            operation="assignments.sync",
+            operation=operation,
         ) as session:
             assert len(context.listeners["page"]) == 1
             await browser.settle_sso_popups(session)
