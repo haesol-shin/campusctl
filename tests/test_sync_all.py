@@ -167,11 +167,12 @@ async function showFiles(){await fetch('/api/v1/archive/getAttachFileList?e=fixt
         if third_party is not None
         else ""
     )
+    # Let the app's course DOM render before parser-blocking third-party assets.
     return (
-        '<!doctype html><html><head><meta charset="utf-8">'
-        + assets
-        + '</head><body><div class="fixture-background"></div>'
+        '<!doctype html><html><head><meta charset="utf-8"></head><body>'
+        + '<div class="fixture-background"></div>'
         + body
+        + assets
         + "</body></html>"
     )
 
