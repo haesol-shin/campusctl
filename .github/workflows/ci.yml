@@ -52,12 +52,19 @@ jobs:
           sudo install -m 755 gitleaks /usr/local/bin/gitleaks
       - name: Scan commits for secrets
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
         run: |
           set -euo pipefail
-          if [ -n "${BASE_SHA}" ]; then range="${BASE_SHA}..HEAD"; else range="HEAD~1..HEAD"; fi
-          git rev-parse -q --verify HEAD~1 >/dev/null || range="HEAD"
-          gitleaks git --no-banner --redact --log-opts="${range}" .
+          zero=0000000000000000000000000000000000000000
+          if [ -n "${PR_BASE_SHA}" ]; then
+            range="${PR_BASE_SHA}..HEAD"
+          elif [ -n "${PUSH_BEFORE_SHA}" ] && [ "${PUSH_BEFORE_SHA}" != "${zero}" ] && git cat-file -e "${PUSH_BEFORE_SHA}^{commit}" 2>/dev/null; then
+            range="${PUSH_BEFORE_SHA}..HEAD"
+          else
+            range="HEAD"  # new ref, tag, or manual run: scan the full history
+          fi
+          gitleaks git --no-banner --redact --log-opts="--diff-merges=first-parent ${range}" .
       - name: Check tracked files for local paths, emails, and binaries
         run: python3 scripts/check_public_hygiene.py
 

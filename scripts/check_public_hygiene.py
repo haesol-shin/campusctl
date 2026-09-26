@@ -25,12 +25,13 @@ RULES = [
     (
         "email address",
         re.compile(
-            r"\b[A-Za-z0-9._%+-]+@(?!users\.noreply\.github\.com\b)(?!example\.(?:com|org|net)\b)"
-            r"(?![A-Za-z0-9.-]*\.invalid\b)(?!noreply\.)(?!localhost\b)[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"
+            r"\b[A-Za-z0-9._%+-]+@"
+            r"(?!(?:users\.noreply\.github\.com|noreply\.github\.com|example\.(?:com|org|net)|localhost)(?![\w.-]))"
+            r"(?![A-Za-z0-9.-]*\.invalid(?![\w.-]))[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"
         ),
     ),
 ]
-SKIP = {"uv.lock", "scripts/check_public_hygiene.py"}
+SKIP = {"scripts/check_public_hygiene.py"}
 
 
 def main() -> int:
@@ -43,8 +44,16 @@ def main() -> int:
         if name in SKIP:
             continue
         try:
-            text = Path(name).read_text(encoding="utf-8")
-        except (UnicodeDecodeError, FileNotFoundError):
+            data = Path(name).read_bytes()
+        except FileNotFoundError:
+            continue
+        if b"\0" in data:
+            problems.append(f"{name}: binary content")
+            continue
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            problems.append(f"{name}: not UTF-8 text")
             continue
         for lineno, line in enumerate(text.splitlines(), 1):
             for label, rule in RULES:
