@@ -14,7 +14,7 @@ A live run exercises campusctl on the real LMS and records enough to plan the ne
 1. Full sync of all four domains through the real CLI.
 2. One notice fetch and one assignment fetch, with read, view and submission state recorded before and after.
 3. One official material download.
-4. Timing for each step with profiling enabled.
+4. Wall time for every step, with `--profile` spans for sync.
 
 ## What is recorded
 

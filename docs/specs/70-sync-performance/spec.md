@@ -12,7 +12,7 @@ Full sync visits every course once and runs the requested sections in one sessio
 ## Acceptance
 
 - The synthetic seven-course Chromium fixture shows one login, one roster, one to-do and seven selections, with every normalized record equal to the independent single-domain expected output.
-- The [full-path live run](../live-run.md) completes all four domains on every course, with record sets equal to the catalogs from before the run, and reports its wall time next to the 2026-09-26 headless baseline (owner-held sanitized evidence (2026-09-26)).
+- The [full-path live run](../live-run.md) completes all four domains on every course; every difference from the catalogs before the run is explained by a change on the LMS, and the run reports its wall time next to the 2026-09-26 headless baseline (owner-held sanitized evidence (2026-09-26)).
 
 ## Not in scope
 

@@ -26,6 +26,6 @@ Start with the [constitution](constitution.md) and the [live run protocol](live-
 3. **Fix from the record.** Correct anything the run shows, offline, from its record and the behavior notes. A fix that needs behavior the record lacks goes to the owner before another run.
 4. **Publish fetch.** With the run's read-state evidence and the owner's sign-off, register `assignments fetch` and `notices fetch` and publish their contracts.
 5. **Optimize.** Compare the run's timings with the 2026-09-26 headless baseline and take any measured win that keeps every command working.
-6. **Docs, changelog and release report.** Bring the README, skill, contracts and specs in line with what ships; report timings, test and CI status and known limits. The owner approves the release.
+6. **Docs, changelog and release report.** Bring the READMEs, the agent skill, `docs/contracts/` and specs 00–60 in line with what ships, removing request-guard, lectures-only sync and unpublished-fetch guidance; report timings, test and CI status and known limits. The owner approves the release.
 
 **Not in v0.4.0:** the per-course selection-epoch layer, multi-trial benchmarking and archive restoration elision.
