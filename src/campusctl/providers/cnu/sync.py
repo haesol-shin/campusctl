@@ -49,13 +49,66 @@ def _course_failure(course: dict[str, Any]) -> CampusError:
     )
 
 
+def _mark_enrollment_unknown(root: Path) -> None:
+    target = catalog_path(root)
+    if not target.exists():
+        return
+    previous = read_catalog(target)
+    if previous.get("enrollment_state") != "unknown":
+        write_catalog({**previous, "enrollment_state": "unknown"}, target)
+
+
+def _merge_health(
+    merged: dict[str, Any],
+    previous: dict[str, Any] | None,
+    roster: list[dict[str, Any]],
+    failures: list[dict[str, str]],
+    selected_course_id: str | None,
+) -> None:
+    """Keep retained rows visibly stale until their course succeeds or enrollment is resolved."""
+    old_courses = {course["course_id"]: course for course in previous["courses"]} if previous else {}
+    old_failures = {failure["course_id"]: failure for failure in previous.get("failed_courses", [])} if previous else {}
+    current_failures = {failure["course_id"]: {**failure, "reason": "course-sync-failed"} for failure in failures}
+    if selected_course_id is not None:
+        old_failures.pop(selected_course_id, None)
+        old_failures.update(current_failures)
+        merged["enrollment_state"] = previous.get("enrollment_state", "unknown") if previous else "known"
+        merged["failed_courses"] = list(old_failures.values())
+        return
+
+    roster_ids = {course["course_id"] for course in roster}
+    if current_failures:
+        for course_id, course in old_courses.items():
+            if course_id not in roster_ids:
+                current_failures[course_id] = {
+                    "course_id": course_id,
+                    "label": course["label"],
+                    "reason": "removal-deferred",
+                }
+    # A successful full discovery resolves old failures and removed enrollment.
+    merged["enrollment_state"] = "known"
+    merged["failed_courses"] = list(current_failures.values())
+
+
 async def sync_lectures(
     config: dict[str, Any], root: Path, course_id: str | None = None
 ) -> tuple[dict[str, Any], list[CampusError]]:
     """Scrape enrolled-course lecture rows and merge them into the local catalog."""
     async with open_session(config, data_dir=root) as session:
         page = session.page
-        discovered_courses = await discover_courses(page, config)
+        try:
+            discovered_courses = await discover_courses(page, config)
+        except Exception as error:
+            if isinstance(error, CampusError) and error.code in {*_LOGIN_ERRORS, "policy-blocked"}:
+                raise
+            if course_id is None:
+                _mark_enrollment_unknown(root)
+            raise CampusError(
+                "course-discovery-failed",
+                "Enrolled courses could not be discovered.",
+                "Retry the lecture sync after the LMS course list loads.",
+                "error",
+            ) from None
         if course_id is None:
             courses = discovered_courses
         else:
@@ -148,6 +201,7 @@ async def sync_lectures(
             lectures,
             failed_course_ids=failed_course_ids,
         )
+        _merge_health(merged, previous, discovered_courses, failed_courses, course_id)
         write_catalog(merged, target)
 
     result = {
@@ -155,6 +209,6 @@ async def sync_lectures(
         "lectures": len(lectures),
         "incomplete": sum(lecture["completion"] == "incomplete" for lecture in lectures),
         "failed_courses": failed_courses,
-        "catalog": {"generated_at": merged["generated_at"]},
+        "catalog": {"generated_at": merged["generated_at"], "enrollment_state": merged["enrollment_state"]},
     }
     return result, errors

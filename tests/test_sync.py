@@ -189,6 +189,8 @@ def test_full_sync_writes_catalog_and_drops_unenrolled_courses(
     catalog = read_catalog(catalog_path(tmp_path))
     assert [course["course_id"] for course in catalog["courses"]] == ["course-a", "course-b"]
     assert [lecture["entity_id"] for lecture in catalog["lectures"]] == ["cnu_lecture:course-a:a-1"]
+    assert catalog["enrollment_state"] == "known"
+    assert catalog["failed_courses"] == []
     assert page.course_clicks == ["course-a", "course-b"]
 
 
@@ -256,6 +258,11 @@ def test_partial_sync_keeps_failed_and_unenrolled_previous_records(
         "cnu_lecture:course-b:b-old",
         "cnu_lecture:course-gone:gone",
     }
+    assert catalog["enrollment_state"] == "known"
+    assert catalog["failed_courses"] == [
+        {"course_id": "course-b", "label": "Course B", "reason": "course-sync-failed"},
+        {"course_id": "course-gone", "label": "Former course", "reason": "removal-deferred"},
+    ]
 
 
 def test_course_filter_replaces_only_selected_course_and_unknown_course_leaves_catalog_untouched(
@@ -297,6 +304,9 @@ def test_course_filter_replaces_only_selected_course_and_unknown_course_leaves_c
             "provider_state": "N",
         },
     ]
+    catalog = read_catalog(catalog_path(tmp_path))
+    assert catalog["enrollment_state"] == "unknown"
+    assert catalog["failed_courses"] == []
 
     before = catalog_path(tmp_path).read_bytes()
     code, envelope = _invoke(["sync", "--course", "not-enrolled"], capsys)
@@ -320,6 +330,103 @@ def test_zero_row_course_is_a_successful_empty_course(
     assert envelope["result"]["incomplete"] == 0
     assert read_catalog(catalog_path(tmp_path))["courses"] == COURSES[:1]
     assert read_catalog(catalog_path(tmp_path))["lectures"] == []
+    catalog = read_catalog(catalog_path(tmp_path))
+    assert catalog["enrollment_state"] == "known"
+    assert catalog["failed_courses"] == []
+
+
+def test_scoped_failure_and_success_keep_untouched_health(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _install_fake_sync(monkeypatch, tmp_path, failed_courses={"course-b"})
+    write_catalog(
+        {
+            "schema_version": 1,
+            "generated_at": "2026-01-01T00:00:00Z",
+            "enrollment_state": "unknown",
+            "courses": COURSES,
+            "lectures": [_lecture("course-a", "a-old"), _lecture("course-b", "b-old")],
+            "failed_courses": [{"course_id": "course-a", "label": "Course A", "reason": "course-sync-failed"}],
+        },
+        catalog_path(tmp_path),
+    )
+    code, _ = _invoke(["sync", "--course", "course-b"], capsys)
+    assert code == 1
+    catalog = read_catalog(catalog_path(tmp_path))
+    assert catalog["enrollment_state"] == "unknown"
+    assert {row["entity_id"] for row in catalog["lectures"]} == {
+        "cnu_lecture:course-a:a-old",
+        "cnu_lecture:course-b:b-old",
+    }
+    assert {item["course_id"] for item in catalog["failed_courses"]} == {"course-a", "course-b"}
+    assert {item["reason"] for item in catalog["failed_courses"]} == {"course-sync-failed"}
+
+    _install_fake_sync(monkeypatch, tmp_path, rows_by_course={"course-b": []})
+    code, _ = _invoke(["sync", "--course", "course-b"], capsys)
+    assert code == 0
+    catalog = read_catalog(catalog_path(tmp_path))
+    assert catalog["enrollment_state"] == "unknown"
+    assert catalog["failed_courses"] == [{"course_id": "course-a", "label": "Course A", "reason": "course-sync-failed"}]
+    assert [row["entity_id"] for row in catalog["lectures"]] == ["cnu_lecture:course-a:a-old"]
+
+
+def test_discovery_failure_marks_full_enrollment_unknown_but_leaves_scoped_catalog_untouched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _install_fake_sync(monkeypatch, tmp_path)
+    write_catalog(
+        {
+            "schema_version": 1,
+            "generated_at": "2026-01-01T00:00:00Z",
+            "enrollment_state": "known",
+            "courses": COURSES[:1],
+            "lectures": [_lecture("course-a", "old")],
+            "failed_courses": [],
+        },
+        catalog_path(tmp_path),
+    )
+
+    async def broken_discovery(*_args: Any, **_kwargs: Any) -> list[dict[str, Any]]:
+        raise RuntimeError("private error contents")
+
+    monkeypatch.setattr(sync_module, "discover_courses", broken_discovery)
+    before = catalog_path(tmp_path).read_bytes()
+    code, envelope = _invoke(["sync", "--course", "course-a"], capsys)
+    assert code == 1
+    assert envelope["errors"][0]["code"] == "course-discovery-failed"
+    assert catalog_path(tmp_path).read_bytes() == before
+    code, envelope = _invoke(["sync"], capsys)
+    assert code == 1
+    assert envelope["errors"][0]["code"] == "course-discovery-failed"
+    assert "private error contents" not in json.dumps(envelope)
+    catalog = read_catalog(catalog_path(tmp_path))
+    assert catalog["generated_at"] == "2026-01-01T00:00:00Z"
+    assert catalog["enrollment_state"] == "unknown"
+    assert catalog["courses"] == COURSES[:1]
+    assert catalog["lectures"] == [_lecture("course-a", "old")]
+
+
+def test_full_success_resolves_legacy_unknown_and_removes_old_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _install_fake_sync(monkeypatch, tmp_path, courses=COURSES[:1], empty_courses={"course-a"})
+    write_catalog(
+        {
+            "schema_version": 1,
+            "generated_at": "2026-01-01T00:00:00Z",
+            "courses": COURSES,
+            "lectures": [_lecture("course-a", "old"), _lecture("course-b", "removed")],
+            "failed_courses": [{"course_id": "course-a", "label": "Course A", "reason": "course-sync-failed"}],
+        },
+        catalog_path(tmp_path),
+    )
+    code, _ = _invoke(["sync"], capsys)
+    assert code == 0
+    catalog = read_catalog(catalog_path(tmp_path))
+    assert catalog["enrollment_state"] == "known"
+    assert catalog["failed_courses"] == []
+    assert catalog["courses"] == COURSES[:1]
+    assert catalog["lectures"] == []
 
 
 @pytest.mark.parametrize(
