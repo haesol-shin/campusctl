@@ -1024,17 +1024,7 @@ class UiRequestInterceptor:
             if self._require_selection:
                 raise UiRequestDenied("route")
             return  # Existing single-operation interceptors do not switch epochs.
-        origin, path, query, _ = _request_parts(request.url)
-        reason = _suppression_reason(
-            epoch.policy, origin, path, query, request.method.upper(), epoch.operation, request.resource_type
-        )
-        if reason is not None and (
-            reason == "panopto-sso-popup"
-            or (
-                epoch.phase in {"roster-entry", "roster", "selection"} and reason in {"logging", "telemetry", "favicon"}
-            )
-        ):
-            return  # Exact reviewed suppressions still pass through guard_ui_request.
+        origin, path, _, _ = _request_parts(request.url)
         try:
             frame = request.frame
         except Exception:
@@ -1217,7 +1207,6 @@ class UiRequestInterceptor:
             previous = request.redirected_from
             with profile_span("guard-headers"):
                 headers = await request.all_headers()
-            self._check_epoch_request(request, headers, epoch)
             with profile_span("guard-decision"):
                 decision = guard_ui_request(
                     epoch.policy,
@@ -1230,6 +1219,8 @@ class UiRequestInterceptor:
                     selected_file=selected_file,
                     selected_file_id=selected_file_id,
                 )
+            if decision == "allow":
+                self._check_epoch_request(request, headers, epoch)
         except UiRequestDenied as denial:
             if self._denial is None:
                 self._denial = denial
@@ -1246,7 +1237,6 @@ class UiRequestInterceptor:
                 )
                 or "third-party-asset"
             )
-            popup = None
             if reason == "panopto-sso-popup":
                 valid_popup, popup = await self._sso_popup(request)
                 if not valid_popup:

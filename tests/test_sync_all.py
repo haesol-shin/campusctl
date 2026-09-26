@@ -24,6 +24,7 @@ from campusctl.domain_catalog import domain_catalog_path, read_domain_catalog, w
 from campusctl.profiling import SpanRecorder
 from campusctl.providers.cnu import assignments, login, materials, notices, sync_all
 from campusctl.providers.cnu.sync import sync_lectures
+from campusctl.providers.cnu.ui_policy import UiRequestDiagnostics
 from campusctl.sync import run_sync
 
 IDS = tuple(f"course-{n}.invalid" for n in range(1, 8))
@@ -70,9 +71,20 @@ def _document(
     wrong_topbar: bool = False,
     archive_count_mismatch: bool = False,
     malformed_todo: bool = False,
+    third_party: tuple[str, str] | None = None,
+    external_probe: tuple[str, str, str] | None = None,
 ) -> str:
     if path == "/std/myLecture":
         body = _roster()
+        if external_probe is not None:
+            probe_origin, method, kind = external_probe
+            if kind == "xhr":
+                body += (
+                    f'<script>const probe=new XMLHttpRequest();probe.open("{method}",'
+                    f'"{probe_origin}/probe");probe.send();</script>'
+                )
+            else:
+                body += f'<script>fetch("{probe_origin}/probe",{{method:"{method}"}});</script>'
     elif path == "/std/lecture":
         body = _topbar(wrong_selection=wrong_topbar) + _menu()
     elif path == "/std/course":
@@ -143,7 +155,13 @@ async function showFiles(){await fetch('/api/v1/archive/getAttachFileList?e=fixt
  document.querySelector('#totalCnt strong').textContent = '2';</script>"""
     else:
         raise AssertionError(path)
-    return '<!doctype html><html><head><meta charset="utf-8"></head><body>' + body + "</body></html>"
+    assets = (
+        f'<script src="{third_party[0]}/fixture.js"></script>'
+        f'<link rel="stylesheet" href="{third_party[1]}/fixture.css">'
+        if third_party is not None
+        else ""
+    )
+    return '<!doctype html><html><head><meta charset="utf-8">' + assets + "</head><body>" + body + "</body></html>"
 
 
 class FixtureServer(ThreadingHTTPServer):
@@ -155,6 +173,8 @@ class FixtureServer(ThreadingHTTPServer):
         self.archive_count_mismatch = False
         self.wrong_topbar = False
         self.malformed_todo = False
+        self.third_party: tuple[str, str] | None = None
+        self.external_probe: tuple[str, str, str] | None = None
         super().__init__(("127.0.0.1", 0), FixtureHandler)
 
 
@@ -184,6 +204,8 @@ class FixtureHandler(BaseHTTPRequestHandler):
                     wrong_topbar=self.server.wrong_topbar,
                     archive_count_mismatch=self.server.archive_count_mismatch,
                     malformed_todo=self.server.malformed_todo,
+                    third_party=self.server.third_party,
+                    external_probe=self.server.external_probe,
                 )
             )
         elif path == "/api/v1/course/addSessionCourseInfo":
@@ -254,8 +276,8 @@ def _policy(source: dict[str, Any], origin: str) -> dict[str, Any]:
     policy = deepcopy(source)
     live = "https://dcs-learning.cnu.ac.kr"
     policy["origins"] = [origin]
-    # Static, suppression, download and logging-token approvals are tied to fixed
-    # production origins. The fixture makes none of those requests.
+    # Production-origin static, named suppression, download, and logging-token pins
+    # are not exercised by this loopback fixture.
     policy["static_asset_origins"] = []
     policy["suppress"] = []
     policy["selected_file_routes"] = []
@@ -285,7 +307,14 @@ def _install_fixture(monkeypatch: pytest.MonkeyPatch, server: FixtureServer) -> 
 
     async def login_once(page: Any, _config: dict[str, Any], **_kwargs: Any) -> None:
         login_calls.append("login")
-        await page.goto(origin + "/std/myLecture")
+        assets, probe = server.third_party, server.external_probe
+        server.third_party = None
+        server.external_probe = None
+        try:
+            await page.goto(origin + "/std/myLecture")
+        finally:
+            server.third_party = assets
+            server.external_probe = probe
 
     monkeypatch.setattr(login, "ensure_logged_in", login_once)
     monkeypatch.setattr(login, "MY_LECTURE_URL", origin + "/std/myLecture")
@@ -446,6 +475,41 @@ def test_seven_courses_one_guarded_session_and_full_normalized_catalogs(
             {key: value for key, value in _expected_row("notices", cid, n).items() if key != "native_id"}
             for n, cid in enumerate(IDS, 1)
         ]
+
+
+def test_seven_course_sync_suppresses_external_assets_in_every_document(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with fixture_server() as server, fixture_server() as cdn, fixture_server() as fonts:
+        server.third_party = (f"http://127.0.0.1:{cdn.server_port}", f"http://127.0.0.1:{fonts.server_port}")
+        diagnostics = UiRequestDiagnostics()
+        monkeypatch.setattr(sync_all, "UiRequestDiagnostics", lambda: diagnostics)
+        config = _install_fixture(monkeypatch, server)
+        result, errors = run_sync(config, tmp_path, DOMAINS, None, headless=True)
+        assert errors is None, (getattr(errors, "reason_code", None), server.requests, result)
+        assert all(result["domains"][domain]["status"] == "ok" for domain in DOMAINS)
+        paths = Counter((method, path) for method, path, _ in server.requests)
+        assert paths[("POST", "/api/v1/course/addSessionCourseInfo")] == 7
+        assert cdn.requests == []
+        assert fonts.requests == []
+        assert diagnostics.suppressed_reasons.get("third-party-asset", 0) >= 2
+        visited = {path for method, path, _ in server.requests if method == "GET"}
+        assert {"/std/myLecture", "/std/lecture", "/std/course", "/std/task", "/std/notice", "/std/archive"} <= visited
+
+
+@pytest.mark.parametrize(("method", "kind"), [("POST", "fetch"), ("GET", "fetch"), ("GET", "xhr")])
+def test_external_active_request_denied_without_server_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, method: str, kind: str
+) -> None:
+    with fixture_server() as server, fixture_server() as outside:
+        server.external_probe = (f"http://127.0.0.1:{outside.server_port}", method, kind)
+        config = _install_fixture(monkeypatch, server)
+        result, errors = run_sync(config, tmp_path, DOMAINS, None, headless=True)
+        assert errors is not None
+        assert errors.code == "policy-blocked"
+        assert outside.requests == []
+        assert not any(path == "/api/v1/course/addSessionCourseInfo" for _, path, _ in server.requests)
+        assert all(not (tmp_path / "catalog" / f"{domain}.json").exists() for domain in DOMAINS)
 
 
 def test_document_commit_spans_exclude_all_four_collector_phases(

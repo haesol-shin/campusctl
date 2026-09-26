@@ -1323,16 +1323,18 @@ def test_panopto_popup_is_aborted_counted_and_closed_without_latched_denial() ->
         other = Popup()
         wrong_frame = SimpleNamespace(parent_frame=None, url="https://dcs-learning.cnu.ac.kr/std/archive", page=other)
         target = _FakeTarget()
+        diagnostics = UiRequestDiagnostics()
         interceptor = await install_ui_request_interceptor(
             target,
             UiRequestPolicy.from_reviewed_config(CAPABILITY["policy"]),
             operation="materials.download",
-            diagnostics=UiRequestDiagnostics(),
+            diagnostics=diagnostics,
         )
         try:
             assert await target.dispatch(_FakeRequest(request_url, "POST", frame=wrong_frame)) == "abort"
             with pytest.raises(UiRequestDenied):
                 interceptor.raise_if_denied()
+            assert diagnostics.suppressed_count == 0
             assert not other.closed
         finally:
             await interceptor.close()
