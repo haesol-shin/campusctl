@@ -1240,7 +1240,12 @@ class UiRequestInterceptor:
             if reason == "panopto-sso-popup":
                 valid_popup, popup = await self._sso_popup(request)
                 if not valid_popup:
-                    popup = None
+                    if self._denial is None:
+                        self._denial = UiRequestDenied("route")
+                    await route.abort()
+                    if recorder is not None:
+                        recorder.request(category, "blocked")
+                    return
             await route.abort()
             self._diagnostics.suppressed_count += 1
             self._diagnostics.suppressed_reasons[reason] = self._diagnostics.suppressed_reasons.get(reason, 0) + 1

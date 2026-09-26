@@ -1332,8 +1332,9 @@ def test_panopto_popup_is_aborted_counted_and_closed_without_latched_denial() ->
         )
         try:
             assert await target.dispatch(_FakeRequest(request_url, "POST", frame=wrong_frame)) == "abort"
-            interceptor.raise_if_denied()
-            assert diagnostics.suppressed_reasons == {"panopto-sso-popup": 1}
+            with pytest.raises(UiRequestDenied):
+                interceptor.raise_if_denied()
+            assert diagnostics.suppressed_count == 0
             assert not other.closed
         finally:
             await interceptor.close()
