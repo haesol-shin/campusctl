@@ -1001,6 +1001,60 @@ def test_reviewed_side_requests_and_fatal_boundaries(domain: str, operation: str
         assert caught.value.reason_code in {"range", "redirect"}
 
 
+@pytest.mark.parametrize(("domain", "operation"), [("assignments", "assignments.fetch"), ("notices", "notices.fetch")])
+def test_fetch_interceptor_aborts_roster_side_requests_without_denial(domain: str, operation: str) -> None:
+    import asyncio
+
+    from campusctl.commands import assignments, notices
+
+    class Popup:
+        url = "https://dcs-learning.cnu.ac.kr/SSOServiceLogin"
+        closed = False
+
+        async def opener(self) -> Any:
+            return SimpleNamespace(url="https://dcs-learning.cnu.ac.kr/std/myLecture")
+
+        async def close(self) -> None:
+            self.closed = True
+
+    async def scenario() -> None:
+        config = assignments.FETCH_POLICY if domain == "assignments" else notices.FETCH_POLICY
+        target = _FakeTarget()
+        popup = Popup()
+        target.pages = [popup]
+        frame = SimpleNamespace(parent_frame=None, url=popup.url, page=popup)
+        diagnostics = UiRequestDiagnostics()
+        interceptor = await install_ui_request_interceptor(
+            target, UiRequestPolicy.from_reviewed_config(config), operation=operation, diagnostics=diagnostics
+        )
+        try:
+            for request in (
+                _FakeRequest("https://dcs-learning.cnu.ac.kr/std/myLecture"),
+                _FakeRequest(
+                    "https://dcs-learning.cnu.ac.kr/upload/dunetadmin/college/Ab_9.png", resource_type="image"
+                ),
+                _FakeRequest("https://dcs-learning.cnu.ac.kr/assets/images/favicon-Ab_9.ico", resource_type="other"),
+                _FakeRequest("http://0.0.0.0:3000/v1/events", method="POST", resource_type="fetch"),
+                _FakeRequest("https://cnu.ap.panopto.com/Panopto/Pages/Auth/Login.aspx", "POST", frame=frame),
+            ):
+                assert await target.dispatch(request) == (
+                    "continue" if request.url.endswith("/std/myLecture") else "abort"
+                )
+                interceptor.raise_if_denied()
+            assert popup.closed
+            assert diagnostics.suppressed_count == 4
+            assert diagnostics.suppressed_reasons == {
+                "course-roster-image": 1,
+                "favicon": 1,
+                "telemetry": 1,
+                "panopto-sso-popup": 1,
+            }
+        finally:
+            await interceptor.close()
+
+    asyncio.run(scenario())
+
+
 def test_interceptor_counts_named_and_passive_suppressions() -> None:
     import asyncio
 

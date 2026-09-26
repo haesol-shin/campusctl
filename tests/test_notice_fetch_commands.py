@@ -62,6 +62,10 @@ def test_notice_fetch_json_and_human(tmp_path: Path, monkeypatch: pytest.MonkeyP
         "panopto-script",
         "panopto-disconnection-log",
         "panopto-connectivity-check",
+        "course-roster-image",
+        "favicon-icon",
+        "external-telemetry",
+        "panopto-sso-popup",
     }
 
     # 2. Test successful dispatch (complete package)

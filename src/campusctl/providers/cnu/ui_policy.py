@@ -82,7 +82,9 @@ _FILE_TEMPLATES = {
     "https://dcs-learning.cnu.ac.kr": "/file/{term}/{course}/board/{board-manager}/{board-item}/{stored-filename}",
 }
 _PANOPTO_ORIGIN = "https://cnu.ap.panopto.com"
-_PANOPTO_OPERATIONS = frozenset({"assignments.sync", "notices.sync", "materials.sync", "materials.download"})
+_PANOPTO_OPERATIONS = frozenset(
+    {"assignments.sync", "notices.sync", "materials.sync", "materials.download", "assignments.fetch", "notices.fetch"}
+)
 _QUERY_KINDS = {"_": "cachebuster", "e": "encrypted", "curPage": "page", "no": "board-item-id"}
 _POLICY_KEYS = frozenset(
     {
