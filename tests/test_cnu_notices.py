@@ -521,6 +521,7 @@ def test_board_rejects_unbound_or_incomplete_responses(monkeypatch: pytest.Monke
 
 def test_board_rejects_conflicting_context_and_ambiguous_name(monkeypatch: pytest.MonkeyPatch) -> None:
     page = FakePage()
+
     page.context_id = "course-b"
     with pytest.raises(ValueError, match="another course"):
         collect_board(page, monkeypatch)
@@ -690,6 +691,7 @@ def test_collector_uses_prearmed_board_and_independent_expected_row(monkeypatch:
         assert actual == [
             {
                 "entity_id": "cnu_notice:course-a:2026-09-01 08%3A00:1",
+                "native_id": "TB_L_BOARDITEM100",
                 "legacy_key": "Example Course_2026-09-01 08:00_1",
                 "course": {"id": "course-a", "label": "Example Course"},
                 "kind": "notice",

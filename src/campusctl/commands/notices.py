@@ -45,6 +45,25 @@ _POST_PATHS = (
     "/api/v1/course/get",
     "/api/v1/course/getCeShortcuts",
 )
+_PUBLIC_ROW_KEYS = frozenset(
+    {
+        "entity_id",
+        "legacy_key",
+        "course",
+        "kind",
+        "title",
+        "date",
+        "status",
+        "is_unread",
+        "posted_date",
+        "author_role",
+        "author",
+        "view_count",
+        "has_attachments",
+    }
+)
+
+
 CAPABILITY: dict[str, Any] = {
     "commands": ["list"],
     "policy": {
@@ -352,7 +371,7 @@ def dispatch(args: argparse.Namespace) -> tuple[dict[str, Any], CampusError | li
             rows = [row for row in rows if row["course"]["id"] == args.course]
         return {
             "cache": {**cache_metadata(catalog, now=datetime.now(UTC), domain="notices"), "path_present": True},
-            "notices": rows,
+            "notices": [{key: value for key, value in row.items() if key in _PUBLIC_ROW_KEYS} for row in rows],
         }, None
     if command == "fetch":
         entity_id = getattr(args, "entity_id", None)

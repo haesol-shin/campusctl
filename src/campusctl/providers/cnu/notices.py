@@ -134,6 +134,7 @@ def parse_board_rows(
         result.append(
             {
                 "entity_id": entity_id,
+                "native_id": native,
                 "legacy_key": f"{course['label']}_{date}_{number}",
                 "course": {"id": course["course_id"], "label": course["label"]},
                 "kind": "notice",

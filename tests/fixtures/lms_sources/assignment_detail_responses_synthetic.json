@@ -1,0 +1,18 @@
+{
+  "detail": {
+    "header": {"code": 200},
+    "body": {
+      "report_no": "TB_L_REPORT101",
+      "course_id": "course-a",
+      "contents_id": "TB_L_REPORT101",
+      "report_nm": "Sample assignment brief"
+    }
+  },
+  "stdDetail": {
+    "header": {"code": 200},
+    "body": {
+      "report_no": "TB_L_REPORT101",
+      "course_id": "course-a"
+    }
+  }
+}

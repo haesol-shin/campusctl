@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from html.parser import HTMLParser
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,6 +16,8 @@ from campusctl.providers.cnu import assignment_detail as adapter
 from campusctl.source_package import ResourceReference
 
 FIXTURE = Path(__file__).parent / "fixtures" / "lms_sources" / "assignment_detail_synthetic.html"
+RESPONSE_FIXTURE = Path(__file__).parent / "fixtures" / "lms_sources" / "assignment_detail_responses_synthetic.json"
+RESPONSES = json.loads(RESPONSE_FIXTURE.read_text(encoding="utf-8"))
 SELECTED = {
     "entity_id": "cnu_assignment:course-a:TB_L_REPORT101",
     "task_id": "TB_L_REPORT101",
@@ -96,17 +99,27 @@ class BriefFixture(HTMLParser):
 
 
 class Response:
-    def __init__(self, path: str, native: str) -> None:
+    def __init__(self, path: str, native: str | None, course_id: str) -> None:
         self.url = "https://dcs-learning.cnu.ac.kr" + path
         self.request = SimpleNamespace(method="POST")
         self.status = 200
         self.native = native
+        self.course_id = course_id
 
     async def finished(self) -> None:
         return None
 
     async def json(self) -> dict[str, Any]:
-        return {"header": {"code": 200}, "body": {"task_id": self.native}}
+        fixture = RESPONSES["stdDetail" if self.url.endswith("/stdDetail") else "detail"]
+        body = dict(fixture["body"])
+        body["course_id"] = self.course_id
+        if self.native is None:
+            body.pop("report_no")
+        else:
+            body["report_no"] = self.native
+            if "contents_id" in body:
+                body["contents_id"] = self.native
+        return {"header": fixture["header"], "body": body}
 
 
 class Expectation:
@@ -145,7 +158,10 @@ class SelectedLink:
         image_request.fallback = self.page.fallback_image
         await self.page.image_handler(image_request)
         for path in adapter._DETAIL_PATHS:
-            response = Response(path, self.page.observed_id)
+            native = self.page.std_id if path.endswith("/stdDetail") and self.page.std_id else self.page.observed_id
+            if self.page.missing_report and path.endswith("/detail"):
+                native = None
+            response = Response(path, native, self.page.observed_course)
             for waiter in self.page.waiters:
                 if waiter.predicate(response):
                     waiter.value.set_result(response)
@@ -153,15 +169,27 @@ class SelectedLink:
 
 
 class Page:
-    def __init__(self, fixture: BriefFixture, observed_id: str) -> None:
+    def __init__(
+        self,
+        fixture: BriefFixture,
+        observed_id: str,
+        *,
+        observed_course: str = "course-a",
+        std_id: str | None = None,
+        missing_report: bool = False,
+    ) -> None:
         self.fixture = fixture
         self.observed_id = observed_id
+        self.observed_course = observed_course
+        self.std_id = std_id
+        self.missing_report = missing_report
         self.url = "https://dcs-learning.cnu.ac.kr/std/myLecture"
         self.actions: list[str] = []
         self.waiters: list[Expectation] = []
         self.image_handler: Any = None
         self.blocked_images = 0
         self.image_bytes = 0
+        self.extracted = False
 
     async def abort_image(self) -> None:
         self.blocked_images += 1
@@ -187,6 +215,7 @@ class Page:
         if expression == adapter.EXTRACT_COURSE_CONTEXT_JS:
             return "course-a"
         assert expression == adapter.EXTRACT_ASSIGNMENT_DETAIL_JS
+        self.extracted = True
         return {"parts": self.fixture.parts, "page_task_id": self.fixture.task_id}
 
     def locator(self, selector: str) -> SelectedLink:
@@ -240,6 +269,7 @@ def test_selected_assignment_detail_capture_readonly(monkeypatch: pytest.MonkeyP
     assert all("uploadFile" not in action and "modal" not in action.lower() for action in page.actions)
     assert page.blocked_images == 1 and page.image_bytes == 0
     assert page.image_handler is None
+    assert page.extracted
 
 
 def test_wrong_selected_task_fails_before_transfer(monkeypatch: pytest.MonkeyPatch, brief: BriefFixture) -> None:
@@ -251,6 +281,26 @@ def test_wrong_selected_task_fails_before_transfer(monkeypatch: pytest.MonkeyPat
     assert not any(action.startswith("download") for action in page.actions)
     assert page.fixture.badge == "미완료"
     assert page.blocked_images == 1 and page.image_bytes == 0
+    assert page.image_handler is None
+    assert not page.extracted
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"observed_course": "other-course"},
+        {"std_id": "TB_L_REPORT102"},
+        {"missing_report": True},
+    ],
+)
+def test_assignment_response_identity_rejects_before_extraction(
+    monkeypatch: pytest.MonkeyPatch, brief: BriefFixture, options: dict[str, Any]
+) -> None:
+    page = Page(brief, "TB_L_REPORT101", **options)
+    with pytest.raises(CampusError) as failure:
+        asyncio.run(_capture(monkeypatch, page))
+    assert failure.value.code == "entity-unknown"
+    assert not page.extracted
     assert page.image_handler is None
 
 
