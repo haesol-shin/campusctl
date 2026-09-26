@@ -152,6 +152,7 @@ def _fsync_directory(path: Path) -> None:
 
 def _write_selection(target: Path, payload: dict[str, Any], kind: str) -> None:
     backup: Path | None = None
+    published_identity: tuple[int, int] | None = None
     replaced = False
     try:
         ensure_private_dir(target.parent)
@@ -170,18 +171,28 @@ def _write_selection(target: Path, payload: dict[str, Any], kind: str) -> None:
                     shutil.copyfileobj(source, old)
                     old.flush()
                     os.fsync(old.fileno())
+            published = temp.stat()
+            published_identity = (published.st_dev, published.st_ino)
             os.replace(temp, target)
             replaced = True
             _fsync_directory(target.parent)
         except BaseException:
-            if replaced:
-                if backup is not None:
-                    os.replace(backup, target)
-                    backup = None
-                else:
-                    target.unlink(missing_ok=True)
-                with contextlib.suppress(OSError):
-                    _fsync_directory(target.parent)
+            # Another successful list may have replaced ours during directory sync.
+            # Never roll that writer back to our older backup.
+            if replaced and published_identity is not None:
+                try:
+                    current = target.stat()
+                    still_ours = (current.st_dev, current.st_ino) == published_identity
+                except FileNotFoundError:
+                    still_ours = False
+                if still_ours:
+                    if backup is not None:
+                        os.replace(backup, target)
+                        backup = None
+                    else:
+                        target.unlink(missing_ok=True)
+                    with contextlib.suppress(OSError):
+                        _fsync_directory(target.parent)
             with contextlib.suppress(OSError):
                 temp.unlink(missing_ok=True)
             raise

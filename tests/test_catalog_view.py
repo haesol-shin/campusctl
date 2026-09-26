@@ -201,3 +201,26 @@ def test_failed_post_replace_sync_preserves_last_material_number(
     assert resolve_material_number(tmp_path, "1")[0] == "material:old"
     assert calls == 2
     assert list(material_snapshot_path(tmp_path).parent.glob("*.bak")) == []
+
+
+def test_failed_writer_does_not_undo_newer_successful_list(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = domain_catalog_path("materials", tmp_path)
+    write_domain_catalog("materials", {"courses": [_course("id-a", "A")]}, path)
+    generation = catalog_snapshot("materials", tmp_path)[1]
+    publish_material_snapshot(tmp_path, generation, ["material:a"])
+    calls = 0
+
+    def newer_writer_then_fail(_path: Path) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            publish_material_snapshot(tmp_path, generation, ["material:c"])
+            raise OSError("synthetic older writer failure")
+
+    monkeypatch.setattr("campusctl.catalog_view._fsync_directory", newer_writer_then_fail)
+    with pytest.raises(CampusError) as failure:
+        publish_material_snapshot(tmp_path, generation, ["material:b"])
+    assert failure.value.code == "selection-write-failed"
+    assert resolve_material_number(tmp_path, "1")[0] == "material:c"
+    assert calls == 2
+    assert list(material_snapshot_path(tmp_path).parent.glob("*.bak")) == []
