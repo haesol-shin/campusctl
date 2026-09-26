@@ -599,3 +599,32 @@ def test_failed_transfer_never_publishes(tmp_path: Path, monkeypatch: pytest.Mon
     sources_dir = root / "sources"
     if sources_dir.exists():
         assert not any(sources_dir.rglob("package.json"))
+
+
+def test_latched_guard_denial_blocks_publication(tmp_path: Path) -> None:
+    class DeniedGuard:
+        def raise_if_denied(self) -> None:
+            raise CampusError("policy-blocked", "An LMS request was blocked by the reviewed UI policy.")
+
+    snapshot = DetailSnapshot(
+        source_url="https://lms.invalid/std/taskView",
+        provider_native_id="task-101",
+        parts=("Brief title\n",),
+    )
+    root = tmp_path / "data"
+    with pytest.raises(CampusError) as exc_info:
+        asyncio.run(
+            build_source_package(
+                FakePage(),
+                snapshot,
+                entity_id="cnu_assignment:course-1:task-101",
+                kind="assignment",
+                course_id="course-1",
+                course_label="Course 1",
+                root=root,
+                policy=make_policy(),
+                interceptor=DeniedGuard(),
+            )
+        )
+    assert exc_info.value.code == "policy-blocked"
+    assert not any(path.name == "package.json" for path in root.rglob("*"))

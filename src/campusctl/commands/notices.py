@@ -402,19 +402,22 @@ async def _fetch_notice(
     from campusctl.source_package import build_source_package
 
     ui_policy = UiRequestPolicy.from_reviewed_config(FETCH_POLICY)
+    if not ui_policy.approved:
+        raise CampusError("policy-blocked", "The reviewed notice fetch policy is unavailable.", None, "error")
     diagnostics = UiRequestDiagnostics()
     request_policy = RequestPolicy(ui_policy, "notice", diagnostics)
 
     async with open_session(config, data_dir=root, headless=headless, operation="notices.fetch") as session:
         page = session.page
         await ensure_logged_in(page, config)
-        interceptor = install_ui_request_interceptor(
+        interceptor = await install_ui_request_interceptor(
             page,
             ui_policy,
             operation="notices.fetch",
             diagnostics=diagnostics,
         )
         snapshot = await capture_notice_detail(page, row, interceptor=interceptor)
+        interceptor.raise_if_denied()
         result = await build_source_package(
             page,
             snapshot,
