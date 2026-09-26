@@ -7,6 +7,7 @@ import contextlib
 import json
 import os
 import re
+import secrets
 import sys
 import threading
 import time
@@ -233,7 +234,8 @@ def _write_record(record: dict[str, Any], operation: str, root: Path) -> Path:
         directory.chmod(0o700)
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
     name = _SAFE_OPERATION.sub("-", operation.lower())
-    target = directory / f"roster-{stamp}-{name}.json"
+    # Coarse clocks (Windows) can repeat a timestamp; a random suffix keeps O_EXCL names unique.
+    target = directory / f"roster-{stamp}-{secrets.token_hex(3)}-{name}.json"
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     fd = os.open(target, flags, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as output:
