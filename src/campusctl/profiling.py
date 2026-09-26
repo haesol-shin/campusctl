@@ -70,6 +70,18 @@ def _union_ns(intervals: list[tuple[int, int]]) -> int:
     return total
 
 
+def _subtract_ns(start: int, end: int, blocked: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    remaining = []
+    cursor = start
+    for left, right in sorted(blocked):
+        if left > cursor:
+            remaining.append((cursor, min(left, end)))
+        cursor = max(cursor, right)
+    if cursor < end:
+        remaining.append((cursor, end))
+    return [(left, right) for left, right in remaining if right > left]
+
+
 class SpanRecorder:
     """Bounded per-run spans. Integer course/window labels are ephemeral ordinals only.
 
@@ -183,10 +195,9 @@ class SpanRecorder:
                 assert parent.end is not None
                 children.setdefault(span.parent, []).append((max(parent.start, span.start), min(parent.end, span.end)))
         aggregates: dict[tuple[str, str | None, int | None, int | None, bool], dict] = {}
+        intervals: dict[tuple[str, str | None, int | None, int | None, bool], tuple[list, list]] = {}
         for index, span in enumerate(self._spans):
             assert span.end is not None
-            inclusive = span.end - span.start
-            exclusive = max(0, inclusive - _union_ns(children.get(index, [])))
             key = (span.phase, span.domain, span.course, span.window, span.failed)
             entry = aggregates.setdefault(
                 key,
@@ -202,8 +213,13 @@ class SpanRecorder:
                 },
             )
             entry["count"] += 1
-            entry["inclusive_ns"] += inclusive
-            entry["exclusive_ns"] += exclusive
+            inclusive, exclusive = intervals.setdefault(key, ([], []))
+            inclusive.append((span.start, span.end))
+            exclusive.extend(_subtract_ns(span.start, span.end, children.get(index, [])))
+        for key, entry in aggregates.items():
+            inclusive, exclusive = intervals[key]
+            entry["inclusive_ns"] = _union_ns(inclusive)
+            entry["exclusive_ns"] = _union_ns(exclusive)
         self._finished = {
             "schema_version": 1,
             "run": self.run,

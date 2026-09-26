@@ -1,7 +1,8 @@
-"""Run paired, shell-free synthetic or separately authorized sync comparisons.
+"""Compare shell-free, matched sync invocations; live work requires separate authorization.
 
-Results are private; this tool does not authenticate, alter browser gates, or
-constitute authorization to run against a live LMS.
+Each cold/warm run requires explicit per-arm setup commands. Only this file's
+built-in synthetic fixture modes run without --allow-live. Raw child output and
+catalog records never enter the private report.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections import Counter
 from pathlib import Path
 
 
@@ -28,14 +30,38 @@ def _argv(raw: str) -> list[str]:
 
 
 def _fixture(argv: list[str]) -> bool:
-    """Only local Python scripts explicitly named fixture are eligible for offline runs."""
-    if len(argv) != 2 or Path(argv[0]).resolve() != Path(sys.executable).resolve():
+    if len(argv) not in {5, 6} or Path(argv[0]).resolve() != Path(sys.executable).resolve():
         return False
-    target = Path(argv[1])
-    return target.is_file() and "fixture" in target.stem.lower() and target.suffix in {"", ".py"}
+    if Path(argv[1]).resolve() != Path(__file__).resolve():
+        return False
+    if len(argv) == 5:
+        return argv[2] == "--fixture-setup" and argv[4] in {"cold", "warm"}
+    return (
+        argv[2] == "--fixture-process"
+        and argv[4] in {"cold", "warm"}
+        and argv[5] in {"slow", "fast", "failed", "mismatch"}
+    )
 
 
-def _proc_snapshot(group: int) -> dict[int, tuple[str, int, int | None, int | None]]:
+def _fixture_main(argv: list[str]) -> int:
+    if not _fixture([sys.executable, str(Path(__file__).resolve()), *argv]):
+        return 2
+    marker = Path(argv[1])
+    if argv[0] == "--fixture-setup":
+        marker.write_text(argv[2], encoding="ascii")
+        return 0
+    if not marker.is_file() or marker.read_text(encoding="ascii") != argv[2]:
+        return 3
+    time.sleep(0.06 if argv[3] == "slow" else 0.015)
+    if argv[3] == "failed":
+        print(json.dumps({"status": "partial", "result": {}, "errors": [{"code": "fixture-failure"}]}))
+        return 4
+    rows = [{"entity_id": "synthetic.invalid", "value": 1 if argv[3] != "mismatch" else 2}]
+    print(json.dumps({"status": "ok", "result": {"records": rows}, "errors": []}))
+    return 0
+
+
+def _proc_snapshot(group: int) -> dict[int, tuple[str, int, int, int | None]]:
     if not Path("/proc").exists():
         return {}
     records = {}
@@ -45,7 +71,7 @@ def _proc_snapshot(group: int) -> dict[int, tuple[str, int, int | None, int | No
         try:
             stat = (entry / "stat").read_text()
             fields = stat[stat.rfind(")") + 2 :].split()
-            if int(fields[2]) != group:  # pgrp
+            if int(fields[2]) != group:
                 continue
             pid = int(entry.name)
             name = stat[stat.find("(") + 1 : stat.rfind(")")].lower()
@@ -70,6 +96,53 @@ def _group(name: str) -> str:
     return "python"
 
 
+def _safe_profile(profile: object) -> dict | None:
+    if not isinstance(profile, dict) or profile.get("schema_version") != 1:
+        return None
+    from campusctl.profiling import COUNT_NAMES, DISPOSITIONS, DOMAINS, PHASES, ROUTES
+
+    counts = profile.get("counts")
+    routes = profile.get("routes")
+    spans = profile.get("spans")
+    if not isinstance(counts, dict) or not isinstance(routes, dict) or not isinstance(spans, list):
+        return None
+    if len(spans) > 4096 or len(routes) > len(ROUTES) * len(DISPOSITIONS):
+        return None
+    if set(counts) != COUNT_NAMES or any(type(value) is not int or value < 0 for value in counts.values()):
+        return None
+    allowed_routes = {f"{route}:{disposition}" for route in ROUTES for disposition in DISPOSITIONS}
+    if not set(routes) <= allowed_routes or any(type(value) is not int or value < 0 for value in routes.values()):
+        return None
+    keys = {"phase", "domain", "course", "window", "failed", "count", "inclusive_ns", "exclusive_ns"}
+    for span in spans:
+        if not isinstance(span, dict) or set(span) != keys or span["phase"] not in PHASES:
+            return None
+        if span["domain"] is not None and span["domain"] not in DOMAINS:
+            return None
+        if any(type(span[key]) is not int or span[key] < 1 for key in ("course", "window") if span[key] is not None):
+            return None
+        if type(span["failed"]) is not bool or any(
+            type(span[key]) is not int or span[key] < 0 for key in ("count", "inclusive_ns", "exclusive_ns")
+        ):
+            return None
+        if span["exclusive_ns"] > span["inclusive_ns"]:
+            return None
+    lag = profile.get("event_loop_lag_ns")
+    if lag is not None and (type(lag) is not int or lag < 0):
+        return None
+    dropped = profile.get("dropped_events")
+    if type(dropped) is not int or dropped < 0 or profile.get("outcome") not in {"ok", "failed"}:
+        return None
+    return {
+        "spans": spans,
+        "counts": counts,
+        "routes": routes,
+        "event_loop_lag_ns": lag,
+        "dropped_events": dropped,
+        "outcome": profile["outcome"],
+    }
+
+
 def _run(argv: list[str]) -> dict:
     metrics = {
         key: {"cpu_seconds": None, "rss_peak_bytes": None, "pss_peak_bytes": None}
@@ -87,8 +160,7 @@ def _run(argv: list[str]) -> dict:
                 group = _group(name)
                 cpu_start.setdefault(pid, cpu)
                 cpu_last[pid] = (group, cpu)
-                if rss is not None:
-                    totals[group]["rss"] += rss
+                totals[group]["rss"] += rss
                 if pss is not None:
                     totals[group]["pss"] += pss
                     totals[group]["pss_known"] = True
@@ -107,34 +179,74 @@ def _run(argv: list[str]) -> dict:
     if cpu_last:
         ticks = os.sysconf("SC_CLK_TCK")
         for pid, (group, last) in cpu_last.items():
-            previous = metrics[group]["cpu_seconds"] or 0
-            metrics[group]["cpu_seconds"] = previous + max(0, last - cpu_start[pid]) / ticks
-    # Do not serialize child stdout/stderr: both can contain private LMS data.
+            metrics[group]["cpu_seconds"] = (metrics[group]["cpu_seconds"] or 0) + max(0, last - cpu_start[pid]) / ticks
+    result = None
     try:
-        envelope = json.loads(stdout.decode().strip())
-        complete = isinstance(envelope, dict) and envelope.get("status") == "ok" and not envelope.get("errors")
+        if len(stdout) <= 4_000_000:
+            envelope = json.loads(stdout.decode().strip())
+            if (
+                isinstance(envelope, dict)
+                and envelope.get("status") == "ok"
+                and envelope.get("errors") == []
+                and isinstance(envelope.get("result"), dict)
+            ):
+                result = envelope["result"]
     except (UnicodeDecodeError, json.JSONDecodeError):
-        complete = False
+        pass
     profile = None
-    for line in stderr.decode(errors="replace").splitlines():
-        if line.startswith("campusctl-profile: "):
-            try:
-                candidate = json.loads(line.removeprefix("campusctl-profile: "))
-                if isinstance(candidate, dict) and candidate.get("schema_version") == 1:
-                    profile = candidate
-            except json.JSONDecodeError:
-                pass
+    if len(stderr) <= 4_000_000:
+        for line in stderr.decode(errors="replace").splitlines():
+            if line.startswith("campusctl-profile: "):
+                try:
+                    profile = _safe_profile(json.loads(line.removeprefix("campusctl-profile: ")))
+                except json.JSONDecodeError:
+                    profile = None
+    complete = proc.returncode == 0 and result is not None
     if profile is not None:
-        complete = complete and profile.get("outcome") == "ok" and profile.get("dropped_events") == 0
-    lag = profile.get("event_loop_lag_ns") if profile else None
-    if type(lag) is not int or lag < 0:
-        lag = None
+        complete = complete and profile["outcome"] == "ok" and profile["dropped_events"] == 0
     return {
         "exit_code": proc.returncode,
-        "complete": bool(proc.returncode == 0 and complete),
+        "complete": complete,
         "wall_ns": wall,
-        "event_loop_lag_ns": lag,
+        "event_loop_lag_ns": profile["event_loop_lag_ns"] if profile else None,
+        "profile": profile,
         "processes": metrics,
+        "_result": result,
+    }
+
+
+def _normalize(value):
+    if isinstance(value, dict):
+        return {key: _normalize(item) for key, item in sorted(value.items())}
+    if isinstance(value, list):
+        return sorted((_normalize(item) for item in value), key=lambda item: json.dumps(item, sort_keys=True))
+    return value
+
+
+def _record_counts(value) -> Counter:
+    """Count full normalized records, never persist their content or identities."""
+    if isinstance(value, dict):
+        if "entity_id" in value:
+            return Counter({json.dumps(value, sort_keys=True, ensure_ascii=False): 1})
+        records = Counter()
+        for child in value.values():
+            records.update(_record_counts(child))
+        return records
+    if isinstance(value, list):
+        records = Counter()
+        for child in value:
+            records.update(_record_counts(child))
+        return records
+    return Counter()
+
+
+def _comparison(left, right) -> dict:
+    normalized_left, normalized_right = _normalize(left), _normalize(right)
+    a, b = _record_counts(normalized_left), _record_counts(normalized_right)
+    return {
+        "equivalent": normalized_left == normalized_right,
+        "baseline_only_records": sum((a - b).values()),
+        "candidate_only_records": sum((b - a).values()),
     }
 
 
@@ -150,31 +262,76 @@ def _summary(rows: list[dict]) -> dict:
     }
 
 
-def compare(baseline: list[str], candidate: list[str], *, trials: int, output: Path, population: str = "both") -> dict:
-    if trials < 5:
-        raise ValueError("at least five trials per arm required")
+def compare(
+    baseline: list[str],
+    candidate: list[str],
+    *,
+    trials: int,
+    output: Path,
+    population: str,
+    baseline_setup: list[str],
+    candidate_setup: list[str],
+) -> dict:
+    if trials < 5 or population not in {"cold", "warm"} or not baseline_setup or not candidate_setup:
+        raise ValueError("five trials, a population, and per-arm setup commands are required")
     output.mkdir(mode=0o700, parents=True, exist_ok=True)
     if os.name != "nt":
         output.chmod(0o700)
-    results = {}
-    for condition in ("cold", "warm") if population == "both" else (population,):
-        arms: dict[str, list[dict]] = {"baseline": [], "candidate": []}
-        for index in range(trials):
-            order = ("baseline", "candidate") if index % 2 == 0 else ("candidate", "baseline")
-            for arm in order:
+    arms: dict[str, list[dict]] = {"baseline": [], "candidate": []}
+    pairs = []
+    for index in range(trials):
+        pair: dict[str, dict] = {}
+        order = ("baseline", "candidate") if index % 2 == 0 else ("candidate", "baseline")
+        for arm in order:
+            setup = baseline_setup if arm == "baseline" else candidate_setup
+            # Setup failures prevent execution, not just a misleading cold/warm label.
+            setup_run = _run(setup)
+            if setup_run["exit_code"] != 0:
+                row = {
+                    "exit_code": setup_run["exit_code"],
+                    "complete": False,
+                    "wall_ns": None,
+                    "event_loop_lag_ns": None,
+                    "profile": None,
+                    "processes": None,
+                    "_result": None,
+                }
+            else:
                 row = _run(baseline if arm == "baseline" else candidate)
-                row["trial"] = index + 1
-                arms[arm].append(row)
-        baseline_summary = _summary(arms["baseline"])
-        candidate_summary = _summary(arms["candidate"])
-        gain = None
-        if baseline_summary["completed"] >= 5 and candidate_summary["completed"] >= 5:
-            gain = 1 - candidate_summary["median_wall_ns"] / baseline_summary["median_wall_ns"]
-        results[condition] = {
-            "summary": {"baseline": baseline_summary, "candidate": candidate_summary, "improvement_fraction": gain},
-            "trials": arms,
-        }
-    report = {"schema_version": 1, "populations": results}
+            row["trial"] = index + 1
+            arms[arm].append(row)
+            pair[arm] = row
+        comparison = (
+            _comparison(pair["baseline"]["_result"], pair["candidate"]["_result"])
+            if all(row["complete"] for row in pair.values())
+            else {"equivalent": False, "baseline_only_records": 0, "candidate_only_records": 0}
+        )
+        comparison["trial"] = index + 1
+        pairs.append(comparison)
+        for row in pair.values():
+            row.pop("_result")
+    summaries = {arm: _summary(rows) for arm, rows in arms.items()}
+    gain = None
+    if all(summary["completed"] == trials for summary in summaries.values()) and all(
+        pair["equivalent"] for pair in pairs
+    ):
+        gain = 1 - summaries["candidate"]["median_wall_ns"] / summaries["baseline"]["median_wall_ns"]
+    report = {
+        "schema_version": 1,
+        "populations": {
+            population: {
+                "summary": {
+                    **summaries,
+                    "improvement_fraction": gain,
+                    "baseline_only_records": sum(pair["baseline_only_records"] for pair in pairs),
+                    "candidate_only_records": sum(pair["candidate_only_records"] for pair in pairs),
+                    "mismatched_pairs": sum(not pair["equivalent"] for pair in pairs),
+                },
+                "pairs": pairs,
+                "trials": arms,
+            }
+        },
+    }
     destination = output / "profile-results.json"
     with os.fdopen(
         os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0), 0o600),
@@ -187,34 +344,46 @@ def compare(baseline: list[str], candidate: list[str], *, trials: int, output: P
 
 
 def main(argv: list[str] | None = None) -> int:
+    if argv is None:
+        argv = sys.argv[1:]
+    if argv and argv[0] in {"--fixture-process", "--fixture-setup"}:
+        return _fixture_main(argv)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--baseline-command-json", required=True, type=_argv)
     parser.add_argument("--candidate-command-json", required=True, type=_argv)
+    parser.add_argument("--baseline-setup-command-json", required=True, type=_argv)
+    parser.add_argument("--candidate-setup-command-json", required=True, type=_argv)
     parser.add_argument("--trials", type=int, default=5)
     parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument("--population", choices=("cold", "warm", "both"), default="both")
+    parser.add_argument("--population", choices=("cold", "warm"), required=True)
     parser.add_argument(
         "--allow-live", action="store_true", help="Requires separate owner authorization; does not grant it"
     )
     args = parser.parse_args(argv)
     if args.trials < 5:
         parser.error("--trials must be at least 5")
-    if not args.allow_live and not all(
-        _fixture(command) for command in (args.baseline_command_json, args.candidate_command_json)
-    ):
-        parser.error("non-fixture targets require --allow-live and separate owner authorization")
+    commands = (
+        args.baseline_command_json,
+        args.candidate_command_json,
+        args.baseline_setup_command_json,
+        args.candidate_setup_command_json,
+    )
+    if not args.allow_live and not all(_fixture(command) for command in commands):
+        parser.error("arbitrary scripts require --allow-live and separate owner authorization")
     report = compare(
         args.baseline_command_json,
         args.candidate_command_json,
         trials=args.trials,
         output=args.output,
         population=args.population,
+        baseline_setup=args.baseline_setup_command_json,
+        candidate_setup=args.candidate_setup_command_json,
     )
     print(
         json.dumps(
             {
                 "output": str(args.output / "profile-results.json"),
-                "summary": {name: value["summary"] for name, value in report["populations"].items()},
+                "summary": report["populations"][args.population]["summary"],
             }
         )
     )

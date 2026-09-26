@@ -46,7 +46,8 @@ def test_overlapping_children_exclusive_uses_interval_union():
     assert root["inclusive_ns"] == 10
     assert root["exclusive_ns"] == 4  # union of [2,6] and [4,8]
     assert children["count"] == 2
-    assert children["inclusive_ns"] == 8
+    assert children["inclusive_ns"] == 6
+    assert children["exclusive_ns"] == 6
     assert payload["event_loop_lag_ns"] == 8
     assert json.loads(sink.getvalue().removeprefix("campusctl-profile: ")) == payload
     assert recorder.finish(stderr=sink) is payload
