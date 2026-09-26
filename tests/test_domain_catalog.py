@@ -60,6 +60,7 @@ def test_fixture_merge_transitions(tmp_path: Path) -> None:
     write_domain_catalog("assignments", unknown["previous"], path)
     mark_enrollment_unknown("assignments", tmp_path)
     actual = read_domain_catalog("assignments", path)
+    assert actual.pop("generation_id") != unknown["previous"].get("generation_id")
     assert actual == unknown["expected"]
 
 
@@ -86,7 +87,9 @@ def test_atomic_write_round_trips_private_catalog(tmp_path: Path) -> None:
     }
 
     assert write_domain_catalog("notices", value, path) == path
-    assert read_domain_catalog("notices", path) == {"schema_version": 1, **value}
+    saved = read_domain_catalog("notices", path)
+    assert len(saved.pop("generation_id")) == 32
+    assert saved == {"schema_version": 1, **value}
     assert list(path.parent.glob(".notices.json.*.tmp")) == []
     if os.name != "nt":
         assert path.stat().st_mode & 0o777 == 0o600
