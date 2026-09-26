@@ -6,7 +6,7 @@
 
 The session POST carries an opaque encrypted `e` value, so the course is verified from its successful response `body.data.course_id`, the active topbar course, and every board item's `course_id`; no plaintext request course ID is required. Its response body is captured before the next page navigation.
 
-The request policy pins exact observed LMS methods and paths. It aborts optional Panopto scripts, the exact telemetry POST, observed college thumbnail PNG and LMS favicon icon; passive outside-origin GET assets are also suppressed. It continues only the exact reviewed LMS POST `/api/v1/week/getStdActivityStatus` XHR from `/std/lecture` as a read-only `notices.sync` route, avoiding a blocking server-communication modal. Other unsuppressed logging-token paths and unapproved requests remain fatal. The JSON envelope shape was reviewed from an owner-controlled live capture; implementation and fixture tests do not access live LMS. Headless sync is not approved.
+The request policy pins exact observed LMS methods and paths. It aborts optional Panopto scripts, the exact telemetry POST, observed college thumbnail PNG and LMS favicon icon; passive outside-origin GET assets are also suppressed. It continues only the exact reviewed LMS POST `/api/v1/week/getStdActivityStatus` XHR from `/std/lecture` as a read-only `notices.sync` route, avoiding a blocking server-communication modal. Other unsuppressed logging-token paths and unapproved requests remain fatal. The JSON envelope shape was reviewed from an owner-controlled live capture; implementation and fixture tests do not access live LMS. The global `--headless` flag runs notice sync headless with a local Chromium profile; with a configured CDP browser it is refused with `headless-unavailable`.
 
 ## Commands
 
