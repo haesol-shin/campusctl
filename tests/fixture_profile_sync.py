@@ -1,4 +1,4 @@
-"""Run a synthetic lecture sync against a loopback server in a real headed browser.
+"""Run a synthetic guarded sync against a loopback server in a real headed browser.
 
 Only for local fixture measurements; no LMS host or credentials are contacted.
 """
@@ -15,7 +15,7 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright
 
 from campusctl.profiling import SpanRecorder
-from campusctl.providers.cnu import login
+from campusctl.providers.cnu import courses, login, ui_policy
 from campusctl.providers.cnu import sync as lectures
 from campusctl.sync import run_sync
 
@@ -57,14 +57,83 @@ def main() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 0), FixtureHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    url = f"http://127.0.0.1:{server.server_port}/std/myLecture"
+    origin = f"http://127.0.0.1:{server.server_port}"
+    url = f"{origin}/std/myLecture"
+
+    lectures.MY_LECTURE_URL = url
 
     async def fixture_login(page: object, _config: dict, **_kwargs: object) -> None:
         await page.goto(url)
         await page.wait_for_selector('[data-act="moveLecture"]')
 
+    courses.ensure_logged_in = fixture_login
     login.ensure_logged_in = fixture_login
     lectures.ensure_logged_in = fixture_login
+
+    # Install real UiRequestInterceptor in the lecture path to exercise guard interception
+    orig_open_session = lectures.open_session
+
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def guarded_open_session(config: dict, **kwargs):
+        async with orig_open_session(config, **kwargs) as session:
+            policy = ui_policy.UiRequestPolicy(
+                approved=True,
+                origins=frozenset({origin}),
+                routes=(
+                    type(
+                        "Route",
+                        (),
+                        {
+                            "origin": origin,
+                            "path": "/std/myLecture",
+                            "operation": "lectures.sync",
+                            "methods": frozenset({"GET"}),
+                            "query": (),
+                            "logging_token_reviewed": False,
+                            "resource_type": "",
+                        },
+                    )(),
+                    type(
+                        "Route",
+                        (),
+                        {
+                            "origin": origin,
+                            "path": "/std/room",
+                            "operation": "lectures.sync",
+                            "methods": frozenset({"GET"}),
+                            "query": (),
+                            "logging_token_reviewed": False,
+                            "resource_type": "",
+                        },
+                    )(),
+                    type(
+                        "Route",
+                        (),
+                        {
+                            "origin": origin,
+                            "path": "/std/course",
+                            "operation": "lectures.sync",
+                            "methods": frozenset({"GET"}),
+                            "query": (),
+                            "logging_token_reviewed": False,
+                            "resource_type": "",
+                        },
+                    )(),
+                ),
+            )
+            diagnostics = ui_policy.UiRequestDiagnostics()
+            interceptor = await ui_policy.install_ui_request_interceptor(
+                session.context, policy, operation="lectures.sync", diagnostics=diagnostics
+            )
+            try:
+                yield session
+            finally:
+                await interceptor.close()
+
+    lectures.open_session = guarded_open_session
+
     recorder = SpanRecorder(enabled=args.profile, scope=("lectures",))
     try:
         with sync_playwright() as playwright:

@@ -98,8 +98,7 @@ async def sync_lectures(
     async with open_session(config, data_dir=root, headless=headless, operation="lectures.sync") as session:
         page = session.page
         try:
-            with profile_span("roster", domain="lectures"):
-                discovered_courses = await discover_courses(page, config)
+            discovered_courses = await discover_courses(page, config)
         except Exception as error:
             if isinstance(error, CampusError) and error.code in {*_LOGIN_ERRORS, "policy-blocked"}:
                 raise
@@ -152,6 +151,7 @@ async def sync_lectures(
                         PROTOCOL_TIMEOUT_SECONDS,
                         "opening the CNU course lecture page",
                     )
+                profile_count("documents")
                 try:
                     await bounded(
                         page.wait_for_selector(

@@ -231,6 +231,7 @@ async def _course_rows(page: Any, config: dict[str, Any], course: dict[str, Any]
         ) as response_info:
             with profile_span("document-commit", domain="assignments"):
                 await open_course_section(page, "task")
+                profile_count("documents")
         response = await bounded(response_info.value, PROTOCOL_TIMEOUT_SECONDS, "waiting for the CNU task response")
         with profile_span("response-completion", domain="assignments"):
             completion_error = await bounded(
@@ -331,12 +332,17 @@ async def sync_assignments(
         try:
             try:
                 with profile_span("roster", domain="assignments"):
-                    await bounded(page.goto(MY_LECTURE_URL), PROTOCOL_TIMEOUT_SECONDS, "opening the CNU course roster")
-                    await bounded(
-                        page.wait_for_selector(COURSE_LINK_SELECTOR, state="attached", timeout=COURSE_WAIT_MS),
-                        PROTOCOL_TIMEOUT_SECONDS,
-                        "waiting for the CNU course roster",
-                    )
+                    with profile_span("document-commit", domain="assignments"):
+                        await bounded(
+                            page.goto(MY_LECTURE_URL), PROTOCOL_TIMEOUT_SECONDS, "opening the CNU course roster"
+                        )
+                    profile_count("documents")
+                    with profile_span("dom-ready", domain="assignments"):
+                        await bounded(
+                            page.wait_for_selector(COURSE_LINK_SELECTOR, state="attached", timeout=COURSE_WAIT_MS),
+                            PROTOCOL_TIMEOUT_SECONDS,
+                            "waiting for the CNU course roster",
+                        )
                     roster = parse_courses(
                         await bounded(
                             page.evaluate(EXTRACT_COURSES_JS), PROTOCOL_TIMEOUT_SECONDS, "extracting CNU courses"

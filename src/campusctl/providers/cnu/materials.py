@@ -331,9 +331,11 @@ async def _archive_navigation(page: Any, guard: Any, action: Callable[[], Any], 
         async with page.expect_response(
             selected, timeout=SECTION_RESPONSE_TIMEOUT_MS if document else _WAIT_MS
         ) as pending:
-            await _step(action(), guard, "opening archive list")
+            with profile_span("document-commit" if document else "archive-page", domain="materials"):
+                await _step(action(), guard, "opening archive list")
         response = await _step(pending.value, guard, "waiting for archive list response")
-        await _step(response.finished(), guard, "finishing archive list response")
+        with profile_span("response-completion", domain="materials"):
+            await _step(response.finished(), guard, "finishing archive list response")
         await activity.idle(guard)
         records = activity.matches(_ARCHIVE_LIST, "POST", after=before)
         if (
@@ -347,6 +349,8 @@ async def _archive_navigation(page: Any, guard: Any, action: Callable[[], Any], 
         payload = await _step(response.json(), guard, "parsing archive list response")
         if not isinstance(payload, (dict, list)):
             raise ValueError("archive list response was not JSON records")
+        if document:
+            profile_count("documents")
     finally:
         activity.close()
 
@@ -388,7 +392,8 @@ async def _post_names(page: Any, guard: Any, activity: _RequestWindow, after: in
     response = activity.responses.get(id(requests[0][1]))
     if response is None or response.status != 200:
         raise ValueError("attachment list did not complete")
-    body = await _step(response.json(), guard, "reading attachment list metadata")
+    with profile_span("attachment-list", domain="materials"):
+        body = await _step(response.json(), guard, "reading attachment list metadata")
     if isinstance(body, dict) and isinstance(body.get("header"), dict) and body["header"].get("code") != 200:
         raise ValueError("attachment list response failed")
     return _attachment_names(body)
@@ -396,8 +401,10 @@ async def _post_names(page: Any, guard: Any, activity: _RequestWindow, after: in
 
 async def enumerate_archive(page: Any, course: Mapping[str, Any], guard: Any) -> list[dict[str, Any]]:
     """Enumerate every completed archive page and restore its exact post context."""
-    await _step(page.wait_for_selector("#table_list", timeout=_WAIT_MS), guard, "waiting for archive table")
-    first = await _archive_state(page, guard, 1)
+    with profile_span("dom-ready", domain="materials"):
+        await _step(page.wait_for_selector("#table_list", timeout=_WAIT_MS), guard, "waiting for archive table")
+    with profile_span("archive-page", domain="materials"):
+        first = await _archive_state(page, guard, 1)
     total = first["total_count"]
     pages = (total + first["page_size"] - 1) // first["page_size"]
     if pages > 100:
@@ -407,9 +414,10 @@ async def enumerate_archive(page: Any, course: Mapping[str, Any], guard: Any) ->
     seen_files: set[str] = set()
     counted = 0
     for page_number in range(1, max(1, pages) + 1):
-        if page_number > 1:
-            await _select_page(page, guard, page_number)
-        state = await _archive_state(page, guard, page_number, total)
+        with profile_span("archive-page", domain="materials"):
+            if page_number > 1:
+                await _select_page(page, guard, page_number)
+            state = await _archive_state(page, guard, page_number, total)
         posts = state["posts"]
         counted += state["row_count"]
         for post in posts:
@@ -427,21 +435,27 @@ async def enumerate_archive(page: Any, course: Mapping[str, Any], guard: Any) ->
             try:
                 await activity.idle(guard)
                 baseline = len(activity.requests)
-                await _step(page.evaluate(_CLICK_ICON_JS, post_id), guard, "opening archive file icon")
+                with profile_span("modal", domain="materials"):
+                    await _step(page.evaluate(_CLICK_ICON_JS, post_id), guard, "opening archive file icon")
                 try:
-                    names = await _post_names(page, guard, activity, baseline)
+                    with profile_span("attachment-list", domain="materials"):
+                        names = await _post_names(page, guard, activity, baseline)
                     try:
-                        await _step(page.wait_for_selector(_MODAL, timeout=_WAIT_MS), guard, "waiting for file modal")
+                        with profile_span("modal", domain="materials"):
+                            await _step(
+                                page.wait_for_selector(_MODAL, timeout=_WAIT_MS), guard, "waiting for file modal"
+                            )
                     except CampusError as error:
                         if error.code != "browser-timeout":
                             raise
                         targets = []
                     else:
-                        targets = await _step(
-                            page.evaluate(_TARGETS_JS, {"modalOnly": True, "boardItemId": post_id}),
-                            guard,
-                            "reading modal file controls",
-                        )
+                        with profile_span("modal", domain="materials"):
+                            targets = await _step(
+                                page.evaluate(_TARGETS_JS, {"modalOnly": True, "boardItemId": post_id}),
+                                guard,
+                                "reading modal file controls",
+                            )
                     if not targets:
                         targets = await _step(
                             page.evaluate(_TARGETS_JS, {"modalOnly": False, "boardItemId": post_id}),
@@ -466,13 +480,15 @@ async def enumerate_archive(page: Any, course: Mapping[str, Any], guard: Any) ->
                         seen_files.add(row["file_id"])
                         results.append(row)
                 finally:
-                    await _step(page.evaluate(_CLOSE_MODAL_JS), guard, "closing archive modal")
-                    await _archive_navigation(page, guard, lambda: page.click(_ARCHIVE_MENU))
-                    if page_number > 1:
-                        await _select_page(page, guard, page_number)
-                    restored = await _archive_state(page, guard, page_number, total)
-                    if restored["posts"] != posts:
-                        raise _failure("course-sync-failed", course)
+                    with profile_span("modal", domain="materials"):
+                        await _step(page.evaluate(_CLOSE_MODAL_JS), guard, "closing archive modal")
+                    with profile_span("archive-restore", domain="materials"):
+                        await _archive_navigation(page, guard, lambda: page.click(_ARCHIVE_MENU))
+                        if page_number > 1:
+                            await _select_page(page, guard, page_number)
+                        restored = await _archive_state(page, guard, page_number, total)
+                        if restored["posts"] != posts:
+                            raise _failure("course-sync-failed", course)
             finally:
                 activity.close()
     if counted != total:
@@ -514,6 +530,7 @@ async def sync_materials(
                 with profile_span("roster", domain="materials"):
                     with profile_span("document-commit", domain="materials"):
                         await _step(page.goto(MY_LECTURE_URL), guard, "opening guarded course roster")
+                    profile_count("documents")
                     with profile_span("dom-ready", domain="materials"):
                         await _step(
                             page.wait_for_selector(COURSE_LINK_SELECTOR, timeout=_WAIT_MS),
@@ -553,6 +570,7 @@ async def sync_materials(
             for ordinal, course in enumerate(selected, 1):
                 try:
                     await _step(page.goto(MY_LECTURE_URL), guard, "returning to guarded course roster")
+                    profile_count("documents")
                     with profile_span("course-selection", domain="materials", course=ordinal):
                         await _step(
                             prepare_course_section(page, config, course["course_id"], "archive"),
