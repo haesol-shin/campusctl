@@ -531,3 +531,103 @@ def test_named_panopto_requests_abort_without_failing_sync(tmp_path: Path, monke
     assert result["suppressed_reasons"] == {"media-integration": 1, "logging": 2}
     assert context.aborted == [entry[0] for entry in requests]
     assert all(path not in context.sent for path in context.aborted)
+
+
+def test_prearmed_collector_returns_independent_complete_row(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from campusctl.providers.cnu.course_context import CourseSelection
+
+    candidate = {
+        "task_id": "TB_L_REPORT901",
+        "title": " Synthetic submission ",
+        "due_date": "2026-10-02 23:59",
+        "is_submitted": True,
+    }
+    monkeypatch.setitem(globals(), "ORIGIN", "https://lms.example.invalid")
+    page, context = asyncio.run(setup(monkeypatch, tmp_path, {"course-a": {"rows": [candidate]}}))
+    context.handler = lambda route: route.continue_()
+    selection = CourseSelection("course-a", 1, 4, 2, 3)
+    guard = SimpleNamespace(
+        epoch=SimpleNamespace(
+            number=9, selection_epoch=4, course_id="course-a", phase="bound", document_url=ORIGIN + "/std/task"
+        ),
+        raise_if_denied=lambda: None,
+    )
+
+    async def exercise() -> None:
+        page.current = "course-a"
+        capture = provider.arm_assignment_capture(page, guard)
+        async with page.expect_response(
+            capture.own_task_response, timeout=provider.SECTION_RESPONSE_TIMEOUT_MS
+        ) as info:
+            await provider.open_course_section(page, "task")
+        capture.legacy_response = await info.value
+        actual = await provider.collect_assignment_rows(page, COURSES[0], selection, guard, capture=capture)
+        assert actual == [
+            {
+                "entity_id": "cnu_assignment:course-a:TB_L_REPORT901",
+                "task_id": "TB_L_REPORT901",
+                "course": {"id": "course-a", "label": "Course A"},
+                "kind": "assignment",
+                "title": "Synthetic submission",
+                "due_date": "2026-10-02 23:59",
+                "is_submitted": True,
+            }
+        ]
+        assert all(not listeners for listeners in page.listeners.values())
+
+    asyncio.run(exercise())
+
+
+def test_prearmed_collector_rejects_other_selection_epoch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from campusctl.providers.cnu.course_context import CourseSelection
+
+    monkeypatch.setitem(globals(), "ORIGIN", "https://lms.example.invalid")
+    page, _ = asyncio.run(setup(monkeypatch, tmp_path, {"course-a": {"rows": []}}))
+    guard = SimpleNamespace(
+        epoch=SimpleNamespace(
+            number=9, selection_epoch=4, course_id="course-a", phase="bound", document_url=ORIGIN + "/std/task"
+        ),
+        raise_if_denied=lambda: None,
+    )
+
+    async def exercise() -> None:
+        page.current = "course-a"
+        capture = provider.arm_assignment_capture(page, guard)
+        with pytest.raises(ValueError, match="another course"):
+            await provider.collect_assignment_rows(
+                page, COURSES[0], CourseSelection("course-a", 1, 3, 2, 4), guard, capture=capture
+            )
+        assert all(not listeners for listeners in page.listeners.values())
+
+    asyncio.run(exercise())
+
+
+def test_failed_task_navigation_closes_armed_capture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from campusctl.providers.cnu.course_context import CourseSelection
+
+    page, _ = asyncio.run(setup(monkeypatch, tmp_path, {"course-a": {"rows": []}}))
+    page.main_frame.url = "https://lms.example.invalid/std/lecture"
+    selected = CourseSelection("course-a", 1, 1, 2, 3)
+    guard = SimpleNamespace(
+        epoch=SimpleNamespace(
+            number=2,
+            phase="navigation",
+            navigation_path="/std/task",
+            frame=page.main_frame,
+            course_id=selected.course_id,
+            selection_epoch=selected.epoch,
+            document_url=page.main_frame.url,
+        ),
+        raise_if_denied=lambda: None,
+    )
+
+    async def fail() -> None:
+        raise RuntimeError("synthetic task navigation failed")
+
+    async def exercise() -> None:
+        capture = provider.arm_assignment_capture(page, guard)
+        with pytest.raises(RuntimeError, match="synthetic task navigation failed"):
+            await provider.open_assignment_section(page, guard, fail, capture=capture, selection=selected)
+        assert all(not listeners for listeners in page.listeners.values())
+
+    asyncio.run(exercise())

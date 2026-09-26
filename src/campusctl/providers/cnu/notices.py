@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import re
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -28,7 +28,7 @@ from campusctl.domain_catalog import (
 from campusctl.envelope import CampusError
 from campusctl.identity import notice_entity_id
 
-from .course_context import SECTION_RESPONSE_TIMEOUT_MS, _css_string
+from .course_context import SECTION_RESPONSE_TIMEOUT_MS, CourseSelection, _css_string, bind_on_commit
 from .courses import COURSE_LINK_SELECTOR, EXTRACT_COURSES_JS, parse_courses
 from .login import MY_LECTURE_URL, ensure_logged_in
 from .roster_diagnostics import capture_roster_failure, start_roster_requests, stop_roster_requests
@@ -308,50 +308,116 @@ def parse_legacy_notice_text(
     return parse_notice_rows(raw, courses)
 
 
-async def _grid_snapshot(page: Any, interceptor: Any) -> list[dict[str, Any]]:
-    """Read the guarded, settled notice grid; per-course coverage is a live release gate."""
-    sequence = 0
-    document_sequence: int | None = None
-    committed_sequence: int | None = None
-    requests: list[tuple[int, Any]] = []
-    responses: list[tuple[Any, Any]] = []
-    stale_response = False
+class _TodoCapture:
+    """Observe the todo document commit and all subsequent notice-list responses."""
 
-    def is_notice(request: Any) -> bool:
+    def __init__(self, page: Any, section_guard: Any) -> None:
+        self.page = page
+        self.epoch_number = getattr(section_guard.epoch, "number", None)
+        self.sequence = 0
+        self.document_sequence: int | None = None
+        self.committed_sequence: int | None = None
+        self.requests: list[tuple[int, Any]] = []
+        self.responses: list[tuple[Any, Any]] = []
+        self.stale_response = False
+        self.closed = False
+        page.on("request", self.on_request)
+        page.on("response", self.on_response)
+        page.on("framenavigated", self.on_navigate)
+
+    def is_notice(self, request: Any) -> bool:
         return request.url.split("?", 1)[0] == f"{_ORIGIN}{_NOTICE_LIST_PATH}"
 
-    def on_request(request: Any) -> None:
-        nonlocal sequence, document_sequence
-        sequence += 1
+    def on_request(self, request: Any) -> None:
+        self.sequence += 1
         if (
             request.url == _TODO_URL
             and request.method == "GET"
             and request.resource_type == "document"
-            and request.frame == page.main_frame
+            and request.frame == self.page.main_frame
         ):
-            document_sequence = sequence
-        if is_notice(request):
-            requests.append((sequence, request))
+            self.document_sequence = self.sequence
+        if self.is_notice(request):
+            self.requests.append((self.sequence, request))
 
-    def on_frame_navigated(frame: Any) -> None:
-        nonlocal committed_sequence
-        if frame == page.main_frame and frame.url == _TODO_URL and document_sequence is not None:
-            committed_sequence = sequence
+    def on_navigate(self, frame: Any) -> None:
+        if frame == self.page.main_frame and frame.url == _TODO_URL and self.document_sequence is not None:
+            self.committed_sequence = self.sequence
 
-    def on_response(response: Any) -> None:
-        nonlocal stale_response
-        if not is_notice(response.request):
+    def on_response(self, response: Any) -> None:
+        if not self.is_notice(response.request):
             return
-        if not any(request is response.request for _, request in requests):
-            stale_response = True
+        if not any(request is response.request for _, request in self.requests):
+            self.stale_response = True
         else:
-            responses.append((response.request, response))
+            self.responses.append((response.request, response))
+
+    def close(self) -> None:
+        if not self.closed:
+            self.closed = True
+            self.page.remove_listener("request", self.on_request)
+            self.page.remove_listener("response", self.on_response)
+            self.page.remove_listener("framenavigated", self.on_navigate)
+
+
+async def open_notice_todo(page: Any, section_guard: Any, *, selection: CourseSelection | None = None) -> _TodoCapture:
+    """Navigate within the exact to-do epoch and bind before the page's first list XHR."""
+    section_guard.raise_if_denied()
+    epoch = section_guard.epoch
+    if epoch.phase not in {"legacy", "navigation"} or (
+        epoch.phase == "navigation" and epoch.navigation_path != "/std/todo"
+    ):
+        raise ValueError("To-do navigation has not been activated")
+    capture = _TodoCapture(page, section_guard)
+
+    async def navigate() -> None:
+        try:
+            options = {"wait_until": "domcontentloaded"}
+            if selection is not None:
+                options["referer"] = epoch.document_url
+            await bounded(page.goto(_TODO_URL, **options), PROTOCOL_TIMEOUT_SECONDS, "opening notices")
+        finally:
+            section_guard.raise_if_denied()
+
+    try:
+        await bounded(page.wait_for_load_state("networkidle"), PROTOCOL_TIMEOUT_SECONDS, "settling prior page requests")
+        section_guard.raise_if_denied()
+        if selection is None:
+            if epoch.phase != "legacy":
+                raise ValueError("To-do navigation requires a validated selection")
+            await navigate()
+        else:
+            async with bind_on_commit(
+                page, section_guard, frame=page.main_frame, expected_path="/std/todo", selection=selection
+            ):
+                await navigate()
+        if (
+            capture.document_sequence is None
+            or capture.committed_sequence is None
+            or capture.committed_sequence < capture.document_sequence
+            or any(order <= capture.committed_sequence for order, _ in capture.requests)
+        ):
+            raise ValueError("To-do document navigation did not commit cleanly")
+        return capture
+    except BaseException:
+        capture.close()
+        raise
+
+
+async def _grid_snapshot(page: Any, interceptor: Any, capture: _TodoCapture) -> list[dict[str, Any]]:
+    """Read the committed, guarded notice grid; per-course coverage is a live release gate."""
+    if capture.epoch_number != interceptor.epoch.number or (
+        interceptor.epoch.phase != "legacy"
+        and (interceptor.epoch.phase != "bound" or urlsplit(interceptor.epoch.document_url).path != "/std/todo")
+    ):
+        capture.close()
+        raise ValueError("To-do document belongs to another operation epoch")
 
     async def settle(start: int, *, required: bool) -> None:
         await bounded(page.wait_for_load_state("networkidle"), PROTOCOL_TIMEOUT_SECONDS, "settling page requests")
         interceptor.raise_if_denied()
-        window = [request for order, request in requests if order > start]
-        if stale_response or len(window) > 1 or (required and len(window) != 1):
+        window = [request for order, request in capture.requests if order > start]
+        if capture.stale_response or len(window) > 1 or (required and len(window) != 1):
             raise ValueError("Notice request was stale, absent or duplicated")
         if not window:
             return  # UI-only pagination; there was no new request in the settle window.
@@ -363,7 +429,7 @@ async def _grid_snapshot(page: Any, interceptor: Any) -> list[dict[str, Any]]:
         parsed = urlsplit(referer)
         if f"{parsed.scheme}://{parsed.netloc}" != _ORIGIN or parsed.path != "/std/todo":
             raise ValueError("Notice request was not issued from the to-do document")
-        matching = [response for source, response in responses if source is request]
+        matching = [response for source, response in capture.responses if source is request]
         if len(matching) != 1 or matching[0].status != 200:
             raise ValueError("Notice request did not complete successfully")
         response = matching[0]
@@ -372,26 +438,12 @@ async def _grid_snapshot(page: Any, interceptor: Any) -> list[dict[str, Any]]:
         await bounded(response.json(), PROTOCOL_TIMEOUT_SECONDS, "validating the notice list response")
         interceptor.raise_if_denied()
 
-    page.on("request", on_request)
-    page.on("response", on_response)
-    page.on("framenavigated", on_frame_navigated)
     try:
+        interceptor.raise_if_denied()
         async with asyncio.timeout(120):
-            await bounded(
-                page.wait_for_load_state("networkidle"), PROTOCOL_TIMEOUT_SECONDS, "settling prior page requests"
-            )
-            interceptor.raise_if_denied()
-            try:
-                await bounded(
-                    page.goto(_TODO_URL, wait_until="domcontentloaded"), PROTOCOL_TIMEOUT_SECONDS, "opening notices"
-                )
-            finally:
-                interceptor.raise_if_denied()
-            if document_sequence is None or committed_sequence is None or committed_sequence < document_sequence:
+            if capture.committed_sequence is None:
                 raise ValueError("To-do document navigation did not commit")
-            if any(order <= committed_sequence for order, _ in requests):
-                raise ValueError("A notice request started before the to-do document committed")
-            window_start = committed_sequence
+            window_start = capture.committed_sequence
             rows: list[dict[str, Any]] = []
             seen_pages: set[tuple[str, ...]] = set()
             first_page = True
@@ -435,15 +487,13 @@ async def _grid_snapshot(page: Any, interceptor: Any) -> list[dict[str, Any]]:
                     raise ValueError("Notice pagination exceeded 100 pages")
                 if next_page not in {'.tabulator-page[data-page="next"]', '[data-act="loadMore"]', ".load-more"}:
                     raise ValueError("Unknown notice pagination control")
-                window_start = sequence
+                window_start = capture.sequence
                 try:
                     await bounded(page.click(next_page), PROTOCOL_TIMEOUT_SECONDS, "opening next notice page")
                 finally:
                     interceptor.raise_if_denied()
     finally:
-        page.remove_listener("request", on_request)
-        page.remove_listener("response", on_response)
-        page.remove_listener("framenavigated", on_frame_navigated)
+        capture.close()
 
 
 def _board_response_items(body: Any, *, ordinary: bool) -> tuple[list[dict[str, Any]], int | None]:
@@ -501,121 +551,85 @@ def _board_item(item: dict[str, Any], course_id: str) -> dict[str, Any] | None:
     }
 
 
-async def _board_snapshot(
-    page: Any, interceptor: Any, course: dict[str, Any], courses: list[dict[str, Any]]
-) -> list[dict[str, Any]]:
-    """Accept only the selected course's complete, single-page, post-commit board."""
-    paths = {
-        "/api/v1/course/addSessionCourseInfo",
-        "/api/v1/board/notice/list/top",
-        "/api/v1/board/notice/list",
-    }
-    sequence = 0
-    commit: int | None = None
-    notice_document: int | None = None
-    requests: list[tuple[int, Any]] = []
-    responses: list[Any] = []
-    session_seen: asyncio.Future[tuple[Any, int, Any]] = asyncio.get_running_loop().create_future()
-    stale = False
+class _NoticeCapture:
+    """Keep the board's request identities and document boundary from before navigation."""
 
-    async def capture_session(request: Any, response: Any) -> None:
-        nonlocal stale
-        if session_seen.done():
-            stale = True
-            return
-        try:
-            body = await response.json() if response.status == 200 else None
-        except Exception:
-            body = None
-        session_seen.set_result((request, response.status, body))
+    def __init__(self, page: Any, section_guard: Any, *, armed: bool = True) -> None:
+        self.page = page
+        self.section_guard = section_guard
+        self.epoch_number = getattr(section_guard.epoch, "number", None)
+        self.requests: list[tuple[int, Any]] = []
+        self.responses: list[Any] = []
+        self.sequence = 0
+        self.notice_document: int | None = None
+        self.commit: int | None = None
+        self.stale = False
+        self.armed = armed
+        if armed:
+            page.on("request", self.on_request)
+            page.on("response", self.on_response)
+            page.on("framenavigated", self.on_navigate)
 
-    def on_request(request: Any) -> None:
-        nonlocal sequence, notice_document
-        sequence += 1
+    def on_request(self, request: Any) -> None:
+        self.sequence += 1
         path = urlsplit(request.url).path
-        if path == "/std/notice" and request.resource_type == "document" and request.frame is page.main_frame:
-            notice_document = sequence
-        if path in paths:
-            requests.append((sequence, request))
+        if path == "/std/notice" and request.resource_type == "document" and request.frame is self.page.main_frame:
+            self.notice_document = self.sequence
+        if path == "/api/v1/course/addSessionCourseInfo":
+            self.stale = True
+        if path in {"/api/v1/board/notice/list/top", "/api/v1/board/notice/list"}:
+            self.requests.append((self.sequence, request))
 
-    def on_navigate(frame: Any) -> None:
-        nonlocal commit
-        if frame is page.main_frame and urlsplit(frame.url).path == "/std/notice" and notice_document is not None:
-            commit = sequence
-
-    def on_response(response: Any) -> None:
-        nonlocal stale
-        path = urlsplit(response.request.url).path
-        if path not in paths:
-            return
-        if not any(request is response.request for _, request in requests):
-            stale = True
-        responses.append(response)
+    def on_navigate(self, frame: Any) -> None:
         if (
-            path == "/api/v1/course/addSessionCourseInfo"
-            and len([seen for seen in responses if urlsplit(seen.request.url).path == path]) > 1
+            frame is self.page.main_frame
+            and urlsplit(frame.url).path == "/std/notice"
+            and self.notice_document is not None
         ):
-            stale = True
+            self.commit = self.sequence
 
-    interceptor.capture_response("/api/v1/course/addSessionCourseInfo", capture_session)
-    page.on("request", on_request)
-    page.on("response", on_response)
-    page.on("framenavigated", on_navigate)
-    try:
-        await bounded(page.wait_for_load_state("networkidle"), PROTOCOL_TIMEOUT_SECONDS, "settling previous course")
-        interceptor.raise_if_denied()
-        await bounded(
-            page.goto(MY_LECTURE_URL, wait_until="domcontentloaded"), PROTOCOL_TIMEOUT_SECONDS, "opening course roster"
+    def on_response(self, response: Any) -> None:
+        path = urlsplit(response.request.url).path
+        if path == "/api/v1/course/addSessionCourseInfo":
+            self.stale = True
+            return
+        if path not in {"/api/v1/board/notice/list/top", "/api/v1/board/notice/list"}:
+            return
+        if not any(request is response.request for _, request in self.requests):
+            self.stale = True
+        self.responses.append(response)
+
+    def close(self) -> None:
+        if self.armed:
+            self.armed = False
+            self.page.remove_listener("request", self.on_request)
+            self.page.remove_listener("response", self.on_response)
+            self.page.remove_listener("framenavigated", self.on_navigate)
+
+    async def collect(
+        self, page: Any, course: dict[str, Any], courses: list[dict[str, Any]], selection: CourseSelection | None
+    ) -> list[dict[str, Any]]:
+        interceptor = self.section_guard
+        requests, responses, commit, notice_document = (
+            self.requests,
+            self.responses,
+            self.commit,
+            self.notice_document,
         )
         interceptor.raise_if_denied()
-        await bounded(page.wait_for_load_state("networkidle"), PROTOCOL_TIMEOUT_SECONDS, "settling course roster")
-        interceptor.raise_if_denied()
-        with profile_span("course-selection", domain="notices"):
-            await bounded(
-                page.click(f'[data-act="moveLecture"][data-courseid={_css_string(course["course_id"])}]'),
-                PROTOCOL_TIMEOUT_SECONDS,
-                "selecting course",
-            )
-        profile_count("course_selections")
-        interceptor.raise_if_denied()
-        session_request, session_status, session_payload = await bounded(
-            asyncio.wait_for(session_seen, SECTION_RESPONSE_TIMEOUT_MS / 1000),
-            SECTION_RESPONSE_TIMEOUT_MS / 1000 + PROTOCOL_TIMEOUT_SECONDS,
-            "waiting for course selection response",
-        )
-        await bounded(
-            page.wait_for_selector('a[href="/std/notice"]'), PROTOCOL_TIMEOUT_SECONDS, "waiting for notice menu"
-        )
-        with profile_span("document-commit", domain="notices"):
-            await bounded(page.click('a[href="/std/notice"]'), PROTOCOL_TIMEOUT_SECONDS, "opening course notice board")
-        interceptor.raise_if_denied()
+        if selection is not None and (
+            selection.course_id != course["course_id"]
+            or interceptor.epoch.selection_epoch != selection.epoch
+            or interceptor.epoch.course_id != selection.course_id
+            or self.epoch_number != interceptor.epoch.number
+            or interceptor.epoch.phase != "bound"
+            or urlsplit(interceptor.epoch.document_url).path != "/std/notice"
+        ):
+            raise ValueError("Notice selection belongs to another course")
         await bounded(page.wait_for_load_state("networkidle"), PROTOCOL_TIMEOUT_SECONDS, "settling notice board")
         interceptor.raise_if_denied()
-        if stale or commit is None or notice_document is None or commit < notice_document:
+        if self.stale or commit is None or notice_document is None or commit < notice_document:
             raise ValueError("Notice navigation did not commit cleanly")
-        selected = [request for _, request in requests if urlsplit(request.url).path in paths]
-        session = [request for request in selected if urlsplit(request.url).path.endswith("/addSessionCourseInfo")]
-        if len(session) != 1 or any(order >= notice_document for order, request in requests if request is session[0]):
-            raise ValueError("Course selection missing or duplicated")
-        matching_session = [response for response in responses if response.request is session[0]]
-        if (
-            len(matching_session) != 1
-            or matching_session[0].status != 200
-            or session_status != 200
-            or session_request is not session[0]
-        ):
-            raise ValueError("Course selection response missing or duplicated")
-        data = session_payload.get("body") if isinstance(session_payload, dict) else None
-        if (
-            not isinstance(session_payload, dict)
-            or not isinstance(session_payload.get("header"), dict)
-            or session_payload["header"].get("code") != 200
-            or not isinstance(data, dict)
-            or data.get("result") != "Y"
-            or not isinstance(data.get("data"), dict)
-            or data["data"].get("course_id") != course["course_id"]
-        ):
-            raise ValueError("Course selection belongs to another course")
         board_sequences: list[int] = []
         top_items: list[dict[str, Any]] = []
         list_items: list[dict[str, Any]] = []
@@ -719,7 +733,210 @@ async def _board_snapshot(
             raise ValueError("Board responses and rendered rows disagree")
         if snapshot["row_count"] == 0 and (list_total != 0 or top_items or list_items):
             raise ValueError("Empty board response is unverified")
+        if self.stale or any(
+            len([request for _, request in requests if urlsplit(request.url).path == path]) != 1
+            for path in ("/api/v1/board/notice/list/top", "/api/v1/board/notice/list")
+        ):
+            raise ValueError("Board response changed during extraction")
+        interceptor.raise_if_denied()
         return list(rows_by_id.values())
+
+
+async def collect_notice_todo(
+    page: Any,
+    section_guard: Any,
+    courses: list[dict[str, Any]],
+    *,
+    capture: _TodoCapture,
+    selected_course_id: str | None = None,
+) -> tuple[dict[str, list[dict[str, Any]]], set[str]]:
+    """Read the committed global to-do once; failure cannot confirm an empty board."""
+    with profile_span("todo", domain="notices"):
+        rows = await _grid_snapshot(page, section_guard, capture)
+        section_guard.raise_if_denied()
+        return parse_notice_rows(rows, courses, selected_course_id=selected_course_id)
+
+
+def arm_notice_capture(page: Any, section_guard: Any) -> _NoticeCapture:
+    """Arm the board observer before its section document is opened."""
+    section_guard.raise_if_denied()
+    return _NoticeCapture(page, section_guard)
+
+
+async def open_notice_section(
+    page: Any,
+    section_guard: Any,
+    action: Callable[[], Any],
+    *,
+    capture: _NoticeCapture | None = None,
+    selection: CourseSelection | None = None,
+) -> None:
+    """Open the notice board, binding its committed document before list XHRs."""
+    try:
+        if selection is None:
+            await bounded(action(), PROTOCOL_TIMEOUT_SECONDS, "opening course notice board")
+        else:
+            async with bind_on_commit(
+                page, section_guard, frame=page.main_frame, expected_path="/std/notice", selection=selection
+            ):
+                await bounded(action(), PROTOCOL_TIMEOUT_SECONDS, "opening course notice board")
+    except BaseException:
+        if capture is not None:
+            capture.close()
+        raise
+
+
+async def collect_notice_rows(
+    page: Any,
+    course: dict[str, Any],
+    selection: CourseSelection | None,
+    section_guard: Any,
+    *,
+    capture: _NoticeCapture,
+    courses: list[dict[str, Any]],
+    todo_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Validate the already-entered board and join its verified global to-do snapshot."""
+    try:
+        board = await capture.collect(page, course, courses, selection)
+        section_guard.raise_if_denied()
+        return parse_board_rows(board, course, todo_rows)
+    finally:
+        capture.close()
+
+
+async def _board_snapshot(
+    page: Any, interceptor: Any, course: dict[str, Any], courses: list[dict[str, Any]], todo_rows: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Accept only the selected course's complete, single-page, post-commit board."""
+    paths = {
+        "/api/v1/course/addSessionCourseInfo",
+        "/api/v1/board/notice/list/top",
+        "/api/v1/board/notice/list",
+    }
+    sequence = 0
+    commit: int | None = None
+    notice_document: int | None = None
+    requests: list[tuple[int, Any]] = []
+    responses: list[Any] = []
+    session_seen: asyncio.Future[tuple[Any, int, Any]] = asyncio.get_running_loop().create_future()
+    stale = False
+
+    async def capture_session(request: Any, response: Any) -> None:
+        nonlocal stale
+        if session_seen.done():
+            stale = True
+            return
+        try:
+            body = await response.json() if response.status == 200 else None
+        except Exception:
+            body = None
+        session_seen.set_result((request, response.status, body))
+
+    def on_request(request: Any) -> None:
+        nonlocal sequence, notice_document
+        sequence += 1
+        path = urlsplit(request.url).path
+        if path == "/std/notice" and request.resource_type == "document" and request.frame is page.main_frame:
+            notice_document = sequence
+        if path in paths:
+            requests.append((sequence, request))
+
+    def on_navigate(frame: Any) -> None:
+        nonlocal commit
+        if frame is page.main_frame and urlsplit(frame.url).path == "/std/notice" and notice_document is not None:
+            commit = sequence
+
+    def on_response(response: Any) -> None:
+        nonlocal stale
+        path = urlsplit(response.request.url).path
+        if path not in paths:
+            return
+        if not any(request is response.request for _, request in requests):
+            stale = True
+        responses.append(response)
+        if (
+            path == "/api/v1/course/addSessionCourseInfo"
+            and len([seen for seen in responses if urlsplit(seen.request.url).path == path]) > 1
+        ):
+            stale = True
+
+    interceptor.capture_response("/api/v1/course/addSessionCourseInfo", capture_session)
+    page.on("request", on_request)
+    page.on("response", on_response)
+    page.on("framenavigated", on_navigate)
+    try:
+        await bounded(page.wait_for_load_state("networkidle"), PROTOCOL_TIMEOUT_SECONDS, "settling previous course")
+        interceptor.raise_if_denied()
+        await bounded(
+            page.goto(MY_LECTURE_URL, wait_until="domcontentloaded"), PROTOCOL_TIMEOUT_SECONDS, "opening course roster"
+        )
+        interceptor.raise_if_denied()
+        await bounded(page.wait_for_load_state("networkidle"), PROTOCOL_TIMEOUT_SECONDS, "settling course roster")
+        interceptor.raise_if_denied()
+        with profile_span("course-selection", domain="notices"):
+            await bounded(
+                page.click(f'[data-act="moveLecture"][data-courseid={_css_string(course["course_id"])}]'),
+                PROTOCOL_TIMEOUT_SECONDS,
+                "selecting course",
+            )
+        profile_count("course_selections")
+        interceptor.raise_if_denied()
+        session_request, session_status, session_payload = await bounded(
+            asyncio.wait_for(session_seen, SECTION_RESPONSE_TIMEOUT_MS / 1000),
+            SECTION_RESPONSE_TIMEOUT_MS / 1000 + PROTOCOL_TIMEOUT_SECONDS,
+            "waiting for course selection response",
+        )
+        await bounded(
+            page.wait_for_selector('a[href="/std/notice"]'), PROTOCOL_TIMEOUT_SECONDS, "waiting for notice menu"
+        )
+        with profile_span("document-commit", domain="notices"):
+            await open_notice_section(page, interceptor, lambda: page.click('a[href="/std/notice"]'))
+        interceptor.raise_if_denied()
+        await bounded(page.wait_for_load_state("networkidle"), PROTOCOL_TIMEOUT_SECONDS, "settling notice board")
+        interceptor.raise_if_denied()
+        if stale or commit is None or notice_document is None or commit < notice_document:
+            raise ValueError("Notice navigation did not commit cleanly")
+        selected = [request for _, request in requests if urlsplit(request.url).path in paths]
+        session = [request for request in selected if urlsplit(request.url).path.endswith("/addSessionCourseInfo")]
+        if len(session) != 1 or any(order >= notice_document for order, request in requests if request is session[0]):
+            raise ValueError("Course selection missing or duplicated")
+        matching_session = [response for response in responses if response.request is session[0]]
+        if (
+            len(matching_session) != 1
+            or matching_session[0].status != 200
+            or session_status != 200
+            or session_request is not session[0]
+        ):
+            raise ValueError("Course selection response missing or duplicated")
+        data = session_payload.get("body") if isinstance(session_payload, dict) else None
+        if (
+            not isinstance(session_payload, dict)
+            or not isinstance(session_payload.get("header"), dict)
+            or session_payload["header"].get("code") != 200
+            or not isinstance(data, dict)
+            or data.get("result") != "Y"
+            or not isinstance(data.get("data"), dict)
+            or data["data"].get("course_id") != course["course_id"]
+        ):
+            raise ValueError("Course selection belongs to another course")
+        capture = _NoticeCapture(page, interceptor, armed=False)
+        capture.requests = [
+            (order, request)
+            for order, request in requests
+            if urlsplit(request.url).path != "/api/v1/course/addSessionCourseInfo"
+        ]
+        capture.responses = [
+            response
+            for response in responses
+            if urlsplit(response.request.url).path != "/api/v1/course/addSessionCourseInfo"
+        ]
+        capture.commit = commit
+        capture.notice_document = notice_document
+        capture.stale = stale
+        return await collect_notice_rows(
+            page, course, None, interceptor, capture=capture, courses=courses, todo_rows=todo_rows
+        )
     finally:
         interceptor.stop_capture()
         if not session_seen.done():
@@ -808,9 +1025,10 @@ async def sync_notices(
                 )
             selected = [course for course in courses if course_id is None or course["course_id"] == course_id]
             try:
-                with profile_span("todo", domain="notices"):
-                    todo_rows = await _grid_snapshot(page, interceptor)
-                    todo_by_course, todo_failures = parse_notice_rows(todo_rows, courses, selected_course_id=course_id)
+                todo_capture = await open_notice_todo(page, interceptor)
+                todo_by_course, todo_failures = await collect_notice_todo(
+                    page, interceptor, courses, capture=todo_capture, selected_course_id=course_id
+                )
             except Exception:
                 interceptor.raise_if_denied()
                 todo_by_course = {}
@@ -824,9 +1042,8 @@ async def sync_notices(
                     continue
                 try:
                     with profile_span("extract", domain="notices", course=ordinal):
-                        board_rows = await _board_snapshot(page, interceptor, course, courses)
-                        parsed[course["course_id"]] = parse_board_rows(
-                            board_rows, course, todo_by_course.get(course["course_id"], [])
+                        parsed[course["course_id"]] = await _board_snapshot(
+                            page, interceptor, course, courses, todo_by_course.get(course["course_id"], [])
                         )
                 except Exception as exc:
                     interceptor.raise_if_denied()

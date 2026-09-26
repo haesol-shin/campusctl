@@ -37,6 +37,7 @@ class FakeGuard:
         assert operation == "materials.sync" and navigation_path == "/std/archive" and settled
         assert policy.approved and frame.url == document_url and selection.course_id == self.epoch.course_id
         self.epoch.phase = "navigation"
+        self.epoch.navigation_path = navigation_path
 
     def bind_document(self, *, frame, document_url, selection):
         assert self.epoch.phase == "navigation" and frame.url == document_url

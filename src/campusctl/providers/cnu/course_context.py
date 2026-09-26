@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 from campusctl.browser import PROTOCOL_TIMEOUT_SECONDS, bounded
 
@@ -70,6 +72,57 @@ class CourseSelection:
         ):
             raise ValueError("Course selection is not bound to its committed course entry")
         return cls(course_id, ordinal, epoch, response_identity, document_identity)
+
+
+@asynccontextmanager
+async def bind_on_commit(
+    page: Any,
+    section_guard: Any,
+    *,
+    frame: Any,
+    expected_path: str,
+    selection: CourseSelection,
+):
+    """Bind a reviewed section synchronously at document commit, before its inline XHRs."""
+    section_guard.raise_if_denied()
+    epoch = section_guard.epoch
+    if (
+        epoch.phase != "navigation"
+        or epoch.frame is not frame
+        or epoch.navigation_path != expected_path
+        or epoch.course_id != selection.course_id
+        or epoch.selection_epoch != selection.epoch
+    ):
+        raise ValueError("Section navigation was not activated for this selection")
+    previous = urlsplit(epoch.document_url)
+    commits: list[Exception | None] = []
+
+    def on_navigate(committed: Any) -> None:
+        if committed is not frame:
+            return
+        current = urlsplit(frame.url)
+        if (
+            (current.scheme, current.netloc, current.path) != (previous.scheme, previous.netloc, expected_path)
+            or current.query
+            or current.fragment
+        ):
+            commits.append(ValueError("Section document committed outside its reviewed path"))
+            return
+        try:
+            section_guard.bind_document(frame=frame, document_url=frame.url, selection=selection)
+        except Exception as error:
+            commits.append(error)
+        else:
+            commits.append(None)
+
+    page.on("framenavigated", on_navigate)
+    try:
+        yield
+        section_guard.raise_if_denied()
+        if len(commits) != 1 or commits[0] is not None:
+            raise ValueError("Section document did not bind on commit")
+    finally:
+        page.remove_listener("framenavigated", on_navigate)
 
 
 async def prepare_course_section(

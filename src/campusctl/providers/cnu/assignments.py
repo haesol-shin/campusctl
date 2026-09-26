@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -26,7 +27,13 @@ from campusctl.domain_catalog import (
 from campusctl.envelope import CampusError
 from campusctl.identity import assignment_entity_id
 
-from .course_context import SECTION_RESPONSE_TIMEOUT_MS, open_course_section, prepare_course_section
+from .course_context import (
+    SECTION_RESPONSE_TIMEOUT_MS,
+    CourseSelection,
+    bind_on_commit,
+    open_course_section,
+    prepare_course_section,
+)
 from .courses import COURSE_LINK_SELECTOR, EXTRACT_COURSES_JS, parse_courses
 from .login import MY_LECTURE_URL, ensure_logged_in
 from .roster_diagnostics import capture_roster_failure, start_roster_requests, stop_roster_requests
@@ -146,6 +153,7 @@ class _PageActivity:
 
     def __init__(self, page: Any) -> None:
         self.page = page
+        self.epoch_number: int | None = None
         self.pending: set[int] = set()
         self.idle = asyncio.Event()
         self.idle.set()
@@ -155,18 +163,27 @@ class _PageActivity:
         self.std_before_document = 0
         self.std_after_document: list[tuple[int, Any]] = []
         self.document_count = 0
+        self.responses: list[Any] = []
+        self.response_seen = asyncio.Event()
+        self.legacy_response: Any | None = None
+        self.closed = False
 
     def start(self) -> None:
         self.page.on("request", self._started)
         self.page.on("requestfinished", self._finished)
         self.page.on("requestfailed", self._finished)
         self.page.on("framenavigated", self._navigated)
+        self.page.on("response", self._responded)
 
     def close(self) -> None:
+        if self.closed:
+            return
+        self.closed = True
         self.page.remove_listener("request", self._started)
         self.page.remove_listener("requestfinished", self._finished)
         self.page.remove_listener("requestfailed", self._finished)
         self.page.remove_listener("framenavigated", self._navigated)
+        self.page.remove_listener("response", self._responded)
 
     def _started(self, request: Any) -> None:
         self.requests.append(request)
@@ -199,6 +216,11 @@ class _PageActivity:
         ):
             self.task_commit_seq = len(self.requests)
 
+    def _responded(self, response: Any) -> None:
+        if self._path(response.request) == TASK_RESPONSE_PATH:
+            self.responses.append(response)
+            self.response_seen.set()
+
     def _finished(self, request: Any) -> None:
         self.pending.discard(id(request))
         if not self.pending:
@@ -219,10 +241,148 @@ class _PageActivity:
         return bool(self.std_after_document) and request is self.std_after_document[0][1]
 
 
-async def _course_rows(page: Any, config: dict[str, Any], course: dict[str, Any]) -> list[dict[str, Any]]:
-    """Bind the first post-commit task XHR by request order, task Referer, page course, and decoded ID."""
+def arm_assignment_capture(page: Any, section_guard: Any) -> _PageActivity:
+    """Observe the committed task document and every candidate list request before navigation."""
+    section_guard.raise_if_denied()
     activity = _PageActivity(page)
+    activity.epoch_number = getattr(section_guard.epoch, "number", None)
     activity.start()
+    return activity
+
+
+async def open_assignment_section(
+    page: Any,
+    section_guard: Any,
+    action: Callable[[], Any],
+    *,
+    capture: _PageActivity | None = None,
+    selection: CourseSelection | None = None,
+) -> None:
+    """Open the task document, binding it before its first list XHR."""
+    try:
+        if selection is None:
+            await bounded(action(), PROTOCOL_TIMEOUT_SECONDS, "opening the CNU task section")
+        else:
+            async with bind_on_commit(
+                page, section_guard, frame=page.main_frame, expected_path="/std/task", selection=selection
+            ):
+                await bounded(action(), PROTOCOL_TIMEOUT_SECONDS, "opening the CNU task section")
+    except BaseException:
+        if capture is not None:
+            capture.close()
+        raise
+
+
+async def collect_assignment_rows(
+    page: Any,
+    course: dict[str, Any],
+    selection: CourseSelection | None,
+    section_guard: Any,
+    *,
+    capture: _PageActivity,
+) -> list[dict[str, Any]]:
+    """Validate the already-entered task section without selecting or publishing."""
+    activity = capture
+    try:
+        if selection is not None and (
+            selection.course_id != course["course_id"]
+            or section_guard.epoch.selection_epoch != selection.epoch
+            or section_guard.epoch.course_id != selection.course_id
+            or activity.epoch_number != section_guard.epoch.number
+            or section_guard.epoch.phase != "bound"
+            or urlsplit(section_guard.epoch.document_url).path != "/std/task"
+        ):
+            raise ValueError("Task selection belongs to another course")
+        section_guard.raise_if_denied()
+        if activity.legacy_response is None:
+            await bounded(
+                asyncio.wait_for(activity.response_seen.wait(), SECTION_RESPONSE_TIMEOUT_MS / 1000),
+                SECTION_RESPONSE_TIMEOUT_MS / 1000 + PROTOCOL_TIMEOUT_SECONDS,
+                "waiting for the CNU task response",
+            )
+        response = activity.legacy_response or activity.responses[0]
+        return await _collect_assignment_rows(page, course, activity, response, section_guard)
+    finally:
+        activity.close()
+
+
+async def _collect_assignment_rows(
+    page: Any, course: dict[str, Any], activity: _PageActivity, response: Any, section_guard: Any
+) -> list[dict[str, Any]]:
+    """Validate first post-commit task XHR, task Referer, DOM, and response count."""
+    section_guard.raise_if_denied()
+    if not activity.own_task_response(response):
+        raise ValueError("Task response did not follow the committed task document")
+    with profile_span("response-completion", domain="assignments"):
+        completion_error = await bounded(
+            response.finished(), PROTOCOL_TIMEOUT_SECONDS, "finishing the CNU task response"
+        )
+    if completion_error is not None or response.status != 200:
+        raise ValueError("Task response failed")
+    headers = await bounded(
+        response.request.all_headers(), PROTOCOL_TIMEOUT_SECONDS, "checking the task request context"
+    )
+    referer = next((value for key, value in headers.items() if key.casefold() == "referer"), "")
+    reference = urlsplit(referer)
+    request_origin = urlsplit(response.request.url)
+    if activity.task_commit_seq is None or (reference.scheme, reference.netloc, reference.path) != (
+        request_origin.scheme,
+        request_origin.netloc,
+        "/std/task",
+    ):
+        raise ValueError("Task response did not originate in the selected task page")
+    try:
+        body = await bounded(response.json(), PROTOCOL_TIMEOUT_SECONDS, "reading CNU task metadata")
+    except (ValueError, TypeError):
+        count = None  # Body inaccessible; successful response plus idle DOM is still valid.
+    else:
+        _check_response_course(body, course["course_id"])
+        count = _response_count(body)
+    await bounded(activity.idle.wait(), PROTOCOL_TIMEOUT_SECONDS, "waiting for the CNU task page to be idle")
+    await bounded(
+        page.wait_for_load_state("networkidle", timeout=COURSE_WAIT_MS),
+        PROTOCOL_TIMEOUT_SECONDS,
+        "waiting for all CNU task page requests to settle",
+    )
+    await bounded(
+        page.wait_for_selector(TASK_TABLE_SELECTOR, state="attached", timeout=COURSE_WAIT_MS),
+        PROTOCOL_TIMEOUT_SECONDS,
+        "waiting for the CNU task table",
+    )
+    page_course_id = await bounded(
+        page.evaluate(EXTRACT_COURSE_CONTEXT_JS), PROTOCOL_TIMEOUT_SECONDS, "checking the active CNU task course"
+    )
+    if page_course_id != course["course_id"]:
+        raise ValueError("Task page belongs to another course")
+    with profile_span("extract", domain="assignments"):
+        extracted = await bounded(
+            page.evaluate(EXTRACT_ASSIGNMENT_ROWS_JS), PROTOCOL_TIMEOUT_SECONDS, "extracting CNU tasks"
+        )
+    section_guard.raise_if_denied()
+    if (
+        not isinstance(extracted, dict)
+        or type(extracted.get("row_count")) is not int
+        or not isinstance(extracted.get("rows"), list)
+        or activity.pending
+        or activity.std_before_document
+        or len(activity.std_after_document) != 1
+        or activity.document_count != 1
+        or activity.task_commit_seq is None
+        or (activity.responses and (len(activity.responses) != 1 or activity.responses[0] is not response))
+    ):
+        raise ValueError("Task page not fully rendered")
+    raw = extracted["rows"]
+    row_count = extracted["row_count"]
+    if not raw and (row_count != 0 or count not in (None, 0)):
+        raise ValueError("Task page is not an observed empty course")
+    if count is not None and count != len(raw):
+        raise ValueError("Task response and task page disagree")
+    return parse_assignment_rows(raw, course)
+
+
+async def _course_rows(page: Any, config: dict[str, Any], course: dict[str, Any], guard: Any) -> list[dict[str, Any]]:
+    """Legacy one-domain traversal, sharing the collector's section proof."""
+    activity = arm_assignment_capture(page, guard)
     try:
         await bounded(
             page.wait_for_load_state("networkidle", timeout=COURSE_WAIT_MS),
@@ -238,71 +398,11 @@ async def _course_rows(page: Any, config: dict[str, Any], course: dict[str, Any]
             activity.own_task_response, timeout=SECTION_RESPONSE_TIMEOUT_MS
         ) as response_info:
             with profile_span("document-commit", domain="assignments"):
-                await open_course_section(page, "task")
-        response = await bounded(response_info.value, PROTOCOL_TIMEOUT_SECONDS, "waiting for the CNU task response")
-        with profile_span("response-completion", domain="assignments"):
-            completion_error = await bounded(
-                response.finished(), PROTOCOL_TIMEOUT_SECONDS, "finishing the CNU task response"
-            )
-        if completion_error is not None or response.status != 200:
-            raise ValueError("Task response failed")
-        headers = await bounded(
-            response.request.all_headers(), PROTOCOL_TIMEOUT_SECONDS, "checking the task request context"
+                await open_assignment_section(page, guard, lambda: open_course_section(page, "task"), capture=activity)
+        activity.legacy_response = await bounded(
+            response_info.value, PROTOCOL_TIMEOUT_SECONDS, "waiting for the CNU task response"
         )
-        referer = next((value for key, value in headers.items() if key.casefold() == "referer"), "")
-        reference = urlsplit(referer)
-        request_origin = urlsplit(response.request.url)
-        if activity.task_commit_seq is None or (reference.scheme, reference.netloc, reference.path) != (
-            request_origin.scheme,
-            request_origin.netloc,
-            "/std/task",
-        ):
-            raise ValueError("Task response did not originate in the selected task page")
-        try:
-            body = await bounded(response.json(), PROTOCOL_TIMEOUT_SECONDS, "reading CNU task metadata")
-        except (ValueError, TypeError):
-            count = None  # Body inaccessible; successful response plus idle DOM is still valid.
-        else:
-            _check_response_course(body, course["course_id"])
-            count = _response_count(body)
-        await bounded(activity.idle.wait(), PROTOCOL_TIMEOUT_SECONDS, "waiting for the CNU task page to be idle")
-        await bounded(
-            page.wait_for_load_state("networkidle", timeout=COURSE_WAIT_MS),
-            PROTOCOL_TIMEOUT_SECONDS,
-            "waiting for all CNU task page requests to settle",
-        )
-        await bounded(
-            page.wait_for_selector(TASK_TABLE_SELECTOR, state="attached", timeout=COURSE_WAIT_MS),
-            PROTOCOL_TIMEOUT_SECONDS,
-            "waiting for the CNU task table",
-        )
-        page_course_id = await bounded(
-            page.evaluate(EXTRACT_COURSE_CONTEXT_JS), PROTOCOL_TIMEOUT_SECONDS, "checking the active CNU task course"
-        )
-        if page_course_id != course["course_id"]:
-            raise ValueError("Task page belongs to another course")
-        with profile_span("extract", domain="assignments"):
-            extracted = await bounded(
-                page.evaluate(EXTRACT_ASSIGNMENT_ROWS_JS), PROTOCOL_TIMEOUT_SECONDS, "extracting CNU tasks"
-            )
-        if (
-            not isinstance(extracted, dict)
-            or type(extracted.get("row_count")) is not int
-            or not isinstance(extracted.get("rows"), list)
-            or activity.pending
-            or activity.std_before_document
-            or len(activity.std_after_document) != 1
-            or activity.document_count != 1
-            or activity.task_commit_seq is None
-        ):
-            raise ValueError("Task page not fully rendered")
-        raw = extracted["rows"]
-        row_count = extracted["row_count"]
-        if not raw and (row_count != 0 or count not in (None, 0)):
-            raise ValueError("Task page is not an observed empty course")
-        if count is not None and count != len(raw):
-            raise ValueError("Task response and task page disagree")
-        return parse_assignment_rows(raw, course)
+        return await collect_assignment_rows(page, course, None, guard, capture=activity)
     finally:
         activity.close()
 
@@ -407,7 +507,7 @@ async def sync_assignments(
                         stop_roster_requests(page)
                 try:
                     with profile_span("extract", domain="assignments", course=index + 1):
-                        course_rows = await _course_rows(page, config, course)
+                        course_rows = await _course_rows(page, config, course, interceptor)
                     interceptor.raise_if_denied()
                 except Exception as error:
                     interceptor.raise_if_denied()

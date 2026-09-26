@@ -15,7 +15,7 @@ from campusctl.commands.notices import CAPABILITY
 from campusctl.domain_catalog import domain_catalog_path, read_domain_catalog
 from campusctl.envelope import CampusError
 from campusctl.profiling import SpanRecorder
-from campusctl.providers.cnu import notices
+from campusctl.providers.cnu import materials, notices
 from campusctl.providers.cnu.ui_policy import (
     UiRequestDenied,
     UiRequestDiagnostics,
@@ -911,3 +911,397 @@ def test_filtered_and_full_merge_transitions(tmp_path: Path, monkeypatch: pytest
     run_sync(monkeypatch, page, tmp_path)
     assert catalog(tmp_path)["failed_courses"] == []
     assert {item["course"]["id"] for item in catalog(tmp_path)["notices"]} == {"course-a"}
+
+
+def test_collector_uses_prearmed_board_and_independent_expected_row(monkeypatch: pytest.MonkeyPatch) -> None:
+    from campusctl.providers.cnu.course_context import CourseSelection
+
+    page = FakePage()
+    monkeypatch.setattr(notices, "_ORIGIN", L)
+    page.handler = lambda route: route.continue_()
+    selection = CourseSelection("course-a", 1, 7, 2, 3)
+    guard = SimpleNamespace(
+        epoch=SimpleNamespace(
+            number=9, selection_epoch=7, course_id="course-a", phase="bound", document_url=L + "/std/notice"
+        ),
+        raise_if_denied=lambda: None,
+    )
+
+    async def exercise() -> None:
+        capture = notices.arm_notice_capture(page, guard)
+        await page.click('a[href="/std/notice"]')
+        actual = await notices.collect_notice_rows(
+            page, COURSES[0], selection, guard, capture=capture, courses=COURSES, todo_rows=[]
+        )
+        assert actual == [
+            {
+                "entity_id": "cnu_notice:course-a:2026-09-01 08%3A00:1",
+                "legacy_key": "Example Course_2026-09-01 08:00_1",
+                "course": {"id": "course-a", "label": "Example Course"},
+                "kind": "notice",
+                "title": "Board notice",
+                "date": "2026-09-01 08:00",
+                "status": None,
+                "is_unread": None,
+                "posted_date": None,
+                "author_role": None,
+                "author": "Example Author",
+                "view_count": 42,
+                "has_attachments": False,
+            }
+        ]
+        assert not page.listeners
+
+    asyncio.run(exercise())
+
+
+def test_collector_refuses_late_selection_and_wrong_epoch(monkeypatch: pytest.MonkeyPatch) -> None:
+    from campusctl.providers.cnu.course_context import CourseSelection
+
+    page = FakePage()
+    monkeypatch.setattr(notices, "_ORIGIN", L)
+    page.handler = lambda route: route.continue_()
+    guard = SimpleNamespace(
+        epoch=SimpleNamespace(
+            number=9, selection_epoch=8, course_id="course-a", phase="bound", document_url=L + "/std/notice"
+        ),
+        raise_if_denied=lambda: None,
+    )
+
+    async def exercise() -> None:
+        capture = notices.arm_notice_capture(page, guard)
+        await page.click('a[href="/std/notice"]')
+        with pytest.raises(ValueError, match="selection"):
+            await notices.collect_notice_rows(
+                page,
+                COURSES[0],
+                CourseSelection("course-a", 1, 7, 2, 3),
+                guard,
+                capture=capture,
+                courses=COURSES,
+                todo_rows=[],
+            )
+        capture = notices.arm_notice_capture(page, guard)
+        await page.click('a[href="/std/notice"]')
+        await page.request("/api/v1/course/addSessionCourseInfo", "POST")
+        with pytest.raises(ValueError, match="cleanly"):
+            await notices.collect_notice_rows(
+                page,
+                COURSES[0],
+                CourseSelection("course-a", 1, 8, 2, 3),
+                guard,
+                capture=capture,
+                courses=COURSES,
+                todo_rows=[],
+            )
+        capture = notices.arm_notice_capture(page, guard)
+        await page.click('a[href="/std/notice"]')
+        evaluate = page.evaluate
+
+        async def late_response(expression: str) -> Any:
+            value = await evaluate(expression)
+            if expression == notices._EXTRACT_BOARD_JS:
+                await page.request("/api/v1/course/addSessionCourseInfo", "POST")
+            return value
+
+        page.evaluate = late_response
+        with pytest.raises(ValueError, match="changed during extraction"):
+            await notices.collect_notice_rows(
+                page,
+                COURSES[0],
+                CourseSelection("course-a", 1, 8, 2, 3),
+                guard,
+                capture=capture,
+                courses=COURSES,
+                todo_rows=[],
+            )
+
+    asyncio.run(exercise())
+
+
+def test_real_guard_runs_todo_then_notice_under_bound_documents(monkeypatch: pytest.MonkeyPatch) -> None:
+    from campusctl.providers.cnu.course_context import CourseSelection
+
+    page = FakePage()
+    page.todo = [
+        {
+            "number": "2",
+            "course_label": "Other Course",
+            "title": "Board notice",
+            "date": "2026-09-01 08:00",
+            "read_yn": "읽지않음",
+            "native_id": native_board_id(200),
+        }
+    ]
+    callbacks: dict[str, list[Any]] = {}
+
+    def on(event: str, callback: Any) -> None:
+        callbacks.setdefault(event, []).append(callback)
+        page.listeners[event] = lambda value: [listener(value) for listener in tuple(callbacks[event])]
+
+    def remove_listener(event: str, callback: Any) -> None:
+        callbacks[event].remove(callback)
+        if not callbacks[event]:
+            page.listeners.pop(event)
+
+    page.on = on
+    page.remove_listener = remove_listener
+    monkeypatch.setattr(notices, "_ORIGIN", L)
+    monkeypatch.setattr(notices, "_TODO_URL", L + "/std/todo")
+    page.main_frame.url = L + "/std/lecture"
+    selected = CourseSelection("course-a", 1, 1, 2, 3)
+    reviewed = UiRequestPolicy.from_reviewed_config(policy())
+
+    async def scenario() -> None:
+        guard = await install_ui_request_interceptor(
+            page, reviewed, operation="notices.sync", diagnostics=UiRequestDiagnostics()
+        )
+        guard.bind_selection(selected, frame=page.main_frame, document_url=page.main_frame.url)
+
+        async def committed_goto(url: str, **_kwargs: Any) -> None:
+            old_url = page.main_frame.url
+            await page.request(url.removeprefix(L), referer=old_url)
+            page.main_frame.url = url
+            page.listeners.get("framenavigated", lambda _: None)(page.main_frame)
+            assert guard.epoch.phase == "bound"
+            if url.endswith("/std/todo"):
+                await page.request(notices._NOTICE_LIST_PATH, "POST")
+
+        page.goto = committed_goto
+        try:
+            guard.quarantine()
+            guard.activate(
+                reviewed,
+                operation="notices.sync",
+                selection=selected,
+                frame=page.main_frame,
+                document_url=page.main_frame.url,
+                navigation_path="/std/todo",
+                settled=True,
+            )
+            todo_capture = await notices.open_notice_todo(page, guard, selection=selected)
+            todo, failed = await notices.collect_notice_todo(page, guard, COURSES, capture=todo_capture)
+            assert not failed and todo["course-a"] == []
+            assert todo["course-b"][0]["native_id"] == native_board_id(200)
+            assert todo["course-b"][0]["is_unread"] is True
+            guard.raise_if_denied()
+            guard.quarantine()
+            guard.activate(
+                reviewed,
+                operation="notices.sync",
+                selection=selected,
+                frame=page.main_frame,
+                document_url=page.main_frame.url,
+                navigation_path="/std/notice",
+                settled=True,
+            )
+            capture = notices.arm_notice_capture(page, guard)
+            await notices.open_notice_section(
+                page, guard, lambda: page.click('a[href="/std/notice"]'), selection=selected
+            )
+            rows = await notices.collect_notice_rows(
+                page, COURSES[0], selected, guard, capture=capture, courses=COURSES, todo_rows=todo["course-a"]
+            )
+            assert rows[0]["entity_id"] == "cnu_notice:course-a:2026-09-01 08%3A00:1"
+            guard.raise_if_denied()
+        finally:
+            await guard.close()
+
+    asyncio.run(scenario())
+
+
+def test_real_chromium_binds_todo_and_archive_before_inline_requests(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    playwright_api = pytest.importorskip("playwright.async_api")
+    from campusctl.providers.cnu.course_context import CourseSelection
+
+    async def scenario() -> None:
+        async with playwright_api.async_playwright() as playwright:
+            if not Path(playwright.chromium.executable_path).is_file():
+                pytest.skip("local Playwright Chromium is unavailable")
+            arrivals: list[str] = []
+
+            async def serve(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+                try:
+                    request = await reader.readuntil(b"\r\n\r\n")
+                    line, *headers = request.decode("ascii").split("\r\n")
+                    method, path, _ = line.split(" ", 2)
+                    length = next(
+                        (
+                            int(header.split(":", 1)[1])
+                            for header in headers
+                            if header.lower().startswith("content-length:")
+                        ),
+                        0,
+                    )
+                    if length:
+                        await reader.readexactly(length)
+                    arrivals.append(f"{method} {path}")
+                    if path == "/std/todo":
+                        body = (
+                            b"<html><head><link rel='icon' href='data:,'></head>"
+                            b"<body><div id='noticeList'><div id='noticeNoData'>No notices</div></div>"
+                            b"<script>fetch('/api/v1/board/std/notice/list', {method:'POST', body:'{}'})</script></body></html>"
+                        )
+                    elif path == "/std/archive":
+                        body = (
+                            b"<html><head><link rel='icon' href='data:,'></head>"
+                            b"<body><div id='table_list'></div>"
+                            b"<script>fetch('/api/v1/archive/list', {method:'POST', body:'{}'})</script></body></html>"
+                        )
+                    elif path.startswith("/api/v1/"):
+                        body = b'{"header":{"code":200},"body":{"list":[]}}'
+                    else:
+                        body = b"<html><head><link rel='icon' href='data:,'></head><body>Entry</body></html>"
+                    media = "application/json" if path.startswith("/api/v1/") else "text/html"
+                    writer.write(
+                        f"HTTP/1.1 200 OK\r\nContent-Type: {media}\r\nContent-Length: {len(body)}"
+                        "\r\nConnection: close\r\n\r\n".encode()
+                        + body
+                    )
+                    await writer.drain()
+                finally:
+                    writer.close()
+                    await writer.wait_closed()
+
+            server = await asyncio.start_server(serve, "127.0.0.1", 0)
+            origin = f"http://127.0.0.1:{server.sockets[0].getsockname()[1]}"
+            reviewed = UiRequestPolicy.from_reviewed_config(
+                {
+                    "approved": True,
+                    "read_only_evidence": "synthetic local fixture",
+                    "origins": [origin],
+                    "routes": [
+                        {"origin": origin, "path": path, "operation": operation, "methods": [method]}
+                        for path, operation, method in (
+                            ("/std/todo", "notices.sync", "GET"),
+                            ("/api/v1/board/std/notice/list", "notices.sync", "POST"),
+                            ("/std/archive", "materials.sync", "GET"),
+                            ("/api/v1/archive/list", "materials.sync", "POST"),
+                        )
+                    ],
+                    "allowed_media": [],
+                    "max_bytes": None,
+                }
+            )
+            browser = await playwright.chromium.launch(headless=True)
+            context = await browser.new_context()
+            try:
+                page = await context.new_page()
+                await page.goto(origin + "/std/lecture")
+                guard = await install_ui_request_interceptor(
+                    context, reviewed, operation="notices.sync", diagnostics=UiRequestDiagnostics()
+                )
+                selected = CourseSelection("synthetic-course-1", 1, 1, 2, 3)
+                try:
+                    frame = page.main_frame
+                    guard.bind_selection(selected, frame=frame, document_url=frame.url)
+                    guard.quarantine()
+                    guard.activate(
+                        reviewed,
+                        operation="notices.sync",
+                        selection=selected,
+                        frame=frame,
+                        document_url=frame.url,
+                        navigation_path="/std/todo",
+                        settled=True,
+                    )
+                    monkeypatch.setattr(notices, "_ORIGIN", origin)
+                    monkeypatch.setattr(notices, "_TODO_URL", origin + "/std/todo")
+                    capture = await notices.open_notice_todo(page, guard, selection=selected)
+                    todo, failures = await notices.collect_notice_todo(
+                        page,
+                        guard,
+                        [{"course_id": selected.course_id, "label": "Fixture", "class_no": None}],
+                        capture=capture,
+                    )
+                    assert not failures and todo[selected.course_id] == []
+                    guard.raise_if_denied()
+                    guard.quarantine()
+                    guard.activate(
+                        reviewed,
+                        operation="materials.sync",
+                        selection=selected,
+                        frame=frame,
+                        document_url=frame.url,
+                        navigation_path="/std/archive",
+                        settled=True,
+                    )
+                    archive_capture = await materials.arm_materials_capture(page, guard)
+                    await materials.open_materials_section(
+                        page,
+                        guard,
+                        lambda: page.goto(origin + "/std/archive", referer=frame.url),
+                        capture=archive_capture,
+                        selection=selected,
+                    )
+                    await page.wait_for_load_state("networkidle")
+                    guard.raise_if_denied()
+                    archive_capture.close()
+                    assert arrivals.count("POST /api/v1/board/std/notice/list") == 1
+                    assert arrivals.count("POST /api/v1/archive/list") == 1
+                finally:
+                    await guard.close()
+            finally:
+                await context.close()
+                await browser.close()
+                server.close()
+                await server.wait_closed()
+
+    asyncio.run(scenario())
+
+
+def test_denied_todo_collection_releases_capture(monkeypatch: pytest.MonkeyPatch) -> None:
+    page = FakePage()
+    monkeypatch.setattr(notices, "_ORIGIN", L)
+    monkeypatch.setattr(notices, "_TODO_URL", L + "/std/todo")
+    page.handler = lambda route: route.continue_()
+    denied = False
+
+    def check_guard() -> None:
+        if denied:
+            raise UiRequestDenied("route")
+
+    guard = SimpleNamespace(epoch=SimpleNamespace(number=1, phase="legacy"), raise_if_denied=check_guard)
+
+    async def scenario() -> None:
+        nonlocal denied
+        capture = await notices.open_notice_todo(page, guard)
+        denied = True
+        with pytest.raises(UiRequestDenied):
+            await notices.collect_notice_todo(page, guard, COURSES, capture=capture)
+        assert not page.listeners
+
+    asyncio.run(scenario())
+
+
+def test_failed_notice_navigation_releases_capture() -> None:
+    from campusctl.providers.cnu.course_context import CourseSelection
+
+    page = FakePage()
+    page.main_frame.url = L + "/std/lecture"
+    selected = CourseSelection("course-a", 1, 1, 2, 3)
+    guard = SimpleNamespace(
+        epoch=SimpleNamespace(
+            number=2,
+            phase="navigation",
+            navigation_path="/std/notice",
+            frame=page.main_frame,
+            course_id=selected.course_id,
+            selection_epoch=selected.epoch,
+            document_url=page.main_frame.url,
+        ),
+        raise_if_denied=lambda: None,
+    )
+
+    async def fail() -> None:
+        raise RuntimeError("synthetic notice navigation failed")
+
+    async def scenario() -> None:
+        capture = notices.arm_notice_capture(page, guard)
+        with pytest.raises(RuntimeError, match="synthetic notice navigation failed"):
+            await notices.open_notice_section(page, guard, fail, capture=capture, selection=selected)
+        assert not page.listeners
+
+    asyncio.run(scenario())
