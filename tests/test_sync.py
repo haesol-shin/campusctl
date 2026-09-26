@@ -130,9 +130,11 @@ def _install_fake_sync(
     )
 
     @asynccontextmanager
-    async def fake_open_session(config: dict[str, Any], *, data_dir: Path):
+    async def fake_open_session(config: dict[str, Any], *, data_dir: Path, headless: bool = False, operation: str):
         del config
         assert data_dir == data_dir_arg
+        assert operation == "lectures.sync"
+        assert headless in (True, False)
         yield SimpleNamespace(page=page)
 
     data_dir_arg = data_dir
@@ -149,6 +151,46 @@ def _install_fake_sync(
     monkeypatch.setattr(sync_module, "ensure_logged_in", fake_login)
     monkeypatch.setattr(sync_module, "discover_courses", fake_discover)
     return page
+
+
+@pytest.mark.parametrize("headless", [False, True])
+def test_provider_modes_preserve_filtered_rows_and_failed_course(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, headless: bool
+) -> None:
+    page = _install_fake_sync(
+        monkeypatch,
+        tmp_path,
+        rows_by_course={"course-a": [_row("new-a")]},
+        failed_courses={"course-b"},
+    )
+    write_catalog(
+        {
+            "schema_version": 1,
+            "generated_at": "2026-01-01T00:00:00Z",
+            "courses": COURSES,
+            "lectures": [_lecture("course-b", "old-b")],
+        },
+        catalog_path(tmp_path),
+    )
+    original_open = sync_module.open_session
+
+    @asynccontextmanager
+    async def checked_open(*args: Any, **kwargs: Any):
+        assert kwargs["headless"] is headless
+        async with original_open(*args, **kwargs) as session:
+            yield session
+
+    monkeypatch.setattr(sync_module, "open_session", checked_open)
+    result, errors = asyncio.run(sync_module.sync_lectures({}, tmp_path, headless=headless))
+    assert page.course_clicks == ["course-a", "course-b"]
+    assert result["failed_courses"] == [{"course_id": "course-b", "label": "Course B"}]
+    assert [error.code for error in errors] == ["course-sync-failed"]
+    stored = read_catalog(catalog_path(tmp_path))
+    assert {row["entity_id"] for row in stored["lectures"]} == {
+        "cnu_lecture:course-a:new-a",
+        "cnu_lecture:course-b:old-b",
+    }
+    assert stored["failed_courses"][0]["reason"] == "course-sync-failed"
 
 
 def _invoke(argv: list[str], capsys: pytest.CaptureFixture[str]) -> tuple[int, dict[str, Any]]:

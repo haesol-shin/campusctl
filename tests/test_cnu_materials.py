@@ -334,7 +334,9 @@ def _install_fake_session(monkeypatch, cases: list[dict], events: list[str]):
     )
 
     @asynccontextmanager
-    async def fake_session(*_args, **_kwargs):
+    async def fake_session(*_args, **kwargs):
+        assert kwargs["operation"] == "materials.sync"
+        page.open_headless = kwargs["headless"]
         events.append("session")
         yield SimpleNamespace(page=page, context=page)
 
@@ -367,6 +369,49 @@ def _install_fake_session(monkeypatch, cases: list[dict], events: list[str]):
         materials.UiRequestPolicy, "from_reviewed_config", lambda _config: SimpleNamespace(approved=True)
     )
     return page
+
+
+@pytest.mark.parametrize("headless", [False, True])
+def test_modes_keep_records_failures_and_course_filter(monkeypatch, tmp_path: Path, headless: bool) -> None:
+    cases = {case["name"]: case for case in fixture()["cases"]}
+    page = _install_fake_session(monkeypatch, [cases["modal-multiple"], cases["inline-after-modal-timeout"]], [])
+    result, errors = asyncio.run(materials.sync_materials({}, tmp_path, headless=headless, reviewed_policy={}))
+    assert page.open_headless is headless
+    assert result["courses"] == 2 and result["materials"] == 3 and not errors
+    path = domain_catalog_path("materials", tmp_path)
+    original = read_domain_catalog("materials", path)
+    assert len([row for row in original["materials"] if row["course"]["id"] == "course-0"]) == 2
+    page = _install_fake_session(monkeypatch, [cases["duplicate-id"], cases["completed-empty"]], [])
+    result, errors = asyncio.run(materials.sync_materials({}, tmp_path, headless=headless, reviewed_policy={}))
+    assert page.open_headless is headless
+    assert result["courses"] == 1 and result["materials"] == 0
+    assert [error.code for error in errors] == ["item-identity-missing"]
+    stored = read_domain_catalog("materials", path)
+    assert [row for row in stored["materials"] if row["course"]["id"] == "course-0"] == [
+        row for row in original["materials"] if row["course"]["id"] == "course-0"
+    ]
+    assert stored["failed_courses"][0]["reason"] == "item-identity-missing"
+    page = _install_fake_session(monkeypatch, [cases["completed-empty"], cases["completed-empty"]], [])
+    result, errors = asyncio.run(
+        materials.sync_materials({}, tmp_path, course_id="course-1", headless=headless, reviewed_policy={})
+    )
+    assert page.open_headless is headless
+    assert result["courses"] == 1 and not errors
+    assert [
+        row for row in read_domain_catalog("materials", path)["materials"] if row["course"]["id"] == "course-0"
+    ] == [row for row in original["materials"] if row["course"]["id"] == "course-0"]
+
+
+@pytest.mark.parametrize("headless", [False, True])
+def test_modes_preserve_policy_denial_before_catalog_publication(monkeypatch, tmp_path: Path, headless: bool) -> None:
+    base = next(case for case in fixture()["cases"] if case["name"] == "modal-multiple")
+    page = _install_fake_session(monkeypatch, [base], [])
+    page.guard.denied = True
+    with pytest.raises(CampusError) as failure:
+        asyncio.run(materials.sync_materials({}, tmp_path, headless=headless, reviewed_policy={}))
+    assert page.open_headless is headless
+    assert failure.value.code == "policy-blocked"
+    assert not domain_catalog_path("materials", tmp_path).exists()
 
 
 def test_full_filtered_and_failed_course_merges(monkeypatch, tmp_path: Path) -> None:
@@ -408,10 +453,6 @@ def test_full_filtered_and_failed_course_merges(monkeypatch, tmp_path: Path) -> 
     assert after["generated_at"] == before["generated_at"]
     assert after["materials"] == before["materials"]
     assert after["enrollment_state"] == "unknown"
-
-    with pytest.raises(CampusError) as exc:
-        asyncio.run(materials.sync_materials({}, tmp_path, headless=True, reviewed_policy={}))
-    assert exc.value.code == "headless-unavailable"
 
 
 @pytest.mark.parametrize(

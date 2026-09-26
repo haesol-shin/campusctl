@@ -219,7 +219,11 @@ async def setup(
     page.logins = 0
 
     @asynccontextmanager
-    async def open_fake(*_args: Any, **_kwargs: Any):
+    async def open_fake(*_args: Any, **kwargs: Any):
+        assert kwargs["operation"] == "assignments.sync"
+        assert kwargs["data_dir"] == root
+        assert kwargs["headless"] in (False, True)
+        page.open_headless = kwargs["headless"]
         yield SimpleNamespace(page=page, context=context)
 
     async def login(*_args: Any, **_kwargs: Any) -> None:
@@ -311,8 +315,34 @@ def old_catalog(root: Path) -> None:
     )
 
 
-def run(root: Path, *, course_id: str | None = None) -> tuple[dict[str, Any], list[CampusError]]:
-    return asyncio.run(provider.sync_assignments({}, root, course_id, reviewed_policy=POLICY))
+def run(
+    root: Path, *, course_id: str | None = None, headless: bool = False
+) -> tuple[dict[str, Any], list[CampusError]]:
+    return asyncio.run(provider.sync_assignments({}, root, course_id, headless=headless, reviewed_policy=POLICY))
+
+
+@pytest.mark.parametrize("headless", [False, True])
+def test_modes_keep_records_failures_and_filtered_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, headless: bool
+) -> None:
+    old_catalog(tmp_path)
+    scenarios = {"course-a": {"rows": fixture_rows()}, "course-b": {"rows": [], "failed": True}}
+    page, _ = asyncio.run(setup(monkeypatch, tmp_path, scenarios))
+    result, errors = run(tmp_path, headless=headless)
+    assert page.open_headless is headless
+    assert result["courses"] == 1 and result["assignments"] == 5
+    assert [error.code for error in errors] == ["course-sync-failed"]
+    stored = read_domain_catalog("assignments", domain_catalog_path("assignments", tmp_path))
+    assert [row["title"] for row in stored["assignments"] if row["course"]["id"] == "course-b"] == ["Old B"]
+    assert len([row for row in stored["assignments"] if row["course"]["id"] == "course-a"]) == 5
+    assert {entry["reason"] for entry in stored["failed_courses"]} == {"course-sync-failed", "removal-deferred"}
+    scenarios["course-b"] = {"rows": []}
+    page, _ = asyncio.run(setup(monkeypatch, tmp_path, scenarios))
+    result, errors = run(tmp_path, course_id="course-b", headless=headless)
+    assert page.open_headless is headless
+    assert result["courses"] == 1 and result["assignments"] == 0 and not errors
+    stored = read_domain_catalog("assignments", domain_catalog_path("assignments", tmp_path))
+    assert {row["course"]["id"] for row in stored["assignments"]} == {"course-a", "course-old"}
 
 
 def test_full_partial_filtered_and_unknown_merges(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -424,12 +454,13 @@ def test_stale_or_missing_course_response_never_clears_catalog(
     assert [row["title"] for row in catalog["assignments"] if row["course"]["id"] == "course-a"] == ["Old A"]
 
 
-def test_range_header_rejected_on_allowed_get(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("headless", [False, True])
+def test_range_header_rejected_on_allowed_get(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, headless: bool) -> None:
     old_catalog(tmp_path)
     scenarios = {"course-a": {"rows": [], "unexpected": "/std/task", "headers": {"rAnGe": "bytes=0-1023"}}}
     asyncio.run(setup(monkeypatch, tmp_path, scenarios))
     with pytest.raises(CampusError) as failure:
-        run(tmp_path, course_id="course-a")
+        run(tmp_path, course_id="course-a", headless=headless)
     assert failure.value.code == "policy-blocked"
     assert (
         read_domain_catalog("assignments", domain_catalog_path("assignments", tmp_path))["generated_at"]
@@ -437,12 +468,15 @@ def test_range_header_rejected_on_allowed_get(tmp_path: Path, monkeypatch: pytes
     )
 
 
-def test_suppressed_panopto_and_unpinned_request_denial(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("headless", [False, True])
+def test_suppressed_panopto_and_unpinned_request_denial(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, headless: bool
+) -> None:
     old_catalog(tmp_path)
     scenarios = {"course-a": {"rows": [], "unexpected": "/api/v1/task/unknown"}}
     asyncio.run(setup(monkeypatch, tmp_path, scenarios))
     with pytest.raises(CampusError) as failure:
-        run(tmp_path, course_id="course-a")
+        run(tmp_path, course_id="course-a", headless=headless)
     assert failure.value.code == "policy-blocked"
     assert (
         read_domain_catalog("assignments", domain_catalog_path("assignments", tmp_path))["generated_at"]

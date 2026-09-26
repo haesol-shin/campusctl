@@ -725,17 +725,10 @@ async def sync_notices(
     reviewed_policy: Mapping[str, Any],
 ) -> tuple[dict[str, Any], list[CampusError]]:
     """Authenticate once, guard every later request and commit only complete courses."""
-    if headless:
-        raise CampusError(
-            "headless-unavailable",
-            "CNU headless notice sync has not been approved.",
-            "Use a headed browser.",
-            "user-action",
-        )
     policy = UiRequestPolicy.from_reviewed_config(reviewed_policy)
     if not policy.approved:
         raise CampusError("policy-blocked", "The reviewed notice policy is unavailable.", None, "error")
-    async with open_session(config, data_dir=root) as session:
+    async with open_session(config, data_dir=root, headless=headless, operation="notices.sync") as session:
         page = session.page
         await ensure_logged_in(page, config)
         diagnostics = UiRequestDiagnostics()
