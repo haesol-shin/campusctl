@@ -53,7 +53,9 @@ class FakePage:
         if self.empty:
             raise PlaywrightTimeoutError("no lecture rows")
 
-    async def evaluate(self, script: str) -> list[dict[str, Any]]:
+    async def evaluate(self, script: str) -> Any:
+        if script == sync_module._TOPBAR_COURSE_JS:
+            return "course-a"
         assert script == sync_module.EXTRACT_LEARNING_ROWS_JS
         return self.rows
 

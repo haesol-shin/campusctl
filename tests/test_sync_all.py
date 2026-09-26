@@ -68,6 +68,8 @@ def _document(
     *,
     unreviewed: bool = False,
     wrong_topbar: bool = False,
+    wrong_course_topbar: bool = False,
+    skip_course_navigation: bool = False,
     archive_count_mismatch: bool = False,
     malformed_todo: bool = False,
     third_party: tuple[str, str, str] | None = None,
@@ -86,9 +88,12 @@ def _document(
                 body += f'<script>fetch("{probe_origin}/probe",{{method:"{method}"}});</script>'
     elif path == "/std/lecture":
         body = _topbar(wrong_selection=wrong_topbar) + _menu()
+        if skip_course_navigation:
+            body += """<script>document.querySelector('a[href="/std/course"]')
+ .addEventListener('click', event => event.preventDefault());</script>"""
     elif path == "/std/course":
         body = (
-            _topbar()
+            _topbar(wrong_selection=wrong_course_topbar)
             + _menu()
             + """<div class="learningRow" id="LV1" data-moduletype="LV"
  data-state="N" data-openyn="Y" data-weekno="2" data-seqno="1">
@@ -179,6 +184,8 @@ class FixtureServer(ThreadingHTTPServer):
         self.task_count_mismatch = False
         self.archive_count_mismatch = False
         self.wrong_topbar = False
+        self.wrong_course_topbar = False
+        self.skip_course_navigation = False
         self.malformed_todo = False
         self.third_party: tuple[str, str, str] | None = None
         self.external_probe: tuple[str, str, str] | None = None
@@ -212,6 +219,8 @@ class FixtureHandler(BaseHTTPRequestHandler):
                     path,
                     unreviewed=self.server.unreviewed,
                     wrong_topbar=self.server.wrong_topbar,
+                    wrong_course_topbar=self.server.wrong_course_topbar,
+                    skip_course_navigation=self.server.skip_course_navigation,
                     archive_count_mismatch=self.server.archive_count_mismatch,
                     malformed_todo=self.server.malformed_todo,
                     third_party=self.server.third_party,
@@ -627,6 +636,29 @@ def test_selected_entry_topbar_mismatch_aborts_every_publication(
             path in {"/std/course", "/std/task", "/std/notice", "/std/archive"} for _, path, _ in server.requests
         )
         assert all(result["domains"][domain]["status"] == "not-started" for domain in DOMAINS[1:])
+
+
+@pytest.mark.parametrize("failure", ["wrong_course_topbar", "skip_course_navigation"])
+def test_lecture_section_requires_its_own_committed_course_page(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    with fixture_server() as server:
+        setattr(server, failure, True)
+        config = _install_fixture(monkeypatch, server)
+        result, errors = run_sync(config, tmp_path, ("lectures", "assignments"), IDS[0], headless=True)
+        codes = [error.code for error in errors] if isinstance(errors, list) else [errors.code]
+        assert codes == ["course-sync-failed"]
+        lecture_catalog = read_catalog(catalog_path(tmp_path))
+        assert lecture_catalog["lectures"] == []
+        assert lecture_catalog["failed_courses"] == [
+            {"course_id": IDS[0], "label": COURSES[0]["label"], "reason": "course-sync-failed"}
+        ]
+        assert result["domains"]["assignments"]["status"] == "ok"
+        assignment_catalog = read_domain_catalog("assignments", domain_catalog_path("assignments", tmp_path))
+        assert assignment_catalog["assignments"] == [_expected_row("assignments", IDS[0], 1)]
+        assert sum(path == "/std/course" for _, path, _ in server.requests) == (
+            0 if failure == "skip_course_navigation" else 1
+        )
 
 
 def test_filtered_selection_and_unknown_course_do_not_claim_full_enrollment(

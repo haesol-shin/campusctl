@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from campusctl.browser import PROTOCOL_TIMEOUT_SECONDS, bounded, profile_span
 from campusctl.catalog import catalog_path, read_catalog, write_catalog
 from campusctl.envelope import CampusError
 
+from .course_context import _TOPBAR_COURSE_JS
 from .lectures import EXTRACT_LEARNING_ROWS_JS, LEARNING_ROW_SELECTOR, parse_learning_rows
 
 COURSE_ROOM_URL_ANCHOR = 'a[href="/std/course"]'
@@ -78,6 +80,13 @@ async def collect_lectures_rows(
     """Read LV rows on the committed course section without selecting again."""
     if section_guard is not None:
         section_guard.raise_if_denied()
+    if urlsplit(page.main_frame.url).path != "/std/course":
+        raise ValueError("Lecture section document did not commit")
+    page_course_id = await bounded(
+        page.evaluate(_TOPBAR_COURSE_JS), PROTOCOL_TIMEOUT_SECONDS, "checking active lecture course"
+    )
+    if page_course_id != course["course_id"]:
+        raise ValueError("Lecture section belongs to another course")
     try:
         await bounded(
             page.wait_for_selector(LEARNING_ROW_SELECTOR, state="attached", timeout=COURSE_ROOM_TIMEOUT_MS),

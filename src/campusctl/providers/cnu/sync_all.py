@@ -24,7 +24,7 @@ from campusctl.domain_catalog import (
 )
 from campusctl.envelope import CampusError
 from campusctl.providers.cnu import assignments, materials, notices
-from campusctl.providers.cnu.course_context import _css_string
+from campusctl.providers.cnu.course_context import _TOPBAR_COURSE_JS, _css_string
 from campusctl.providers.cnu.courses import COURSE_LINK_SELECTOR, EXTRACT_COURSES_JS, parse_courses
 from campusctl.providers.cnu.login import MY_LECTURE_URL, ensure_logged_in
 from campusctl.providers.cnu.roster_diagnostics import (
@@ -47,13 +47,6 @@ _SECTION_PATH = {
     "materials": "/std/archive",
 }
 _SELECTION_PATH = "/api/v1/course/addSessionCourseInfo"
-_TOPBAR_COURSE_JS = """() => {
-    const current = document.querySelector('#topbarCurrentLecture');
-    const name = current?.textContent?.replace(/\\s+/g, '').trim();
-    const matches = [...document.querySelectorAll('#topbarLectureDropdown a[data-act="changeLecture"][data-courseid]')]
-        .filter(link => link.textContent.replace(/\\s+/g, '').trim() === name);
-    return matches.length === 1 ? matches[0].getAttribute('data-courseid') : null;
-}"""
 
 
 @dataclass(slots=True)
@@ -527,7 +520,8 @@ async def sync_all(
                             guard.raise_if_denied()
                             if isinstance(error, CampusError) and error.code == "policy-blocked":
                                 raise
-                            if urlsplit(page.main_frame.url).path != _SECTION_PATH[domain]:
+                            path = urlsplit(page.main_frame.url).path
+                            if path != _SECTION_PATH[domain] and (domain != "lectures" or path != "/std/lecture"):
                                 raise CampusError(
                                     "course-sync-failed",
                                     "A section navigation did not commit.",

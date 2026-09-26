@@ -14,6 +14,13 @@ _SECTION_SELECTORS = {
     "task": 'a[href="/std/task"]',
     "archive": 'a[href="/std/archive"]',
 }
+_TOPBAR_COURSE_JS = """() => {
+    const current = document.querySelector('#topbarCurrentLecture');
+    const name = current?.textContent?.replace(/\\s+/g, '').trim();
+    const matches = [...document.querySelectorAll('#topbarLectureDropdown a[data-act="changeLecture"][data-courseid]')]
+        .filter(link => link.textContent.replace(/\\s+/g, '').trim() === name);
+    return matches.length === 1 ? matches[0].getAttribute('data-courseid') : null;
+}"""
 
 
 async def prepare_course_section(
