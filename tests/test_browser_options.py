@@ -44,7 +44,10 @@ def test_pending_operations_refuse_before_lock_or_browser(tmp_path: Path, monkey
     assert HEADLESS_SUPPORT["materials.download"] is True
     monkeypatch.setattr(browser, "_playwright_manager", lambda: pytest.fail("browser started"))
     data_dir = tmp_path / "data"
-    pending = ("lectures.sync", "assignments.sync", "notices.sync", "materials.sync", "lectures.play")
+    for operation in ("lectures.sync", "assignments.sync", "notices.sync", "materials.sync", "materials.download"):
+        assert operation_headless_supported(operation)
+        assert preflight_browser_mode({"browser": {"headless": True}}, operation) is True
+    pending = ("lectures.play",)
     for operation in (*pending, "unregistered.operation"):
         assert not operation_headless_supported(operation)
         with pytest.raises(CampusError) as caught:
@@ -60,7 +63,7 @@ def test_pending_operations_refuse_before_lock_or_browser(tmp_path: Path, monkey
             )
         assert caught.value.code == "headless-unavailable"
         assert not data_dir.exists()
-    assert preflight_browser_mode({"browser": {"headless": True}}, "lectures.sync", override=False) is False
+    assert preflight_browser_mode({"browser": {"headless": True}}, "lectures.play", override=False) is False
 
 
 def test_approved_download_mode_still_rejects_cdp_before_lock(tmp_path: Path) -> None:

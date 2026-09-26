@@ -77,7 +77,8 @@ def test_global_mode_refuses_before_sync_and_legacy_flag_is_usage(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setenv("CAMPUSCTL_DATA_DIR", str(tmp_path))
-    monkeypatch.setattr(cli, "load_config", lambda: {})
+    monkeypatch.setattr(cli, "load_config", lambda: {"browser": {"cdp_endpoint": "http://browser.invalid:9222"}})
+    monkeypatch.setattr(sync_module, "discover_domain_modules", lambda: pytest.fail("sync dispatched"))
     for argv, code, expected in (
         (["--headless", "sync", "--json"], 2, "headless-unavailable"),
         (["sync", "--headless", "--json"], 2, "usage-error"),
@@ -224,3 +225,27 @@ def test_uncached_numeric_full_id_wins_over_json_index_refusal(
     )
     code, response = _call(["sync", "--only", "assignments", "--course", "123", "--json"], capsys)
     assert code == 0 and response["result"]["courses"] == 1 and calls == ["123"]
+
+
+def test_headless_sync_reaches_every_provider_in_local_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("CAMPUSCTL_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(cli, "load_config", lambda: {})
+    seen: dict[str, bool] = {}
+
+    def provider_for(domain: str):
+        async def provider(config: dict, root: Path, course_id: str | None, *, headless: bool):
+            seen[domain] = headless
+            return {"courses": 1}, []
+
+        return SimpleNamespace(sync=provider)
+
+    import campusctl.providers.cnu.sync as lecture_provider
+
+    domains = ("lectures", "assignments", "notices", "materials")
+    monkeypatch.setattr(lecture_provider, "sync_lectures", provider_for("lectures").sync)
+    monkeypatch.setattr(sync_module, "discover_domain_modules", lambda: {d: provider_for(d) for d in domains[1:]})
+    code, response = _call(["--headless", "sync", "--json"], capsys)
+    assert code == 0, response["errors"]
+    assert seen == dict.fromkeys(domains, True)
