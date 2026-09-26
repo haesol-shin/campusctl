@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 from urllib.parse import unquote, urlsplit
 
+from campusctl.browser import current_profile, profile_span
 from campusctl.envelope import CampusError
 
 _REASON_CODES = frozenset({"logging", "range", "origin", "route", "method", "media", "redirect"})
@@ -764,23 +765,41 @@ class UiRequestInterceptor:
                 await asyncio.wait_for(popup.close(), timeout=5)
 
     async def _handle(self, route: Any) -> None:
+        with profile_span("guard-disposition"):
+            await self._handle_request(route)
+
+    async def _handle_request(self, route: Any) -> None:
         request = route.request
+        recorder = current_profile()
+        resource_type = request.resource_type
+        category = (
+            resource_type
+            if resource_type in {"document", "xhr", "fetch"}
+            else "static"
+            if resource_type in _STATIC_TYPES
+            else "other"
+        )
         try:
             previous = request.redirected_from
-            decision = guard_ui_request(
-                self._policy,
-                request.url,
-                request.method,
-                await request.all_headers(),
-                operation=self._operation,
-                resource_type=request.resource_type,
-                redirected_from=previous.url if previous is not None else None,
-                selected_file=self._selected_file,
-                selected_file_id=self._selected_file_id,
-            )
+            with profile_span("guard-headers"):
+                headers = await request.all_headers()
+            with profile_span("guard-decision"):
+                decision = guard_ui_request(
+                    self._policy,
+                    request.url,
+                    request.method,
+                    headers,
+                    operation=self._operation,
+                    resource_type=resource_type,
+                    redirected_from=previous.url if previous is not None else None,
+                    selected_file=self._selected_file,
+                    selected_file_id=self._selected_file_id,
+                )
         except UiRequestDenied as denial:
             if self._denial is None:
                 self._denial = denial
+            if recorder is not None:
+                recorder.request(category, "blocked")
             await route.abort()
             return
         capture = self._capture
@@ -799,10 +818,14 @@ class UiRequestInterceptor:
                     if self._denial is None:
                         self._denial = UiRequestDenied("route")
                     await route.abort()
+                    if recorder is not None:
+                        recorder.request(category, "blocked")
                     return
             await route.abort()
             self._diagnostics.suppressed_count += 1
             self._diagnostics.suppressed_reasons[reason] = self._diagnostics.suppressed_reasons.get(reason, 0) + 1
+            if recorder is not None:
+                recorder.request(category, "suppressed")
             if reason == "panopto-sso-popup":
                 await self._close_sso_popup(popup)
         elif (
@@ -814,18 +837,26 @@ class UiRequestInterceptor:
                 if self._denial is None:
                     self._denial = UiRequestDenied("route")
                 await route.abort()
+                if recorder is not None:
+                    recorder.request(category, "blocked")
             else:
                 await route.abort()
                 self._diagnostics.suppressed_count += 1
                 reasons = self._diagnostics.suppressed_reasons
                 reasons["duplicate-download"] = reasons.get("duplicate-download", 0) + 1
+                if recorder is not None:
+                    recorder.request("attachment", "suppressed")
         elif capture is not None and urlsplit(request.url).path == capture[0] and request.method.upper() == "POST":
+            if recorder is not None:
+                recorder.request(category, "allowed")
             response = await route.fetch(max_redirects=0)
             try:
                 await capture[1](request, response)
             finally:
                 await route.fulfill(response=response)
         else:
+            if recorder is not None:
+                recorder.request(category, "allowed")
             await route.continue_()
 
     def raise_if_denied(self) -> None:

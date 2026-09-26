@@ -10,8 +10,10 @@ from types import SimpleNamespace
 
 import pytest
 
+from campusctl.browser import profile_context
 from campusctl.domain_catalog import domain_catalog_path, read_domain_catalog
 from campusctl.envelope import CampusError
+from campusctl.profiling import SpanRecorder
 from campusctl.providers.cnu import materials
 
 _FIXTURE = Path(__file__).parent / "fixtures/lms_sources/materials_archive.json"
@@ -369,6 +371,26 @@ def _install_fake_session(monkeypatch, cases: list[dict], events: list[str]):
         materials.UiRequestPolicy, "from_reviewed_config", lambda _config: SimpleNamespace(approved=True)
     )
     return page
+
+
+def test_profiled_archive_roster_wait_and_course_selection(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    case = next(case for case in fixture()["cases"] if case["name"] == "modal-multiple")
+    _install_fake_session(monkeypatch, [case], [])
+    recorder = SpanRecorder(enabled=True, scope=("materials",))
+    with profile_context(recorder):
+        result, errors = asyncio.run(materials.sync_materials({}, tmp_path, reviewed_policy={}))
+    assert result["courses"] == 1 and not errors
+    report = recorder.finish()
+    assert report is not None
+    phases = [item["phase"] for item in report["spans"]]
+    assert phases[:5] == ["auth", "roster", "document-commit", "dom-ready", "extract"]
+    assert phases.index("course-selection") < phases.index("merge") < phases.index("serialize-write")
+    assert report["counts"]["course_selections"] == 1
+    output = capsys.readouterr()
+    assert output.out == "" and output.err.startswith("campusctl-profile: ")
+    assert "course-0" not in output.err
 
 
 @pytest.mark.parametrize("headless", [False, True])

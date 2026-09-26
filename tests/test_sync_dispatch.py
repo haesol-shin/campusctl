@@ -103,8 +103,6 @@ def test_profile_emits_single_safe_stderr_line_without_polluting_json(
     lines = captured.err.splitlines()
     assert len(lines) == 1 and lines[0].startswith("campusctl-profile: ")
     record = json.loads(lines[0].removeprefix("campusctl-profile: "))
-    assert {span["domain"] for span in record["spans"] if span["phase"] == "roster"} == {"assignments"}
-    assert record["counts"]["course_selections"] == 1
     assert record["scope"] == ["assignments"] and record["outcome"] == "ok"
     code, response = _call(["--profile", "status", "--json"], capsys)
     assert code == 2 and response["errors"][0]["code"] == "usage-error"

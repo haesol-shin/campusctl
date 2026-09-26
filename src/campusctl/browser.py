@@ -7,7 +7,7 @@ import os
 import sys
 import urllib.parse
 from collections.abc import AsyncIterator, Callable, Iterator
-from contextlib import asynccontextmanager, contextmanager, suppress
+from contextlib import asynccontextmanager, contextmanager, nullcontext, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,6 +29,32 @@ NORMAL_CHROME_USER_AGENT = (
 # Tests may supply a fake async_playwright-compatible factory without importing Playwright.
 PLAYWRIGHT_FACTORY: Callable[[], Any] | None = None
 _PRE_BROWSER_CHECK: ContextVar[Callable[[], None] | None] = ContextVar("pre_browser_check", default=None)
+
+_SYNC_PROFILE: ContextVar[Any | None] = ContextVar("sync_profile", default=None)
+
+
+@contextmanager
+def profile_context(recorder: Any) -> Iterator[None]:
+    token = _SYNC_PROFILE.set(recorder)
+    try:
+        yield
+    finally:
+        _SYNC_PROFILE.reset(token)
+
+
+def current_profile() -> Any | None:
+    return _SYNC_PROFILE.get()
+
+
+def profile_span(phase: str, *, domain: str | None = None, course: int | None = None) -> Any:
+    recorder = current_profile()
+    return recorder.span(phase, domain=domain, course=course) if recorder is not None else nullcontext()
+
+
+def profile_count(name: str, amount: int = 1) -> None:
+    recorder = current_profile()
+    if recorder is not None:
+        recorder.count(name, amount)
 
 
 @contextmanager
@@ -324,7 +350,7 @@ async def open_session(
         Path(browser_config["lock_path"]).expanduser() if browser_config.get("lock_path") else root / "session.lock"
     )
 
-    with exclusive_lock(lock_path):
+    with profile_span("lock"), exclusive_lock(lock_path):
         check = _PRE_BROWSER_CHECK.get()
         if check is not None:
             check()
@@ -338,11 +364,12 @@ async def open_session(
         owns_page = False
         primary_error: BaseException | None = None
         try:
-            try:
-                manager = _playwright_manager()
-            except ImportError:
-                raise _browser_not_installed() from None
-            playwright = await bounded(manager.start(), PROTOCOL_TIMEOUT_SECONDS, "starting Playwright")
+            with profile_span("playwright"):
+                try:
+                    manager = _playwright_manager()
+                except ImportError:
+                    raise _browser_not_installed() from None
+                playwright = await bounded(manager.start(), PROTOCOL_TIMEOUT_SECONDS, "starting Playwright")
 
             if mode == "cdp":
                 try:
@@ -351,11 +378,12 @@ async def open_session(
                         PROTOCOL_TIMEOUT_SECONDS,
                         "resolving the browser endpoint",
                     )
-                    browser = await bounded(
-                        playwright.chromium.connect_over_cdp(ws_url, timeout=PROTOCOL_TIMEOUT_SECONDS * 1000),
-                        PROTOCOL_TIMEOUT_SECONDS,
-                        "connecting to the browser endpoint",
-                    )
+                    with profile_span("launch-connect"):
+                        browser = await bounded(
+                            playwright.chromium.connect_over_cdp(ws_url, timeout=PROTOCOL_TIMEOUT_SECONDS * 1000),
+                            PROTOCOL_TIMEOUT_SECONDS,
+                            "connecting to the browser endpoint",
+                        )
                 except Exception:
                     raise _endpoint_unreachable() from None
 
@@ -379,15 +407,16 @@ async def open_session(
                 profile_dir = root / "profile" / str(config.get("provider", "cnu"))
                 ensure_private_dir(profile_dir.parent)
                 try:
-                    context = await bounded(
-                        playwright.chromium.launch_persistent_context(
-                            user_data_dir=str(profile_dir),
-                            headless=headless,
-                            executable_path=browser_config.get("executable_path"),
-                        ),
-                        PROTOCOL_TIMEOUT_SECONDS,
-                        "launching the local browser",
-                    )
+                    with profile_span("launch-connect"):
+                        context = await bounded(
+                            playwright.chromium.launch_persistent_context(
+                                user_data_dir=str(profile_dir),
+                                headless=headless,
+                                executable_path=browser_config.get("executable_path"),
+                            ),
+                            PROTOCOL_TIMEOUT_SECONDS,
+                            "launching the local browser",
+                        )
                 except CampusError:
                     raise
                 except Exception:
@@ -405,7 +434,8 @@ async def open_session(
                 )
 
             try:
-                await apply_normal_user_agent(page)
+                with profile_span("user-agent"):
+                    await apply_normal_user_agent(page)
             except CampusError:
                 raise
             except Exception:
@@ -421,14 +451,15 @@ async def open_session(
             primary_error = error
             raise
         finally:
-            try:
+            with profile_span("teardown"):
                 try:
-                    if mode == "local":
-                        await close_resource(context)
-                    elif owns_page:
-                        await close_resource(page)
-                finally:
-                    await _stop_playwright(manager, playwright)
-            except BaseException:
-                if primary_error is None:
-                    raise
+                    try:
+                        if mode == "local":
+                            await close_resource(context)
+                        elif owns_page:
+                            await close_resource(page)
+                    finally:
+                        await _stop_playwright(manager, playwright)
+                except BaseException:
+                    if primary_error is None:
+                        raise

@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from campusctl.browser import PROTOCOL_TIMEOUT_SECONDS, bounded, open_session
+from campusctl.browser import PROTOCOL_TIMEOUT_SECONDS, bounded, open_session, profile_count, profile_span
 from campusctl.domain_catalog import (
     domain_catalog_path,
     mark_enrollment_unknown,
@@ -562,11 +562,13 @@ async def _board_snapshot(
         interceptor.raise_if_denied()
         await bounded(page.wait_for_load_state("networkidle"), PROTOCOL_TIMEOUT_SECONDS, "settling course roster")
         interceptor.raise_if_denied()
-        await bounded(
-            page.click(f'[data-act="moveLecture"][data-courseid={_css_string(course["course_id"])}]'),
-            PROTOCOL_TIMEOUT_SECONDS,
-            "selecting course",
-        )
+        with profile_span("course-selection", domain="notices"):
+            await bounded(
+                page.click(f'[data-act="moveLecture"][data-courseid={_css_string(course["course_id"])}]'),
+                PROTOCOL_TIMEOUT_SECONDS,
+                "selecting course",
+            )
+        profile_count("course_selections")
         interceptor.raise_if_denied()
         session_request, session_status, session_payload = await bounded(
             asyncio.wait_for(session_seen, SECTION_RESPONSE_TIMEOUT_MS / 1000),
@@ -576,7 +578,8 @@ async def _board_snapshot(
         await bounded(
             page.wait_for_selector('a[href="/std/notice"]'), PROTOCOL_TIMEOUT_SECONDS, "waiting for notice menu"
         )
-        await bounded(page.click('a[href="/std/notice"]'), PROTOCOL_TIMEOUT_SECONDS, "opening course notice board")
+        with profile_span("document-commit", domain="notices"):
+            await bounded(page.click('a[href="/std/notice"]'), PROTOCOL_TIMEOUT_SECONDS, "opening course notice board")
         interceptor.raise_if_denied()
         await bounded(page.wait_for_load_state("networkidle"), PROTOCOL_TIMEOUT_SECONDS, "settling notice board")
         interceptor.raise_if_denied()
@@ -626,8 +629,9 @@ async def _board_snapshot(
             if len(matching) != 1 or matching[0].status != 200:
                 raise ValueError("Board list response missing or duplicated")
             response = matching[0]
-            if await bounded(response.finished(), PROTOCOL_TIMEOUT_SECONDS, "finishing board response") is not None:
-                raise ValueError("Board response incomplete")
+            with profile_span("response-completion", domain="notices"):
+                if await bounded(response.finished(), PROTOCOL_TIMEOUT_SECONDS, "finishing board response") is not None:
+                    raise ValueError("Board response incomplete")
             response_body = await bounded(response.json(), PROTOCOL_TIMEOUT_SECONDS, "checking board response")
             items, total = _board_response_items(response_body, ordinary=path == "/api/v1/board/notice/list")
             if path == "/api/v1/board/notice/list/top":
@@ -657,7 +661,8 @@ async def _board_snapshot(
                 raise ValueError("Notice board belongs to another course")
         elif context.get("name") != course["label"] or sum(item["label"] == course["label"] for item in courses) != 1:
             raise ValueError("Notice board course name is not unique")
-        snapshot = await bounded(page.evaluate(_EXTRACT_BOARD_JS), PROTOCOL_TIMEOUT_SECONDS, "reading notice board")
+        with profile_span("extract", domain="notices"):
+            snapshot = await bounded(page.evaluate(_EXTRACT_BOARD_JS), PROTOCOL_TIMEOUT_SECONDS, "reading notice board")
         interceptor.raise_if_denied()
         if not isinstance(snapshot, dict) or type(snapshot.get("row_count")) is not int:
             raise ValueError("Notice board did not render")
@@ -730,28 +735,33 @@ async def sync_notices(
         raise CampusError("policy-blocked", "The reviewed notice policy is unavailable.", None, "error")
     async with open_session(config, data_dir=root, headless=headless, operation="notices.sync") as session:
         page = session.page
-        await ensure_logged_in(page, config)
+        with profile_span("auth", domain="notices"):
+            await ensure_logged_in(page, config)
         diagnostics = UiRequestDiagnostics()
         interceptor = await install_ui_request_interceptor(
             page, policy, operation="notices.sync", diagnostics=diagnostics, selected_file=None
         )
         try:
             try:
-                await bounded(
-                    page.goto(MY_LECTURE_URL, wait_until="domcontentloaded"),
-                    PROTOCOL_TIMEOUT_SECONDS,
-                    "opening enrolled courses",
-                )
-                interceptor.raise_if_denied()
-                await bounded(
-                    page.wait_for_selector(COURSE_LINK_SELECTOR),
-                    PROTOCOL_TIMEOUT_SECONDS,
-                    "waiting for enrolled courses",
-                )
-                interceptor.raise_if_denied()
-                raw_roster = await bounded(
-                    page.evaluate(EXTRACT_COURSES_JS), PROTOCOL_TIMEOUT_SECONDS, "reading enrolled courses"
-                )
+                with profile_span("roster", domain="notices"):
+                    with profile_span("document-commit", domain="notices"):
+                        await bounded(
+                            page.goto(MY_LECTURE_URL, wait_until="domcontentloaded"),
+                            PROTOCOL_TIMEOUT_SECONDS,
+                            "opening enrolled courses",
+                        )
+                    interceptor.raise_if_denied()
+                    with profile_span("dom-ready", domain="notices"):
+                        await bounded(
+                            page.wait_for_selector(COURSE_LINK_SELECTOR),
+                            PROTOCOL_TIMEOUT_SECONDS,
+                            "waiting for enrolled courses",
+                        )
+                    interceptor.raise_if_denied()
+                    with profile_span("extract", domain="notices"):
+                        raw_roster = await bounded(
+                            page.evaluate(EXTRACT_COURSES_JS), PROTOCOL_TIMEOUT_SECONDS, "reading enrolled courses"
+                        )
                 interceptor.raise_if_denied()
                 if not isinstance(raw_roster, list) or any(
                     not isinstance(course, dict)
@@ -781,8 +791,9 @@ async def sync_notices(
                 )
             selected = [course for course in courses if course_id is None or course["course_id"] == course_id]
             try:
-                todo_rows = await _grid_snapshot(page, interceptor)
-                todo_by_course, todo_failures = parse_notice_rows(todo_rows, courses, selected_course_id=course_id)
+                with profile_span("todo", domain="notices"):
+                    todo_rows = await _grid_snapshot(page, interceptor)
+                    todo_by_course, todo_failures = parse_notice_rows(todo_rows, courses, selected_course_id=course_id)
             except Exception:
                 interceptor.raise_if_denied()
                 todo_by_course = {}
@@ -791,14 +802,15 @@ async def sync_notices(
             failed: list[dict[str, str]] = [
                 _failure(course, "course-sync-failed") for course in selected if course["course_id"] in todo_failures
             ]
-            for course in selected:
+            for ordinal, course in enumerate(selected, 1):
                 if course["course_id"] in todo_failures:
                     continue
                 try:
-                    board_rows = await _board_snapshot(page, interceptor, course, courses)
-                    parsed[course["course_id"]] = parse_board_rows(
-                        board_rows, course, todo_by_course.get(course["course_id"], [])
-                    )
+                    with profile_span("extract", domain="notices", course=ordinal):
+                        board_rows = await _board_snapshot(page, interceptor, course, courses)
+                        parsed[course["course_id"]] = parse_board_rows(
+                            board_rows, course, todo_by_course.get(course["course_id"], [])
+                        )
                 except Exception as exc:
                     interceptor.raise_if_denied()
                     reason = (
@@ -823,16 +835,18 @@ async def sync_notices(
                 if exc.code != "catalog-missing":
                     raise
                 previous = None
-            merged = merge_domain_catalog(
-                "notices",
-                previous,
-                courses,
-                incoming,
-                successful_course_ids=successful,
-                failed_courses=failed,
-                selected_course_id=course_id,
-            )
-            write_domain_catalog("notices", merged, path)
+            with profile_span("merge", domain="notices"):
+                merged = merge_domain_catalog(
+                    "notices",
+                    previous,
+                    courses,
+                    incoming,
+                    successful_course_ids=successful,
+                    failed_courses=failed,
+                    selected_course_id=course_id,
+                )
+            with profile_span("serialize-write", domain="notices"):
+                write_domain_catalog("notices", merged, path)
             return {
                 "courses": len(successful),
                 "notices": len(incoming),

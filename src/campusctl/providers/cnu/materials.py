@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from campusctl.browser import PROTOCOL_TIMEOUT_SECONDS, bounded, open_session
+from campusctl.browser import PROTOCOL_TIMEOUT_SECONDS, bounded, open_session, profile_count, profile_span
 from campusctl.domain_catalog import (
     domain_catalog_path,
     mark_enrollment_unknown,
@@ -500,7 +500,8 @@ async def sync_materials(
     target = domain_catalog_path("materials", root)
     async with open_session(config, data_dir=root, headless=headless, operation="materials.sync") as session:
         page = session.page
-        await ensure_logged_in(page, config, target_url=MY_LECTURE_URL, expected_selector=COURSE_LINK_SELECTOR)
+        with profile_span("auth", domain="materials"):
+            await ensure_logged_in(page, config, target_url=MY_LECTURE_URL, expected_selector=COURSE_LINK_SELECTOR)
         diagnostics = UiRequestDiagnostics()
         guard = await install_ui_request_interceptor(
             session.context,
@@ -510,13 +511,17 @@ async def sync_materials(
         )
         try:
             try:
-                await _step(page.goto(MY_LECTURE_URL), guard, "opening guarded course roster")
-                await _step(
-                    page.wait_for_selector(COURSE_LINK_SELECTOR, timeout=_WAIT_MS),
-                    guard,
-                    "waiting for guarded course roster",
-                )
-                raw = await _step(page.evaluate(EXTRACT_COURSES_JS), guard, "reading guarded course roster")
+                with profile_span("roster", domain="materials"):
+                    with profile_span("document-commit", domain="materials"):
+                        await _step(page.goto(MY_LECTURE_URL), guard, "opening guarded course roster")
+                    with profile_span("dom-ready", domain="materials"):
+                        await _step(
+                            page.wait_for_selector(COURSE_LINK_SELECTOR, timeout=_WAIT_MS),
+                            guard,
+                            "waiting for guarded course roster",
+                        )
+                    with profile_span("extract", domain="materials"):
+                        raw = await _step(page.evaluate(EXTRACT_COURSES_JS), guard, "reading guarded course roster")
                 if not isinstance(raw, list) or not raw:
                     raise ValueError("incomplete course roster")
                 roster = parse_courses(raw)
@@ -545,16 +550,20 @@ async def sync_materials(
             rows: list[dict[str, Any]] = []
             failures: list[dict[str, str]] = []
             errors: list[CampusError] = []
-            for course in selected:
+            for ordinal, course in enumerate(selected, 1):
                 try:
                     await _step(page.goto(MY_LECTURE_URL), guard, "returning to guarded course roster")
-                    await _step(
-                        prepare_course_section(page, config, course["course_id"], "archive"),
-                        guard,
-                        "selecting guarded archive course",
-                    )
-                    await _archive_navigation(page, guard, lambda: open_course_section(page, "archive"))
-                    course_rows = await enumerate_archive(page, course, guard)
+                    with profile_span("course-selection", domain="materials", course=ordinal):
+                        await _step(
+                            prepare_course_section(page, config, course["course_id"], "archive"),
+                            guard,
+                            "selecting guarded archive course",
+                        )
+                    profile_count("course_selections")
+                    with profile_span("document-commit", domain="materials", course=ordinal):
+                        await _archive_navigation(page, guard, lambda: open_course_section(page, "archive"))
+                    with profile_span("extract", domain="materials", course=ordinal):
+                        course_rows = await enumerate_archive(page, course, guard)
                     guard.raise_if_denied()
                 except Exception as error:
                     guard.raise_if_denied()
@@ -573,16 +582,18 @@ async def sync_materials(
                     successful.add(course["course_id"])
                     rows.extend(course_rows)
             previous = read_domain_catalog("materials", target) if target.exists() else None
-            merged = merge_domain_catalog(
-                "materials",
-                previous,
-                roster,
-                rows,
-                successful_course_ids=successful,
-                failed_courses=failures,
-                selected_course_id=course_id,
-            )
-            write_domain_catalog("materials", merged, target)
+            with profile_span("merge", domain="materials"):
+                merged = merge_domain_catalog(
+                    "materials",
+                    previous,
+                    roster,
+                    rows,
+                    successful_course_ids=successful,
+                    failed_courses=failures,
+                    selected_course_id=course_id,
+                )
+            with profile_span("serialize-write", domain="materials"):
+                write_domain_catalog("materials", merged, target)
         finally:
             try:
                 guard.raise_if_denied()
