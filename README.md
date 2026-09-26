@@ -138,6 +138,10 @@ From v0.2.1, run `uv tool upgrade campusctl` to get the new domain commands; ref
 - [CLI contract](docs/contracts/cli.md)
 - [Assignments](docs/contracts/assignments.md), [notices](docs/contracts/notices.md), and [materials](docs/contracts/materials.md) contracts
 
+## Contributing: scan exceptions
+
+CI scans commits and the current tree for leaks, then checks tracked files for binary content. If a safe fixture or example needs an exception, request it in a PR for review: use a narrowly scoped path regex in `.gitleaks.toml` `[allowlist] paths` (also used by the binary check), or a specific finding fingerprint in `.gitleaksignore` for a text finding. Do not add private data to justify an exception.
+
 ## FAQ
 
 #### Is campusctl official?
