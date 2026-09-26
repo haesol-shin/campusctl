@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import FrozenInstanceError
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -57,6 +58,7 @@ def policy(origin: str, operation: str) -> UiRequestPolicy:
             for name, route_origin, path, method, reason in (
                 ("panopto-disconnection-log", origin, "/api/v1/panopto/addInternetDisconnectionLog", "POST", "logging"),
                 ("panopto-connectivity-check", origin, "/api/v1/panopto/checkInternetConnection", "GET", "logging"),
+                ("favicon-icon", origin, "/assets/images/favicon-{hash}.ico", "GET", "favicon"),
                 ("external-telemetry", "http://0.0.0.0:3000", "/v1/events", "POST", "telemetry"),
             )
         ],
@@ -140,6 +142,24 @@ class Request:
             await self.wait.wait()
         return self.headers
 
+    async def response(self) -> Any:
+        if self.response_entered is not None:
+            self.response_entered.set()
+        if self.response_release is not None:
+            await self.response_release.wait()
+        course_id = self.course_id
+
+        class Response:
+            status = 200
+
+            async def finished(self) -> None:
+                return None
+
+            async def json(self) -> dict[str, Any]:
+                return {"header": {"code": 200}, "body": {"result": "Y", "data": {"course_id": course_id}}}
+
+        return Response()
+
 
 class Route:
     def __init__(self, request: Request, port: int) -> None:
@@ -157,30 +177,6 @@ class Route:
         await reader.read()
         writer.close()
         await writer.wait_closed()
-
-    async def fetch(self, *, max_redirects: int) -> Any:
-        assert max_redirects == 0
-        await self.continue_()
-        if self.request.response_entered is not None:
-            self.request.response_entered.set()
-        if self.request.response_release is not None:
-            await self.request.response_release.wait()
-        course_id = self.request.course_id
-
-        class Response:
-            status = 200
-
-            async def finished(self) -> None:
-                return None
-
-            async def json(self) -> dict[str, Any]:
-                return {"header": {"code": 200}, "body": {"result": "Y", "data": {"course_id": course_id}}}
-
-        return Response()
-
-    async def fulfill(self, *, response: Any) -> None:
-        assert response.status == 200
-        self.action = "continue"
 
 
 class Target:
@@ -375,6 +371,9 @@ def test_guarded_roster_two_courses_and_late_requests_before_local_server() -> N
                 Request(origin + "/api/v1/panopto/addInternetDisconnectionLog", frame, frame.url),
                 Request(origin + "/api/v1/panopto/checkInternetConnection", frame, frame.url, method="GET"),
                 Request("http://0.0.0.0:3000/v1/events", frame, frame.url, resource_type="fetch"),
+                Request(
+                    origin + "/assets/images/favicon-Ab.ico", frame, frame.url, method="GET", resource_type="other"
+                ),
             ):
                 assert await send(request) == "abort"
                 guard.raise_if_denied()
@@ -405,7 +404,7 @@ def test_guarded_roster_two_courses_and_late_requests_before_local_server() -> N
                 == "continue"
             )
             assert await send(Request(origin + "/api/v1/week/getStdWeekList", frame, frame.url)) == "continue"
-            assert diagnostics.suppressed_reasons == {"logging": 6, "telemetry": 3}
+            assert diagnostics.suppressed_reasons == {"logging": 6, "telemetry": 3, "favicon": 3}
             first = selection()
             guard.bind_selection(first, frame=frame, document_url=frame.url)
             guard.raise_if_denied()
@@ -538,25 +537,152 @@ def test_guarded_roster_two_courses_and_late_requests_before_local_server() -> N
                 pending_response = Request(origin + "/api/v1/course/addSessionCourseInfo", frame, roster_url)
                 pending_response.response_entered = asyncio.Event()
                 pending_response.response_release = asyncio.Event()
-                selection_task = asyncio.create_task(pending_send(pending_response))
-                await pending_response.response_entered.wait()
+                assert await pending_send(pending_response) == "continue"
                 before_document = arrivals
-                assert (
-                    await pending_send(
+                document_task = asyncio.create_task(
+                    pending_send(
                         Request(origin + "/std/lecture", frame, roster_url, method="GET", resource_type="document")
                     )
-                    == "abort"
                 )
+                await pending_response.response_entered.wait()
                 assert arrivals == before_document
                 pending_response.response_release.set()
-                await selection_task
-                with pytest.raises(UiRequestDenied):
-                    pending_guard.raise_if_denied()
+                assert await document_task == "continue"
+                assert arrivals == before_document + 1
+                pending_guard.raise_if_denied()
             finally:
                 await pending_guard.close()
         finally:
             await guard.close()
             server.close()
             await server.wait_closed()
+
+    asyncio.run(scenario())
+
+
+def test_real_chromium_keeps_original_selection_post_and_waits_for_response() -> None:
+    pytest.importorskip("playwright.async_api")
+    from playwright.async_api import async_playwright
+
+    async def scenario() -> None:
+        async with async_playwright() as playwright:
+            if not Path(playwright.chromium.executable_path).is_file():
+                pytest.skip("local Playwright Chromium is unavailable")
+            requests: list[tuple[str, str, bytes, str]] = []
+            selection_seen, release_selection, lecture_seen = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+            async def receive(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+                try:
+                    raw = await reader.readuntil(b"\r\n\r\n")
+                    first_line, *headers = raw.decode("ascii").split("\r\n")
+                    method, path, _ = first_line.split(" ", 2)
+                    fields = dict(line.split(": ", 1) for line in headers if ": " in line)
+                    body = await reader.readexactly(int(fields.get("Content-Length", "0")))
+                    requests.append((method, path, body, fields.get("Cookie", "")))
+                    if path == "/api/v1/course/addSessionCourseInfo":
+                        content = (
+                            b'{"header":{"code":200},"body":{"result":"Y","data":{"course_id":"synthetic-course-1"}}}'
+                        )
+                        content_type = "application/json"
+                    elif path == "/std/lecture":
+                        lecture_seen.set()
+                        content = b"<html><head><link rel='icon' href='data:,'></head><body>Entry</body></html>"
+                        content_type = "text/html"
+                    else:
+                        content = b"<html><head><link rel='icon' href='data:,'></head><body>Roster</body></html>"
+                        content_type = "text/html"
+                    writer.write(
+                        f"HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {len(content)}\r\nConnection: close\r\n\r\n".encode()
+                    )
+                    await writer.drain()
+                    if path == "/api/v1/course/addSessionCourseInfo":
+                        selection_seen.set()
+                        await release_selection.wait()
+                    writer.write(content)
+                    await writer.drain()
+                finally:
+                    writer.close()
+                    await writer.wait_closed()
+
+            server = await asyncio.start_server(receive, "127.0.0.1", 0)
+            origin = f"http://127.0.0.1:{server.sockets[0].getsockname()[1]}"
+            reviewed = {
+                "approved": True,
+                "read_only_evidence": "synthetic fixture",
+                "origins": [origin],
+                "routes": [
+                    {"origin": origin, "path": path, "operation": "assignments.sync", "methods": [method]}
+                    for path, method in (
+                        ("/std/myLecture", "GET"),
+                        ("/std/lecture", "GET"),
+                        ("/api/v1/course/addSessionCourseInfo", "POST"),
+                    )
+                ],
+                "allowed_media": [],
+                "max_bytes": None,
+            }
+            browser = await playwright.chromium.launch(headless=True)
+            context = await browser.new_context()
+            try:
+                await context.add_cookies([{"name": "synthetic_session", "value": "fixture-value", "url": origin}])
+                page = await context.new_page()
+                await page.goto(origin + "/login")
+                guard = await install_ui_request_interceptor(
+                    context,
+                    UiRequestPolicy.from_reviewed_config(reviewed),
+                    operation="assignments.sync",
+                    diagnostics=UiRequestDiagnostics(),
+                    require_selection=True,
+                )
+                try:
+                    frame = page.main_frame
+                    guard.arm_roster(frame=frame, document_url=frame.url)
+                    await page.goto(origin + "/std/myLecture")
+                    guard.bind_roster(frame=frame, document_url=frame.url)
+                    guard.arm_selection(frame=frame, document_url=frame.url)
+                    entry_requested = asyncio.Event()
+
+                    def observe(request: Any) -> None:
+                        if request.url == origin + "/std/lecture":
+                            entry_requested.set()
+
+                    page.on("request", observe)
+                    await page.evaluate(
+                        """() => {
+                            fetch('/api/v1/course/addSessionCourseInfo', {
+                                method: 'POST', credentials: 'include', keepalive: true,
+                                headers: {'Content-Type': 'application/json'},
+                                body: JSON.stringify({course_id: 'synthetic-course-1'})
+                            }).then(response => response.json())
+                              .then(() => setTimeout(() => location.assign('/std/lecture'), 500));
+                        }"""
+                    )
+                    await asyncio.wait_for(selection_seen.wait(), 10)
+                    assert not lecture_seen.is_set()
+                    assert not entry_requested.is_set()
+                    release_selection.set()
+                    await asyncio.wait_for(entry_requested.wait(), 10)
+                    assert (await asyncio.wait_for(guard._selection_response, 3))[0] == "synthetic-course-1"
+                    await page.wait_for_url(origin + "/std/lecture", timeout=10000)
+                    assert lecture_seen.is_set()
+                    guard.raise_if_denied()
+                    selected = selection()
+                    guard.bind_selection(selected, frame=frame, document_url=frame.url)
+                    selections = [item for item in requests if item[1] == "/api/v1/course/addSessionCourseInfo"]
+                    assert len(selections) == 1
+                    assert selections[0] == (
+                        "POST",
+                        "/api/v1/course/addSessionCourseInfo",
+                        b'{"course_id":"synthetic-course-1"}',
+                        "synthetic_session=fixture-value",
+                    )
+                    assert [path for _, path, _, _ in requests].count("/std/lecture") == 1
+                finally:
+                    await guard.close()
+            finally:
+                await context.close()
+                await browser.close()
+                server.close()
+                await server.wait_closed()
 
     asyncio.run(scenario())

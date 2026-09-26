@@ -756,6 +756,8 @@ class UiRequestInterceptor:
         self._require_selection = require_selection
         self._selection: CourseSelection | None = None
         self._selection_requested = False
+        self._selection_request: Any | None = None
+        self._selection_response: asyncio.Task[tuple[str, Any]] | None = None
         self._selection_document_requested = False
         self._roster_document_requested = False
         self._selection_completed = False
@@ -843,6 +845,10 @@ class UiRequestInterceptor:
         )
         self._selection = None
         self._selection_requested = False
+        self._selection_request = None
+        if self._selection_response is not None and not self._selection_response.done():
+            self._selection_response.cancel()
+        self._selection_response = None
         self._selection_document_requested = False
         self._selection_completed = False
         self._selection_course_id = None
@@ -994,7 +1000,9 @@ class UiRequestInterceptor:
         )
         if reason is not None and (
             reason == "panopto-sso-popup"
-            or (epoch.phase in {"roster-entry", "roster", "selection"} and reason in {"logging", "telemetry"})
+            or (
+                epoch.phase in {"roster-entry", "roster", "selection"} and reason in {"logging", "telemetry", "favicon"}
+            )
         ):
             return  # Exact reviewed suppressions still pass through guard_ui_request.
         try:
@@ -1032,12 +1040,12 @@ class UiRequestInterceptor:
                 if self._selection_requested:
                     raise UiRequestDenied("route")
                 self._selection_requested = True
+                self._selection_request = request
             elif request.resource_type == "document" and referer == epoch.document_url:
                 if (
                     origin != _request_parts(epoch.document_url)[0]
                     or path != epoch.navigation_path
                     or not self._selection_requested
-                    or not self._selection_completed
                     or self._selection_document_requested
                 ):
                     raise UiRequestDenied("route")
@@ -1126,9 +1134,34 @@ class UiRequestInterceptor:
         with profile_span("guard-disposition"):
             await self._handle_request(route)
 
+    async def _read_selection_response(self, request: Any, epoch: OperationEpoch) -> tuple[str, Any]:
+        response = await asyncio.wait_for(request.response(), timeout=15)
+        if response is None or response.status != 200:
+            raise UiRequestDenied("route")
+        if await asyncio.wait_for(response.finished(), timeout=15) is not None:
+            raise UiRequestDenied("route")
+        payload = await asyncio.wait_for(response.json(), timeout=15)
+        header = payload.get("header") if isinstance(payload, dict) else None
+        body = payload.get("body") if isinstance(payload, dict) else None
+        data = body.get("data") if isinstance(body, dict) else None
+        course_id = data.get("course_id") if isinstance(data, dict) else None
+        if (
+            not isinstance(header, dict)
+            or header.get("code") != 200
+            or not isinstance(body, dict)
+            or body.get("result") != "Y"
+            or not isinstance(course_id, str)
+            or not course_id
+            or epoch is not self._epoch
+            or self._quarantined
+        ):
+            raise UiRequestDenied("route")
+        return course_id, response
+
     async def _handle_request(self, route: Any) -> None:
         request = route.request
         epoch = self._epoch
+        selection_request = self._selection_request
         capture = self._capture
         selected_file = self._selected_file
         selected_file_id = self._selected_file_id
@@ -1212,43 +1245,44 @@ class UiRequestInterceptor:
         elif (
             self._require_selection
             and epoch.phase == "selection"
-            and request.method.upper() == "POST"
-            and urlsplit(request.url).path == "/api/v1/course/addSessionCourseInfo"
+            and request.resource_type == "document"
+            and urlsplit(request.url).path == epoch.navigation_path
         ):
             try:
-                response = await route.fetch(max_redirects=0)
-                if response.status != 200 or await response.finished() is not None:
-                    raise UiRequestDenied("route")
-                payload = await response.json()
-                header = payload.get("header") if isinstance(payload, dict) else None
-                body = payload.get("body") if isinstance(payload, dict) else None
-                data = body.get("data") if isinstance(body, dict) else None
-                course_id = data.get("course_id") if isinstance(data, dict) else None
                 if (
-                    not isinstance(header, dict)
-                    or header.get("code") != 200
-                    or not isinstance(body, dict)
-                    or body.get("result") != "Y"
-                    or not isinstance(course_id, str)
-                    or not course_id
+                    selection_request is None
+                    or self._selection_response is None
                     or epoch is not self._epoch
                     or self._quarantined
                 ):
                     raise UiRequestDenied("route")
+                course_id, response = await asyncio.wait_for(self._selection_response, timeout=15)
+                if epoch is not self._epoch or self._quarantined:
+                    raise UiRequestDenied("route")
                 if capture is not None and capture[0] == "/api/v1/course/addSessionCourseInfo":
-                    await capture[1](request, response)
+                    await capture[1](selection_request, response)
                 self._selection_course_id = course_id
                 self._selection_completed = True
-                await route.fulfill(response=response)
-                if recorder is not None:
-                    recorder.request(category, "allowed")
             except Exception:
                 if self._denial is None:
                     self._denial = UiRequestDenied("route")
                 if recorder is not None:
                     recorder.request(category, "blocked")
                 await route.abort()
-        elif capture is not None and urlsplit(request.url).path == capture[0] and request.method.upper() == "POST":
+            else:
+                if recorder is not None:
+                    recorder.request(category, "allowed")
+                await route.continue_()
+        elif (
+            capture is not None
+            and urlsplit(request.url).path == capture[0]
+            and request.method.upper() == "POST"
+            and not (
+                self._require_selection
+                and epoch.phase == "selection"
+                and capture[0] == "/api/v1/course/addSessionCourseInfo"
+            )
+        ):
             if recorder is not None:
                 recorder.request(category, "allowed")
             response = await route.fetch(max_redirects=0)
@@ -1256,6 +1290,19 @@ class UiRequestInterceptor:
                 await capture[1](request, response)
             finally:
                 await route.fulfill(response=response)
+        elif (
+            self._require_selection
+            and epoch.phase == "selection"
+            and urlsplit(request.url).path == "/api/v1/course/addSessionCourseInfo"
+            and request.method.upper() == "POST"
+        ):
+            if recorder is not None:
+                recorder.request(category, "allowed")
+            await route.continue_()
+            self._selection_response = asyncio.create_task(self._read_selection_response(request, epoch))
+            self._selection_response.add_done_callback(
+                lambda finished: finished.exception() if not finished.cancelled() else None
+            )
         else:
             if recorder is not None:
                 recorder.request(category, "allowed")
@@ -1266,6 +1313,8 @@ class UiRequestInterceptor:
             raise self._denial
 
     async def close(self) -> None:
+        if self._selection_response is not None and not self._selection_response.done():
+            self._selection_response.cancel()
         if self._installed:
             self._installed = False
             await self._target.unroute("**/*", self._handle)
