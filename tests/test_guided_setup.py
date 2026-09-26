@@ -223,7 +223,7 @@ def test_published_four_domain_catalogs_skip_first_sync_offer(
     monkeypatch.setattr("builtins.input", lambda _prompt: "sample-id")
     setup.run_guided_setup(confirm=_confirm(ready), out=TerminalOutput())
     root = data_dir()
-    write_catalog({"courses": []}, catalog_path(root))
+    write_catalog({"courses": [], "enrollment_state": "known", "failed_courses": []}, catalog_path(root))
     for domain in ("assignments", "notices", "materials"):
         write_domain_catalog(domain, {"courses": []}, domain_catalog_path(domain, root))
     monkeypatch.setattr("builtins.input", lambda _prompt: pytest.fail("already synchronized"))
@@ -240,6 +240,34 @@ def test_published_four_domain_catalogs_skip_first_sync_offer(
     monkeypatch.setattr("builtins.input", lambda prompt: "" if "sync" in prompt else pytest.fail("unexpected"))
     result, error = setup.run_guided_setup(confirm=_confirm(ready), out=TerminalOutput(), run_sync=sync)
     assert error is None and result["steps"][-1] == {"name": "sync", "status": "skipped"}
+
+
+@pytest.mark.parametrize("partial_domain", ["lectures", "notices"])
+def test_partial_catalog_reoffers_first_sync(
+    ready: dict[str, Any], monkeypatch: pytest.MonkeyPatch, partial_domain: str
+) -> None:
+    ready.update(browser=True, password=True)
+    monkeypatch.setattr("builtins.input", lambda _prompt: "sample-id")
+    setup.run_guided_setup(confirm=_confirm(ready), out=TerminalOutput())
+    root = data_dir()
+    lecture_catalog: dict[str, Any] = {"courses": [], "enrollment_state": "known", "failed_courses": []}
+    if partial_domain == "lectures":
+        lecture_catalog["enrollment_state"] = "unknown"
+    write_catalog(lecture_catalog, catalog_path(root))
+    for domain in ("assignments", "notices", "materials"):
+        health = {"courses": []}
+        if domain == partial_domain:
+            health["failed_courses"] = [{"course_id": "synthetic-id", "reason": "course-sync-failed"}]
+        write_domain_catalog(domain, health, domain_catalog_path(domain, root))
+    prompts: list[str] = []
+    monkeypatch.setattr("builtins.input", lambda prompt: prompts.append(prompt) or "")
+    result, error = setup.run_guided_setup(
+        confirm=_confirm(ready),
+        out=TerminalOutput(),
+        run_sync=lambda *_args, **_kwargs: pytest.fail("declined first sync"),
+    )
+    assert error is None and result["steps"][-1] == {"name": "sync", "status": "skipped"}
+    assert prompts == ["Run a first full sync now? [y/N] "]
 
 
 def test_sync_empty_error_list_returns_none(ready: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:

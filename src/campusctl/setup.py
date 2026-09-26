@@ -6,11 +6,12 @@ import sys
 import threading
 from collections.abc import Callable
 from contextlib import suppress
+from datetime import UTC, datetime
 from typing import Any, TextIO
 
 from campusctl.browser import chromium_installed
 from campusctl.browser_options import preflight_browser_mode
-from campusctl.catalog_view import catalog_snapshot
+from campusctl.catalog_view import cache_metadata, catalog_snapshot
 from campusctl.credentials import helper_status, keyring_status, prompt_and_store
 from campusctl.envelope import CampusError
 from campusctl.paths import config_path, data_dir
@@ -236,12 +237,19 @@ def run_guided_setup(
 
     if run_sync is not None:
         try:
-            already_synced = all(catalog_snapshot(domain, data_dir()) is not None for domain in _SYNC_DOMAINS)
+            now = datetime.now(UTC)
+            for domain in _SYNC_DOMAINS:
+                snapshot = catalog_snapshot(domain, data_dir())
+                if snapshot is None:
+                    break
+                health = cache_metadata(snapshot[0], now=now, domain=domain)
+                if health["failed_courses"] or (domain == "lectures" and health["enrollment_state"] != "known"):
+                    break
+            else:
+                step("sync", "reused")
+                return result, None
         except CampusError:
-            already_synced = False
-        if already_synced:
-            step("sync", "reused")
-            return result, None
+            pass
 
     if run_sync is None or input("Run a first full sync now? [y/N] ").strip().lower() not in {"y", "yes"}:
         step("sync", "skipped")
