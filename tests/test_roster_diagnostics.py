@@ -97,7 +97,14 @@ def test_real_browser_roster_timeout(tmp_path: Path, capsys: pytest.CaptureFixtu
         assert target.parent.stat().st_mode & 0o777 == 0o700
 
 
-def test_retention_and_closed_page(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_retention_and_closed_page(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import campusctl.providers.cnu.roster_diagnostics as diagnostics
+
+    # Retention is under test here, not the write deadline; slow CI disks can exceed it.
+    monkeypatch.setattr(diagnostics, "_WRITE_TIMEOUT_S", 30.0)
+
     class ClosedPage:
         url = "about:blank"
 
@@ -153,3 +160,23 @@ def test_stalled_disk_write_returns_promptly(tmp_path: Path, monkeypatch: pytest
         release.set()
     assert result is None
     assert time.monotonic() - started < 3
+
+
+def test_prune_failure_keeps_saved_record(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import campusctl.providers.cnu.roster_diagnostics as diagnostics
+
+    directory = tmp_path / "diagnostics"
+    directory.mkdir()
+    for index in range(20):
+        (directory / f"roster-20000101T0000{index:02d}000000Z-000000-lectures-sync.json").write_text("{}\n")
+    real_unlink = Path.unlink
+
+    def locked_unlink(self: Path, missing_ok: bool = False) -> None:
+        if self.parent == directory and self.name.startswith("roster-2000"):
+            raise PermissionError("file in use")
+        real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", locked_unlink)
+    target = diagnostics._write_record({"schema_version": 1}, "lectures.sync", tmp_path)
+    assert target.exists()
+    assert len(list(directory.glob("roster-*.json"))) == 21
