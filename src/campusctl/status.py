@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any
-from zoneinfo import ZoneInfo
 
 from campusctl.catalog_view import DOMAINS, cache_metadata, catalog_snapshot
 from campusctl.envelope import CampusError, error_item
 
-SEOUL = ZoneInfo("Asia/Seoul")
+SEOUL = timezone(timedelta(hours=9), "Asia/Seoul")
 
 
 def _date(value: object, *, end_of_day: bool = False) -> datetime | None:
