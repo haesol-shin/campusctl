@@ -589,6 +589,17 @@ def guard_ui_request(
     ):
         raise UiRequestDenied("route")
     if (
+        operation in {"assignments.fetch", "notices.fetch"}
+        and origin == "https://dcs-learning.cnu.ac.kr"
+        and origin in policy.static_asset_origins
+        and normalized_method == "GET"
+        and resource_type.casefold() == "script"
+        and not query
+        and _is_exact_path(path)
+        and _template_match("/js/common/panoptoSaml-{hash}.js", path, hash_only=True) is not None
+    ):
+        return "allow"
+    if (
         normalized_method == "GET"
         and origin in policy.static_asset_origins
         and resource_type.casefold() in policy.static_resource_types

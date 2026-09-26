@@ -14,6 +14,7 @@ from campusctl.paths import data_dir
 
 _LMS = "https://dcs-learning.cnu.ac.kr"
 _OPERATION = "assignments.sync"
+_FETCH_OPERATION = "assignments.fetch"
 
 
 def _pin(path: str, method: str, query: dict[str, str] | None = None) -> dict[str, Any]:
@@ -91,6 +92,101 @@ CAPABILITY = {
         "max_bytes": None,
     },
 }
+FETCH_POLICY = {
+    "approved": True,
+    "read_only_evidence": "2026-09-25 sanitized LMS report §§1.5,2 and owner LMS pins decision",
+    "origins": [_LMS],
+    "routes": [
+        {"origin": _LMS, "path": "/std/myLecture", "operation": _FETCH_OPERATION, "methods": ["GET"]},
+        {"origin": _LMS, "path": "/std/lecture", "operation": _FETCH_OPERATION, "methods": ["GET"]},
+        {"origin": _LMS, "path": "/std/task", "operation": _FETCH_OPERATION, "methods": ["GET"]},
+        {
+            "origin": _LMS,
+            "path": "/std/taskView",
+            "operation": _FETCH_OPERATION,
+            "methods": ["GET"],
+            "query": {"curPage": "page"},
+        },
+        {
+            "origin": _LMS,
+            "path": "/properties/messages.properties",
+            "operation": _FETCH_OPERATION,
+            "methods": ["GET"],
+            "query": {"_": "cachebuster"},
+        },
+        {
+            "origin": _LMS,
+            "path": "/properties/messages_ko.properties",
+            "operation": _FETCH_OPERATION,
+            "methods": ["GET"],
+            "query": {"_": "cachebuster"},
+        },
+        {
+            "origin": _LMS,
+            "path": "/api/v1/course/addSessionCourseInfo",
+            "operation": _FETCH_OPERATION,
+            "methods": ["POST"],
+        },
+        {"origin": _LMS, "path": "/api/v1/user/getUserInfo", "operation": _FETCH_OPERATION, "methods": ["POST"]},
+        {"origin": _LMS, "path": "/api/v1/user/getMenuList", "operation": _FETCH_OPERATION, "methods": ["POST"]},
+        {
+            "origin": _LMS,
+            "path": "/api/v1/alarm/getAlarmListByDate",
+            "operation": _FETCH_OPERATION,
+            "methods": ["POST"],
+        },
+        {"origin": _LMS, "path": "/api/v1/course/getCeShortcuts", "operation": _FETCH_OPERATION, "methods": ["POST"]},
+        {"origin": _LMS, "path": "/api/v1/common/checkEnableUrl", "operation": _FETCH_OPERATION, "methods": ["POST"]},
+        {"origin": _LMS, "path": "/api/v1/boardM/getBoardItemList", "operation": _FETCH_OPERATION, "methods": ["POST"]},
+        {"origin": _LMS, "path": "/api/v1/term/getYearTermList", "operation": _FETCH_OPERATION, "methods": ["POST"]},
+        {
+            "origin": _LMS,
+            "path": "/api/v1/course/getStdMyCourseList",
+            "operation": _FETCH_OPERATION,
+            "methods": ["POST"],
+        },
+        {"origin": _LMS, "path": "/api/v1/course/get", "operation": _FETCH_OPERATION, "methods": ["POST"]},
+        {"origin": _LMS, "path": "/api/v1/board/courseNotice/list", "operation": _FETCH_OPERATION, "methods": ["POST"]},
+        {"origin": _LMS, "path": "/api/v1/week/getStdWeekList", "operation": _FETCH_OPERATION, "methods": ["POST"]},
+        {"origin": _LMS, "path": "/api/v1/week/getStdEtcList", "operation": _FETCH_OPERATION, "methods": ["POST"]},
+        {"origin": _LMS, "path": "/api/v1/survey/getApplyPopList", "operation": _FETCH_OPERATION, "methods": ["POST"]},
+        {"origin": _LMS, "path": "/api/v1/board/popup/noticeList", "operation": _FETCH_OPERATION, "methods": ["POST"]},
+        {"origin": _LMS, "path": "/api/v1/task/stdList", "operation": _FETCH_OPERATION, "methods": ["POST"]},
+        {"origin": _LMS, "path": "/api/v1/task/detail", "operation": _FETCH_OPERATION, "methods": ["POST"]},
+        {"origin": _LMS, "path": "/api/v1/task/stdDetail", "operation": _FETCH_OPERATION, "methods": ["POST"]},
+    ],
+    "suppress": [
+        {
+            "name": "panopto-script",
+            "origin": _LMS,
+            "path_template": "/js/common/panopto-{hash}.js",
+            "operation": _FETCH_OPERATION,
+            "methods": ["GET"],
+            "reason": "media-integration",
+        },
+        {
+            "name": "panopto-disconnection-log",
+            "origin": _LMS,
+            "path_template": "/api/v1/panopto/addInternetDisconnectionLog",
+            "operation": _FETCH_OPERATION,
+            "methods": ["POST"],
+            "reason": "logging",
+        },
+        {
+            "name": "panopto-connectivity-check",
+            "origin": _LMS,
+            "path_template": "/api/v1/panopto/checkInternetConnection",
+            "operation": _FETCH_OPERATION,
+            "methods": ["GET"],
+            "reason": "logging",
+        },
+    ],
+    "static_asset_origins": [_LMS],
+    "static_resource_types": ["script", "stylesheet", "font", "image"],
+    "selected_file_routes": [],
+    "allowed_media": [],
+    "max_bytes": 200_000_000,
+}
 
 
 def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -103,17 +199,110 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     listing.add_argument("--refresh", action="store_true")
 
 
-def dispatch(args: argparse.Namespace) -> tuple[dict[str, Any], None]:
-    if args.assignments_command != "list":
-        raise UsageError("an assignments command is required")
-    catalog = read_domain_catalog("assignments", domain_catalog_path("assignments", data_dir()))
-    rows = catalog["assignments"]
-    if args.course is not None:
-        rows = [row for row in rows if row["course"]["id"] == args.course]
-    return {
-        "cache": {**cache_metadata(catalog, now=datetime.now(UTC), domain="assignments"), "path_present": True},
-        "assignments": rows,
-    }, None
+def dispatch(args: argparse.Namespace) -> tuple[dict[str, Any], CampusError | list[CampusError] | None]:
+    command = getattr(args, "assignments_command", None)
+    if command == "list":
+        catalog = read_domain_catalog("assignments", domain_catalog_path("assignments", data_dir()))
+        rows = catalog["assignments"]
+        if args.course is not None:
+            rows = [row for row in rows if row["course"]["id"] == args.course]
+        return {
+            "cache": {**cache_metadata(catalog, now=datetime.now(UTC), domain="assignments"), "path_present": True},
+            "assignments": rows,
+        }, None
+    if command == "fetch":
+        entity_id = getattr(args, "entity_id", None)
+        if not isinstance(entity_id, str) or not entity_id.strip():
+            raise UsageError("an entity ID is required")
+        root = data_dir()
+        cat_path = domain_catalog_path("assignments", root)
+        if not cat_path.exists():
+            raise CampusError(
+                "catalog-missing",
+                "Assignment catalog is missing.",
+                "Run 'campusctl sync --only assignments' to create it.",
+                "user-action",
+            )
+        catalog = read_domain_catalog("assignments", cat_path)
+        matching = [r for r in catalog.get("assignments", []) if r.get("entity_id") == entity_id]
+        if len(matching) != 1:
+            raise CampusError(
+                "entity-unknown",
+                "The selected assignment ID is not in the catalog.",
+                "Select one full ID from 'campusctl assignments list'.",
+                "user-action",
+            )
+        row = matching[0]
+        out_path = getattr(args, "out", None)
+        if out_path is not None:
+            p = Path(out_path)
+            if p.exists() or p.is_symlink():
+                raise CampusError(
+                    "output-path-conflict",
+                    "Selected output path already exists.",
+                    "Choose a nonexistent destination path with --out.",
+                    "user-action",
+                )
+        import asyncio
+
+        from campusctl.browser_options import preflight_browser_mode
+        from campusctl.config import load_config
+
+        config = load_config()
+        headless_override = getattr(args, "headless_override", None)
+        mode = preflight_browser_mode(config, "assignments.fetch", override=headless_override)
+        pkg = asyncio.run(_fetch_assignment(config, root, row, out=out_path, headless=mode))
+        errors = (
+            [CampusError("resource-omitted", "Some resources were omitted by reviewed policy.", status="user-action")]
+            if pkg.get("completeness") == "policy-filtered"
+            else None
+        )
+        return {"source_package": pkg}, errors
+    raise UsageError("an assignments command is required")
+
+
+async def _fetch_assignment(
+    config: dict[str, Any],
+    root: Path,
+    row: dict[str, Any],
+    *,
+    out: Path | None = None,
+    headless: bool = False,
+) -> dict[str, Any]:
+    from campusctl.browser import open_session
+    from campusctl.providers.cnu.assignment_detail import capture_assignment_detail
+    from campusctl.providers.cnu.login import ensure_logged_in
+    from campusctl.providers.cnu.request_policy import RequestPolicy
+    from campusctl.providers.cnu.ui_policy import UiRequestDiagnostics, UiRequestPolicy, install_ui_request_interceptor
+    from campusctl.source_package import build_source_package
+
+    ui_policy = UiRequestPolicy.from_reviewed_config(FETCH_POLICY)
+    diagnostics = UiRequestDiagnostics()
+    request_policy = RequestPolicy(ui_policy, "assignment", diagnostics)
+
+    async with open_session(config, data_dir=root, headless=headless, operation="assignments.fetch") as session:
+        page = session.page
+        await ensure_logged_in(page, config)
+        interceptor = install_ui_request_interceptor(
+            page,
+            ui_policy,
+            operation="assignments.fetch",
+            diagnostics=diagnostics,
+        )
+        snapshot = await capture_assignment_detail(page, config, row)
+        result = await build_source_package(
+            page,
+            snapshot,
+            entity_id=row["entity_id"],
+            kind="assignment",
+            course_id=row["course"]["id"],
+            course_label=row["course"]["label"],
+            root=root,
+            policy=request_policy,
+            out=out,
+            interceptor=interceptor,
+        )
+        return result
 
 
 async def sync(
@@ -144,6 +333,21 @@ def render(command: str, result: dict[str, Any], width: int) -> list[str]:
             f"Synced {courses} {'course' if courses == 1 else 'courses'}, "
             f"{assignments} {'assignment' if assignments == 1 else 'assignments'}."
         ]
+    if command == "assignments.fetch":
+        pkg = result.get("source_package")
+        if not pkg:
+            return []
+        lines = [
+            f"Assignment source: {pkg['entity_id']}",
+            f"Package: {pkg['path']}",
+            f"Content: {pkg['content_path']}",
+            f"Completeness: {pkg['completeness']}",
+        ]
+        for omitted in pkg.get("omitted_resources", []):
+            reason = omitted.get("reason", "omitted")
+            name = omitted.get("original_name") or omitted.get("resource_id", "resource")
+            lines.append(f"Omitted: {reason} — {name}")
+        return lines
     if command != "assignments.list" or "assignments" not in result:
         return []
     rows = result["assignments"]
