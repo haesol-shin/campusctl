@@ -362,6 +362,7 @@ async def open_session(
         context = None
         page = None
         owns_page = False
+        document_listener = None
         primary_error: BaseException | None = None
         try:
             with profile_span("playwright"):
@@ -433,6 +434,15 @@ async def open_session(
                     else await bounded(context.new_page(), PROTOCOL_TIMEOUT_SECONDS, "opening a browser page")
                 )
 
+            recorder = current_profile()
+            if recorder is not None and recorder.enabled and hasattr(page, "on"):
+                main_frame = page.main_frame
+
+                def document_listener(frame: Any) -> None:
+                    if frame is main_frame:
+                        recorder.count("documents")
+
+                page.on("framenavigated", document_listener)
             try:
                 with profile_span("user-agent"):
                     await apply_normal_user_agent(page)
@@ -454,6 +464,8 @@ async def open_session(
             with profile_span("teardown"):
                 try:
                     try:
+                        if document_listener is not None:
+                            page.remove_listener("framenavigated", document_listener)
                         if mode == "local":
                             await close_resource(context)
                         elif owns_page:

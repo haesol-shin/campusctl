@@ -143,9 +143,15 @@ def main() -> None:
         codes = [error.code for error in errors] if isinstance(errors, list) else [errors.code] if errors else []
         print(json.dumps({"status": "ok" if not codes else "partial", "result": result, "errors": codes}))
     finally:
-        recorder.finish(outcome="failed" if "errors" not in locals() or errors else "ok")
+        report = recorder.finish(outcome="failed" if "errors" not in locals() or errors else "ok")
         server.shutdown()
         server.server_close()
+    if report is not None and not errors:
+        phases = {span["phase"] for span in report["spans"]}
+        assert {"guard-headers", "guard-decision", "guard-disposition"} <= phases
+        assert report["counts"]["requests"] == 4
+        # Two roster navigations, one course entry and one lecture section.
+        assert report["counts"]["documents"] == 4
 
 
 if __name__ == "__main__":

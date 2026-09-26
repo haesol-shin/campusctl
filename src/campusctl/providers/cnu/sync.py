@@ -151,7 +151,6 @@ async def sync_lectures(
                         PROTOCOL_TIMEOUT_SECONDS,
                         "opening the CNU course lecture page",
                     )
-                profile_count("documents")
                 try:
                     await bounded(
                         page.wait_for_selector(

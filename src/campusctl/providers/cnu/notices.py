@@ -580,7 +580,6 @@ async def _board_snapshot(
         )
         with profile_span("document-commit", domain="notices"):
             await bounded(page.click('a[href="/std/notice"]'), PROTOCOL_TIMEOUT_SECONDS, "opening course notice board")
-        profile_count("documents")
         interceptor.raise_if_denied()
         await bounded(page.wait_for_load_state("networkidle"), PROTOCOL_TIMEOUT_SECONDS, "settling notice board")
         interceptor.raise_if_denied()
@@ -751,7 +750,6 @@ async def sync_notices(
                             PROTOCOL_TIMEOUT_SECONDS,
                             "opening enrolled courses",
                         )
-                    profile_count("documents")
                     interceptor.raise_if_denied()
                     with profile_span("dom-ready", domain="notices"):
                         await bounded(

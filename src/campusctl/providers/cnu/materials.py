@@ -349,8 +349,6 @@ async def _archive_navigation(page: Any, guard: Any, action: Callable[[], Any], 
         payload = await _step(response.json(), guard, "parsing archive list response")
         if not isinstance(payload, (dict, list)):
             raise ValueError("archive list response was not JSON records")
-        if document:
-            profile_count("documents")
     finally:
         activity.close()
 
@@ -530,7 +528,6 @@ async def sync_materials(
                 with profile_span("roster", domain="materials"):
                     with profile_span("document-commit", domain="materials"):
                         await _step(page.goto(MY_LECTURE_URL), guard, "opening guarded course roster")
-                    profile_count("documents")
                     with profile_span("dom-ready", domain="materials"):
                         await _step(
                             page.wait_for_selector(COURSE_LINK_SELECTOR, timeout=_WAIT_MS),
@@ -570,7 +567,6 @@ async def sync_materials(
             for ordinal, course in enumerate(selected, 1):
                 try:
                     await _step(page.goto(MY_LECTURE_URL), guard, "returning to guarded course roster")
-                    profile_count("documents")
                     with profile_span("course-selection", domain="materials", course=ordinal):
                         await _step(
                             prepare_course_section(page, config, course["course_id"], "archive"),
