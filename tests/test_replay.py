@@ -131,6 +131,36 @@ def test_replay_failure_before_modal_reports_not_opened(monkeypatch: pytest.Monk
     assert items[0]["replay_requested"] is True
 
 
+@pytest.mark.parametrize("missing", ["frame", "video"])
+def test_replay_modal_without_official_embed_is_not_player_opened(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, missing: str
+) -> None:
+    class MissingVideoFrame(RecordingFrame):
+        async def query_selector(self, selector: str) -> Any:
+            if selector == "video":
+                return None
+            return await super().query_selector(selector)
+
+        async def wait_for_selector(self, selector: str, **kwargs: Any) -> None:
+            raise TimeoutError("video never appeared")
+
+    class MissingEmbedPage(ReplayPage):
+        async def query_selector(self, selector: str) -> Any:
+            if missing == "frame" and selector == player.PLAYER_FRAME_SELECTOR:
+                return None
+            return await super().query_selector(selector)
+
+    page = MissingEmbedPage(states={"row-1": "F"})
+    if missing == "video":
+        page.frame = MissingVideoFrame(page)
+    monkeypatch.setattr(player, "PLAYER_FRAME_WAIT_SECONDS", 0.01)
+    items, error = asyncio.run(_run(monkeypatch, tmp_path, page, [_lecture(FIRST_ID, completion="complete")]))
+    assert error is not None and items[0]["outcome"] == "failed"
+    assert items[0]["player_opened"] is False and items[0]["replay_requested"] is True
+    assert ("open-player", "row-1") in page.calls
+    assert ("close", "row-1") in page.calls
+
+
 def test_replay_does_not_downgrade_complete_to_recorded(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     page = ReplayPage(
         states={"row-1": "F"},

@@ -667,10 +667,10 @@ async def _play_visible_lecture(
             16.0,
             "waiting for the lecture preview",
         )
-        if on_opened is not None:
-            on_opened()
         if media == "youtube":
             frame = await _youtube_frame(page)
+            if on_opened is not None:
+                on_opened()
 
             def on_youtube_started() -> None:
                 nonlocal started_at
@@ -682,6 +682,8 @@ async def _play_visible_lecture(
                 frame, replay=replay, on_started=on_youtube_started, on_position=on_position
             )
         frame = await _player_frame(page)
+        if on_opened is not None:
+            on_opened()
         status = await _read_video_state(frame)
 
         current_rate = status.get("playbackRate")
