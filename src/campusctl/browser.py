@@ -72,6 +72,60 @@ class BrowserSession:
     page: Any
     context: Any
     mode: str
+    sso_popups: set[Any] | None = None
+    sso_pending: set[asyncio.Task[Any]] | None = None
+
+
+async def settle_sso_popups(session: BrowserSession, *, domain: str | None = None, timeout: float = 8.0) -> None:
+    """Allow pre-guard roster SSO popups to finish without changing guarded policy."""
+    with profile_span("sso-settle", domain=domain):
+        profile_count("sso_settles")
+        try:
+            async with asyncio.timeout(timeout):
+                if session.sso_pending:
+                    await asyncio.gather(*tuple(session.sso_pending))
+                popups = session.sso_popups
+                if popups:
+
+                    async def wait_for_close(popup: Any) -> None:
+                        if not popup.is_closed():
+                            await popup.wait_for_event("close")
+
+                    await asyncio.gather(*(wait_for_close(popup) for popup in tuple(popups)))
+        except Exception:
+            pass
+
+
+def _roster_page_url(url: str) -> bool:
+    parts = urllib.parse.urlsplit(url)
+    return parts.scheme == "https" and parts.hostname == "dcs-learning.cnu.ac.kr" and parts.path == "/std/myLecture"
+
+
+def _track_sso_popups(context: Any) -> tuple[set[Any], set[asyncio.Task[Any]], Callable[[], None]]:
+    popups: set[Any] = set()
+    pending: set[asyncio.Task[Any]] = set()
+
+    def inspect(candidate: Any) -> None:
+        async def inspect_opener() -> None:
+            try:
+                opener = await candidate.opener()
+                if opener is not None and _roster_page_url(opener.url):
+                    popups.add(candidate)
+            except Exception:
+                pass
+
+        task = asyncio.create_task(inspect_opener())
+        pending.add(task)
+        task.add_done_callback(pending.discard)
+
+    context.on("page", inspect)
+
+    def remove() -> None:
+        context.remove_listener("page", inspect)
+        for task in pending:
+            task.cancel()
+
+    return popups, pending, remove
 
 
 async def bounded(awaitable: Any, seconds: float, what: str) -> Any:
@@ -363,6 +417,7 @@ async def open_session(
         page = None
         owns_page = False
         document_listener = None
+        sso_tracking = None
         primary_error: BaseException | None = None
         try:
             with profile_span("playwright"):
@@ -434,6 +489,8 @@ async def open_session(
                     else await bounded(context.new_page(), PROTOCOL_TIMEOUT_SECONDS, "opening a browser page")
                 )
 
+            if operation in {"assignments.sync", "notices.sync", "materials.sync", "materials.download"}:
+                sso_tracking = _track_sso_popups(context)
             recorder = current_profile()
             if recorder is not None and recorder.enabled and hasattr(page, "on"):
                 main_frame = page.main_frame
@@ -456,7 +513,13 @@ async def open_session(
                     "error",
                 ) from None
 
-            yield BrowserSession(page=page, context=context, mode=mode)
+            yield BrowserSession(
+                page=page,
+                context=context,
+                mode=mode,
+                sso_popups=sso_tracking[0] if sso_tracking else None,
+                sso_pending=sso_tracking[1] if sso_tracking else None,
+            )
         except BaseException as error:
             primary_error = error
             raise
@@ -464,6 +527,8 @@ async def open_session(
             with profile_span("teardown"):
                 try:
                     try:
+                        if sso_tracking is not None:
+                            sso_tracking[2]()
                         if document_listener is not None:
                             page.remove_listener("framenavigated", document_listener)
                         if mode == "local":

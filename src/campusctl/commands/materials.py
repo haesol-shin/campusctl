@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from campusctl.browser import settle_sso_popups
 from campusctl.browser_options import preflight_browser_mode
 from campusctl.catalog_view import (
     assert_material_snapshot_current,
@@ -356,6 +357,7 @@ async def _download(
         page = session.page
         await ensure_logged_in(page, config, target_url=MY_LECTURE_URL, expected_selector=COURSE_LINK_SELECTOR)
         diagnostics = UiRequestDiagnostics()
+        await settle_sso_popups(session, domain="materials")
         guard = await install_ui_request_interceptor(
             session.context, policy, operation="materials.download", diagnostics=diagnostics
         )

@@ -142,7 +142,7 @@ def test_profile_metrics_are_validated_before_persistence(tmp_path, monkeypatch)
         "schema_version": 1,
         "outcome": "ok",
         "dropped_events": 0,
-        "counts": {"course_selections": 7, "documents": 2, "requests": 1},
+        "counts": {"course_selections": 7, "documents": 2, "requests": 1, "sso_settles": 0},
         "routes": {"document:allowed": 1},
         "spans": [
             {

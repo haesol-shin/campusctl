@@ -37,6 +37,8 @@ On the LMS lecture roster, its external video-provider integration opens a dedic
 
 - A separate full headless materials metadata sync enumerates seven courses and 30 material rows without course failures; its sole SSO popup POST occurs before the guarded phase, so no SSO suppression is counted there
 
+Pre-guard settle (owner-held sanitized evidence (2026-09-26)): guarded assignment, notice, and materials sync wait up to eight seconds for SSO popups already opened during trusted login to close themselves before installing the UI interceptor. An absent popup adds no wait; a popup still open at the deadline falls through to the existing guarded suppression, validation, and fatal behavior. This does not change the request policy or lecture playback.
+
 ### H4 sync audit (2026-09-26)
 
 Evidence: owner-held sanitized evidence (2026-09-26). Platform: Linux aarch64 (Raspberry Pi), Python 3.12, Playwright 1.63.0. Headless: Playwright-bundled Chromium 153.0.8010.12, launched locally with a persistent profile inside the audit data directory. Headed: the owner's existing Chrome 151.0.7922.173 over CDP with its warm profile. Scope: unfiltered `lectures`, `assignments`, `notices`, `materials` sync of seven enrolled courses into separate fresh data directories, run sequentially at `14303aa` with the capability table enabled only in the audit process.

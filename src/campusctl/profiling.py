@@ -24,6 +24,7 @@ PHASES = frozenset(
         "auth",
         "roster",
         "todo",
+        "sso-settle",
         "course-selection",
         "document-commit",
         "response-completion",
@@ -45,7 +46,7 @@ PHASES = frozenset(
 DOMAINS = frozenset({"lectures", "assignments", "notices", "materials"})
 ROUTES = frozenset({"document", "xhr", "fetch", "static", "attachment", "other"})
 DISPOSITIONS = frozenset({"allowed", "blocked", "suppressed"})
-COUNT_NAMES = frozenset({"course_selections", "documents", "requests"})
+COUNT_NAMES = frozenset({"course_selections", "documents", "requests", "sso_settles"})
 
 
 @dataclass
