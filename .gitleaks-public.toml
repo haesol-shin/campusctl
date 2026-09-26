@@ -1,0 +1,38 @@
+title = "campusctl public text rules"
+
+# Generated, untracked directories are not part of the public tree.
+[allowlist]
+paths = [
+    '''(?:^|/)\.git(?:/|$)''',
+    '''(?:^|/)\.venv(?:/|$)''',
+    '''(?:^|/)__pycache__(?:/|$)''',
+]
+
+[[rules]]
+id = "local-home-path"
+description = "Local Unix home path"
+regex = '''(?:^|[^\w<])/(?:home|Users)/([A-Za-z0-9._-]+)/'''
+secretGroup = 1
+
+    [[rules.allowlists]]
+    description = "Generic home-directory placeholders"
+    regexes = ['''^(?:user|username|runner)\b''']
+
+[[rules]]
+id = "local-windows-home-path"
+description = "Local Windows user path"
+regex = '''[A-Za-z]:\\{1,2}Users\\{1,2}([A-Za-z0-9._-]+)'''
+secretGroup = 1
+
+    [[rules.allowlists]]
+    description = "Generic Windows user-directory placeholders"
+    regexes = ['''^(?:user|username|runneradmin|Public)\b''']
+
+[[rules]]
+id = "personal-email"
+description = "Non-example email address"
+regex = '''\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b'''
+
+    [[rules.allowlists]]
+    description = "Example, GitHub noreply, and invalid addresses (whole domain only)"
+    regexes = ['''@(?:users\.noreply\.github\.com|noreply\.github\.com|example\.(?:com|org|net)|localhost|[A-Za-z0-9.-]+\.invalid)$''']

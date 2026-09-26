@@ -1,6 +1,6 @@
 """Reject tracked binary artifacts, NUL bytes, and non-UTF-8 text.
 
-Text leak rules and path exceptions are configured in .gitleaks.toml.
+Text leak rules and path exceptions are configured in .gitleaks-public.toml.
 Run: uv run python scripts/check_public_hygiene.py
 """
 
@@ -20,7 +20,7 @@ BINARY_EXTENSIONS = {
 
 
 def allowed_paths() -> list[re.Pattern[str]]:
-    with Path(".gitleaks.toml").open("rb") as config:
+    with Path(".gitleaks-public.toml").open("rb") as config:
         paths = tomllib.load(config).get("allowlist", {}).get("paths", [])
     return [re.compile(path) for path in paths]
 

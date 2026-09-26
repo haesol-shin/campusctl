@@ -65,8 +65,11 @@ jobs:
             range="HEAD"  # new ref, tag, or manual run: scan the full history
           fi
           gitleaks git --config .gitleaks.toml --no-banner --redact --log-opts="--diff-merges=first-parent ${range}" .
+          gitleaks git --config .gitleaks-public.toml --no-banner --redact --log-opts="--diff-merges=first-parent ${range}" .
       - name: Scan current tree for secrets
-        run: gitleaks dir --config .gitleaks.toml --no-banner --redact .
+        run: |
+          gitleaks dir --config .gitleaks.toml --no-banner --redact .
+          gitleaks dir --config .gitleaks-public.toml --no-banner --redact .
       - name: Check tracked files for binaries
         run: python3 scripts/check_public_hygiene.py
 

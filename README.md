@@ -140,7 +140,7 @@ From v0.2.1, run `uv tool upgrade campusctl` to get the new domain commands; ref
 
 ## Contributing: scan exceptions
 
-CI scans commits and the current tree for leaks, then checks tracked files for binary content. If a safe fixture or example needs an exception, request it in a PR for review: use a narrowly scoped path regex in `.gitleaks.toml` `[allowlist] paths` (also used by the binary check), or a specific finding fingerprint in `.gitleaksignore` for a text finding. Do not add private data to justify an exception.
+CI scans commits and the current tree with `.gitleaks.toml` for default secret detectors and `.gitleaks-public.toml` for local paths and emails, then checks tracked files for binary content. If a safe fixture or example needs an exception, request it in a PR for review: use a narrowly scoped path regex in `.gitleaks-public.toml` `[allowlist] paths` (also used by the binary check), or a specific finding fingerprint in `.gitleaksignore` for a text finding. Do not add private data to justify an exception.
 
 ## FAQ
 
