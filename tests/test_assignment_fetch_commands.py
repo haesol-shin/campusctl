@@ -51,6 +51,13 @@ def test_assignment_fetch_json_and_human(tmp_path: Path, monkeypatch: pytest.Mon
     assignments.register(subparsers)
     with pytest.raises(SystemExit):
         parser.parse_args(["assignments", "fetch", "cnu_assignment:course-1:task-101"])
+    # Verify reviewed fetch policy is enabled and free of unapproved logging reads
+    from campusctl.providers.cnu.ui_policy import UiRequestPolicy
+
+    ui_policy = UiRequestPolicy.from_reviewed_config(assignments.FETCH_POLICY)
+    assert ui_policy.approved is True
+    assert not any(r.path == "/api/v1/week/getStdActivityStatus" for r in ui_policy.routes)
+    assert any(s.name == "panopto-saml-script" for s in ui_policy.suppress)
 
     # 2. Test successful dispatch (complete package)
     fake_pkg_complete = {

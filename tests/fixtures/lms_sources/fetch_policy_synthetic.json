@@ -31,7 +31,6 @@
         {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/api/v1/board/courseNotice/list","operation":"assignments.fetch","methods":["POST"]},
         {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/api/v1/week/getStdWeekList","operation":"assignments.fetch","methods":["POST"]},
         {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/api/v1/week/getStdEtcList","operation":"assignments.fetch","methods":["POST"]},
-        {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/api/v1/week/getStdActivityStatus","operation":"assignments.fetch","methods":["POST"]},
         {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/api/v1/survey/getApplyPopList","operation":"assignments.fetch","methods":["POST"]},
         {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/api/v1/board/popup/noticeList","operation":"assignments.fetch","methods":["POST"]},
         {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/api/v1/task/stdList","operation":"assignments.fetch","methods":["POST"]},
@@ -67,7 +66,6 @@
         {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/api/v1/board/courseNotice/list","operation":"notices.fetch","methods":["POST"]},
         {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/api/v1/week/getStdWeekList","operation":"notices.fetch","methods":["POST"]},
         {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/api/v1/week/getStdEtcList","operation":"notices.fetch","methods":["POST"]},
-        {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/api/v1/week/getStdActivityStatus","operation":"notices.fetch","methods":["POST"]},
         {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/api/v1/survey/getApplyPopList","operation":"notices.fetch","methods":["POST"]},
         {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/api/v1/board/popup/noticeList","operation":"notices.fetch","methods":["POST"]},
         {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/api/v1/board/notice/list","operation":"notices.fetch","methods":["POST"]},
@@ -95,7 +93,8 @@
     "entries": [
       {"name":"panopto-script","origin":"https://dcs-learning.cnu.ac.kr.invalid","methods":["GET"],"path_template":"/js/common/panopto-{hash}.js","reason":"media-integration"},
       {"name":"panopto-disconnection-log","origin":"https://dcs-learning.cnu.ac.kr.invalid","methods":["POST"],"path_template":"/api/v1/panopto/addInternetDisconnectionLog","reason":"logging"},
-      {"name":"panopto-connectivity-check","origin":"https://dcs-learning.cnu.ac.kr.invalid","methods":["GET"],"path_template":"/api/v1/panopto/checkInternetConnection","reason":"logging"}
+      {"name":"panopto-connectivity-check","origin":"https://dcs-learning.cnu.ac.kr.invalid","methods":["GET"],"path_template":"/api/v1/panopto/checkInternetConnection","reason":"logging"},
+      {"name":"panopto-saml-script","origin":"https://dcs-learning.cnu.ac.kr.invalid","methods":["GET"],"path_template":"/js/common/panoptoSaml-{hash}.js","reason":"media-integration"}
     ],
     "panoptoSaml_script": "not suppressed; apply ordinary same-origin static script guard",
     "all_other_unlisted_requests": "deny-policy-blocked"

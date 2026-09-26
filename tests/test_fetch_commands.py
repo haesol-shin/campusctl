@@ -69,6 +69,17 @@ def test_fetch_unpublished_surface(
     # 1. Public CLI does NOT advertise fetch
     assert "fetch" not in assignments.CAPABILITY["commands"]
     assert "fetch" not in notices.CAPABILITY["commands"]
+    from campusctl.providers.cnu.ui_policy import UiRequestPolicy
+
+    policy_a = UiRequestPolicy.from_reviewed_config(assignments.FETCH_POLICY)
+    assert policy_a.approved is True
+    assert not any(r.path == "/api/v1/week/getStdActivityStatus" for r in policy_a.routes)
+    assert any(s.name == "panopto-saml-script" for s in policy_a.suppress)
+
+    policy_n = UiRequestPolicy.from_reviewed_config(notices.FETCH_POLICY)
+    assert policy_n.approved is True
+    assert not any(r.path == "/api/v1/week/getStdActivityStatus" for r in policy_n.routes)
+    assert any(s.name == "panopto-saml-script" for s in policy_n.suppress)
 
     assert cli.main(["assignments", "--help"]) == 0
     out_help_a = capsys.readouterr().out

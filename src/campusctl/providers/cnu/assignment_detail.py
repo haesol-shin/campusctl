@@ -35,8 +35,16 @@ EXTRACT_ASSIGNMENT_DETAIL_JS = r"""() => {
         }
         if (node.nodeType !== Node.ELEMENT_NODE) return;
         const tag = node.tagName.toLowerCase();
-        if (['script', 'style', 'template', 'button', 'input', 'select', 'textarea', 'form', 'video', 'audio'].includes(tag)
+        if (['script', 'style', 'template', 'button', 'input', 'select', 'textarea', 'form'].includes(tag)
             || node.hidden || node.getAttribute('aria-hidden') === 'true') return;
+        if (tag === 'video' || tag === 'audio') {
+            const src = node.getAttribute('src') || node.querySelector('source')?.getAttribute('src') || '';
+            const label = (node.getAttribute('title') || node.getAttribute('aria-label') || tag).trim();
+            const name = src ? src.split(/[?#]/)[0].split('/').pop() || null : null;
+            const fullUrl = src ? new URL(src, document.URL).href : document.URL;
+            emit({kind: tag, url: fullUrl, label: label || tag, name});
+            return;
+        }
         if (tag === 'img') {
             const src = node.getAttribute('src');
             if (src) emit({kind: 'image', url: new URL(src, document.URL).href,
@@ -149,6 +157,11 @@ def _detail_parts(raw: Any, *, task_id: str, source_url: str) -> tuple[str | Res
             locator = f'a[data-act="downloadFile"][data-id={_css_string(file_id)}]'
             target = OfficialAttachmentTarget(file_id, "assignment", task_id, locator, candidate)
             parts.append(ResourceReference("attachment", candidate or source_url, name, None, label, file_id, target))
+        elif kind in {"video", "audio"}:
+            url, label = entry.get("url"), entry.get("label")
+            if not isinstance(url, str) or not isinstance(label, str):
+                raise _failed()
+            parts.append(ResourceReference(kind, url, entry.get("name"), f"{kind}/*", label, None, None))
         else:
             raise _failed()
     if not parts or not any(isinstance(part, str) and part.strip() for part in parts):

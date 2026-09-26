@@ -13,6 +13,7 @@ from campusctl.source_package import DetailSnapshot, ResourceReference
 
 from .course_context import _css_string
 from .login import MY_LECTURE_URL
+from .notices import _board_item
 
 _ORIGIN = "https://dcs-learning.cnu.ac.kr"
 _NATIVE_ID = re.compile(r"TB_L_BOARDITEM[0-9]+\Z")
@@ -40,11 +41,34 @@ _DETAIL_JS = """() => {
             ['SCRIPT', 'STYLE', 'NOSCRIPT', 'IFRAME'].includes(node.tagName)) return;
         if (getComputedStyle(node).display === 'none') return;
         if (node.tagName === 'IMG') {
-            parts.push({kind: 'image', url: node.src, label: node.alt || 'image', name: node.getAttribute('src')?.split('/').pop()});
+            parts.push({kind: 'image', url: node.src, label: node.alt || 'image', name: node.getAttribute('src')?.split(/[?#]/)[0].split('/').pop() || null});
+            return;
+        }
+        if (node.tagName === 'VIDEO' || node.tagName === 'AUDIO') {
+            const src = node.getAttribute('src') || node.querySelector('source')?.getAttribute('src') || '';
+            const label = (node.getAttribute('title') || node.getAttribute('aria-label') || node.tagName.toLowerCase()).trim();
+            const name = src ? src.split(/[?#]/)[0].split('/').pop() || null : null;
+            const fullUrl = src ? new URL(src, document.URL).href : document.URL;
+            parts.push({kind: node.tagName.toLowerCase(), url: fullUrl, label: label || node.tagName.toLowerCase(), name});
             return;
         }
         if (node.tagName === 'A') {
-            parts.push({kind: 'link', text: node.textContent.trim()});
+            const label = (node.textContent || '').trim();
+            const isDownload = node.getAttribute('data-act') === 'downloadFile' || /download/i.test(node.getAttribute('href') || '');
+            const fileId = node.getAttribute('data-id') || node.getAttribute('data-file_no') || null;
+            if (isDownload || fileId) {
+                const name = node.getAttribute('data-name') || label || 'attachment';
+                const href = node.getAttribute('href');
+                parts.push({
+                    kind: 'attachment',
+                    file_id: fileId,
+                    label: label || 'attachment',
+                    name,
+                    url: href && /^https?:\\/\\//i.test(href) ? href : null,
+                });
+            } else {
+                parts.push({kind: 'link', text: label});
+            }
             return;
         }
         if (['P', 'DIV', 'LI', 'H1', 'H2', 'H3', 'H4', 'BR'].includes(node.tagName))
@@ -98,7 +122,7 @@ def _escape_markdown(text: str) -> str:
     return re.sub(r"([\\`*_{}\[\]()<>#!|])", r"\\\1", text)
 
 
-def _extract_parts(raw: Any) -> tuple[str | ResourceReference, ...]:
+def _extract_parts(raw: Any, source_url: str) -> tuple[str | ResourceReference, ...]:
     if not isinstance(raw, list) or not raw:
         raise ValueError("Notice has no readable detail")
     parts: list[str | ResourceReference] = []
@@ -119,6 +143,26 @@ def _extract_parts(raw: Any) -> tuple[str | ResourceReference, ...]:
                     media_type_hint=None,
                     label=item["label"],
                     provider_file_id=None,
+                    official_target=None,
+                )
+            )
+        elif kind in {"video", "audio"}:
+            url, label = item.get("url"), item.get("label")
+            if not isinstance(url, str) or not isinstance(label, str):
+                raise ValueError("Invalid media part")
+            parts.append(ResourceReference(kind, url, item.get("name"), f"{kind}/*", label, None, None))
+        elif kind == "attachment":
+            file_id = item.get("file_id")
+            name = item.get("name")
+            label = item.get("label", "attachment")
+            parts.append(
+                ResourceReference(
+                    kind="attachment",
+                    source_url=item.get("url") or source_url,
+                    original_name=name,
+                    media_type_hint=None,
+                    label=label,
+                    provider_file_id=file_id,
                     official_target=None,
                 )
             )
@@ -176,20 +220,19 @@ async def capture_notice_detail(page: Any, selected_row: dict[str, Any], *, inte
         await bounded(page.wait_for_load_state("networkidle"), PROTOCOL_TIMEOUT_SECONDS, "settling notice board")
         interceptor.raise_if_denied()
         rows = [*_items(await response_payload(_LIST_PATHS[0])), *_items(await response_payload(_LIST_PATHS[1]))]
-        selected: list[str] = []
+        selected: list[tuple[str, dict[str, Any]]] = []
         for item in rows:
-            native = item.get("boarditem_no")
-            number = item.get("row_idx")
-            date = item.get("insert_dt_addtime") or item.get("insert_dt")
-            if item.get("course_id") != course_id or not isinstance(native, str) or not _NATIVE_ID.fullmatch(native):
-                raise _failed("Notice board identity could not be verified.")
-            if type(number) is not int or not isinstance(date, str):
-                raise _failed("Notice board row identity could not be verified.")
-            if notice_entity_id(course_id, date, str(number)) == selected_row["entity_id"]:
-                selected.append(native)
+            try:
+                parsed = _board_item(item, course_id)
+            except ValueError as exc:
+                raise _failed("Notice board item metadata invalid.") from exc
+            if parsed is None:
+                continue
+            if notice_entity_id(course_id, parsed["date"], parsed["number"]) == selected_row["entity_id"]:
+                selected.append((parsed["native_id"], parsed))
         if len(selected) != 1:
             raise _failed("Selected notice no longer matches one board row.")
-        native = selected[0]
+        native, matched_item = selected[0]
         rendered = await bounded(page.evaluate(_BOARD_JS), PROTOCOL_TIMEOUT_SECONDS, "reading board links")
         interceptor.raise_if_denied()
         if not isinstance(rendered, list):
@@ -241,7 +284,24 @@ async def capture_notice_detail(page: Any, selected_row: dict[str, Any], *, inte
             or not detail["title"].strip()
         ):
             raise _failed("Notice detail identity cannot be verified.")
-        parts = ("# " + _escape_markdown(detail["title"]) + "\n\n", *_extract_parts(detail.get("parts")))
+        extracted = _extract_parts(detail.get("parts"), source_url=source_url)
+        has_attachment_ref = any(isinstance(p, ResourceReference) and p.kind == "attachment" for p in extracted)
+        notice_has_attachments = bool(matched_item.get("has_attachments") or selected_row.get("has_attachments"))
+        if notice_has_attachments and not has_attachment_ref:
+            extracted = (
+                *extracted,
+                "\n\n",
+                ResourceReference(
+                    kind="attachment",
+                    source_url=source_url,
+                    original_name=None,
+                    media_type_hint=None,
+                    label="Notice attachment",
+                    provider_file_id=None,
+                    official_target=None,
+                ),
+            )
+        parts = ("# " + _escape_markdown(detail["title"]) + "\n\n", *extracted)
         return DetailSnapshot(source_url=source_url, provider_native_id=None, parts=parts)
     finally:
         page.remove_listener("response", on_response)

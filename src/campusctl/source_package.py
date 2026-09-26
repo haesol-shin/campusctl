@@ -281,20 +281,20 @@ async def build_source_package(
                 else:
                     contents, media_type = await _image_bytes(page, part, policy)
             elif part.kind == "attachment":
-                target = part.official_target
-                if (
-                    target is None
-                    or part.provider_file_id != target.file_id
-                    or target.parent_kind != kind
-                    or target.parent_id
-                    != (snapshot.provider_native_id if kind == "assignment" else _notice_parent(target, entity_id))
-                ):
-                    raise _blocked()
-                if name.rsplit(".", 1)[-1].casefold() not in ALLOWED_EXTENSIONS:
-                    reason = "unsupported-media-type"
-                elif not _approved_attachment_route(policy, kind):
+                if not _approved_attachment_route(policy, kind):
                     reason = "unapproved-file-route"
+                elif name.rsplit(".", 1)[-1].casefold() not in ALLOWED_EXTENSIONS:
+                    reason = "unsupported-media-type"
                 else:
+                    target = part.official_target
+                    if (
+                        target is None
+                        or part.provider_file_id != target.file_id
+                        or target.parent_kind != kind
+                        or target.parent_id
+                        != (snapshot.provider_native_id if kind == "assignment" else _notice_parent(target, entity_id))
+                    ):
+                        raise _blocked()
                     transfer_policy = RequestPolicy(policy.ui_policy, name, policy.diagnostics)
                     fetched = await fetch_official_attachment(
                         page,

@@ -252,3 +252,22 @@ def test_wrong_selected_task_fails_before_transfer(monkeypatch: pytest.MonkeyPat
     assert page.fixture.badge == "미완료"
     assert page.blocked_images == 1 and page.image_bytes == 0
     assert page.image_handler is None
+
+
+def test_assignment_detail_extracts_media_omission_references(
+    monkeypatch: pytest.MonkeyPatch, brief: BriefFixture
+) -> None:
+    brief.parts.append(
+        {
+            "kind": "video",
+            "url": "https://dcs-learning.cnu.ac.kr/lecture.mp4",
+            "label": "Sample video",
+            "name": "lecture.mp4",
+        }
+    )
+    page = Page(brief, "TB_L_REPORT101")
+    snapshot = asyncio.run(_capture(monkeypatch, page))
+    media_refs = [p for p in snapshot.parts if isinstance(p, ResourceReference) and p.kind == "video"]
+    assert len(media_refs) == 1
+    assert media_refs[0].label == "Sample video"
+    assert media_refs[0].source_url == "https://dcs-learning.cnu.ac.kr/lecture.mp4"

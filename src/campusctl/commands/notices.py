@@ -224,14 +224,6 @@ FETCH_POLICY: dict[str, Any] = {
         {"origin": _ORIGIN, "path": "/api/v1/week/getStdEtcList", "operation": _FETCH_OPERATION, "methods": ["POST"]},
         {
             "origin": _ORIGIN,
-            "path": "/api/v1/week/getStdActivityStatus",
-            "operation": _FETCH_OPERATION,
-            "methods": ["POST"],
-            "logging_token_reviewed": True,
-            "resource_type": "xhr",
-        },
-        {
-            "origin": _ORIGIN,
             "path": "/api/v1/survey/getApplyPopList",
             "operation": _FETCH_OPERATION,
             "methods": ["POST"],
@@ -268,6 +260,14 @@ FETCH_POLICY: dict[str, Any] = {
             "operation": _FETCH_OPERATION,
             "methods": ["POST"],
             "reason": "logging",
+        },
+        {
+            "name": "panopto-saml-script",
+            "origin": _ORIGIN,
+            "path_template": "/js/common/panoptoSaml-{hash}.js",
+            "operation": _FETCH_OPERATION,
+            "methods": ["GET"],
+            "reason": "media-integration",
         },
         {
             "name": "panopto-connectivity-check",
