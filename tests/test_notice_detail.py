@@ -57,11 +57,15 @@ class FakePage:
         wrong_info: bool = False,
         row_addtime: str = "2026-09-01 09:00",
         row_insert_dt: str = "2026-09-01",
+        board_number: int = 7,
+        duplicate_title_day: bool = False,
     ) -> None:
         self.fixture = fixture
         self.wrong_info = wrong_info
         self.row_addtime = row_addtime
         self.row_insert_dt = row_insert_dt
+        self.board_number = board_number
+        self.duplicate_title_day = duplicate_title_day
         self.url = ORIGIN + "/std/myLecture"
         self.listeners: dict[str, object] = {}
         self.actions: list[str] = []
@@ -104,8 +108,12 @@ class FakePage:
                 "/api/v1/board/notice/list",
                 {
                     "list": [
-                        self._row(7, NATIVE, addtime=self.row_addtime, insert_dt=self.row_insert_dt),
-                        self._row(8, "TB_L_BOARDITEM7002"),
+                        self._row(self.board_number, NATIVE, addtime=self.row_addtime, insert_dt=self.row_insert_dt),
+                        self._row(
+                            8,
+                            "TB_L_BOARDITEM7002",
+                            title="Example notice" if self.duplicate_title_day else "Another notice",
+                        ),
                     ]
                 },
             )
@@ -124,14 +132,19 @@ class FakePage:
 
     @staticmethod
     def _row(
-        number: int, native: str, *, addtime: str = "2026-09-01 09:00", insert_dt: str = "2026-09-01"
+        number: int,
+        native: str,
+        *,
+        addtime: str = "2026-09-01 09:00",
+        insert_dt: str = "2026-09-01",
+        title: str = "Example notice",
     ) -> dict[str, object]:
         return {
             "boarditem_no": native,
             "row_idx": number,
             "insert_dt": insert_dt,
             "insert_dt_addtime": addtime,
-            "boarditem_title": "Example notice",
+            "boarditem_title": title,
             "delete_yn": "N",
             "course_id": "course-example",
         }
@@ -186,20 +199,43 @@ def fixture_page(
     wrong_info: bool = False,
     addtime: str = "2026-09-01 09:00",
     insert_dt: str = "2026-09-01",
+    board_number: int = 7,
+    duplicate_title_day: bool = False,
 ) -> FakePage:
     fixture = Fixture()
     fixture.feed(FIXTURE.read_text(encoding="utf-8"))
     assert fixture.detail_native == NATIVE
     assert fixture.view_counts[0] + 1 == fixture.view_counts[-1]
     assert not fixture.read_state_claim and not fixture.file_claim
-    return FakePage(fixture, wrong_info=wrong_info, row_addtime=addtime, row_insert_dt=insert_dt)
+    return FakePage(
+        fixture,
+        wrong_info=wrong_info,
+        row_addtime=addtime,
+        row_insert_dt=insert_dt,
+        board_number=board_number,
+        duplicate_title_day=duplicate_title_day,
+    )
 
 
-def selected(number: int = 7) -> dict[str, object]:
-    return {
-        "entity_id": notice_entity_id("course-example", "2026-09-01 09:00", str(number)),
+def selected(
+    number: int = 7,
+    *,
+    title: str = "Example notice",
+    date: str = "2026-09-01 09:00",
+    native_id: str | None = NATIVE,
+) -> dict[str, object]:
+    row: dict[str, object] = {
+        "entity_id": notice_entity_id("course-example", date, str(number)),
+        "legacy_key": f"Example Course_{date}_{number}",
+        "title": title,
+        "date": date,
+        "status": None,
+        "is_unread": None,
         "course": {"id": "course-example", "label": "Example Course"},
     }
+    if native_id is not None:
+        row["native_id"] = native_id
+    return row
 
 
 def test_selected_notice_detail_capture_readonly() -> None:
@@ -219,9 +255,45 @@ def test_selected_notice_detail_capture_readonly() -> None:
     assert not page.listeners
 
 
+def test_todo_number_different_from_board_row_index_opens_selected_notice() -> None:
+    page = fixture_page(board_number=1)
+    snapshot = asyncio.run(capture_notice_detail(page, selected(6), interceptor=Interceptor()))
+    assert snapshot.source_url == ORIGIN + "/std/noticeDetail?no=TB_L_BOARDITEM7001&curPage=1"
+    assert page.actions[-1].startswith('tbody#table-body a[href="/std/noticeDetail?no=TB_L_BOARDITEM7001')
+
+
+def test_unique_title_day_without_native_identity_preserves_legacy_number() -> None:
+    page = fixture_page(board_number=1)
+    snapshot = asyncio.run(capture_notice_detail(page, selected(6, native_id=None), interceptor=Interceptor()))
+    assert snapshot.source_url == ORIGIN + "/std/noticeDetail?no=TB_L_BOARDITEM7001&curPage=1"
+
+
+def test_native_identity_disambiguates_same_title_day() -> None:
+    page = fixture_page(duplicate_title_day=True)
+    snapshot = asyncio.run(capture_notice_detail(page, selected(), interceptor=Interceptor()))
+    assert snapshot.source_url == ORIGIN + "/std/noticeDetail?no=TB_L_BOARDITEM7001&curPage=1"
+
+
+def test_duplicate_title_day_without_native_identity_rejected_before_click() -> None:
+    page = fixture_page(duplicate_title_day=True)
+    with pytest.raises(CampusError) as failure:
+        asyncio.run(capture_notice_detail(page, selected(6, native_id=None), interceptor=Interceptor()))
+    assert failure.value.code == "entity-unknown"
+    assert not any(action.startswith("tbody#table-body a[") for action in page.actions)
+
+
+def test_stale_native_identity_cannot_select_another_notice() -> None:
+    page = fixture_page(board_number=6)
+    stale = selected(6, native_id="TB_L_BOARDITEM7999")
+    with pytest.raises(CampusError) as failure:
+        asyncio.run(capture_notice_detail(page, stale, interceptor=Interceptor()))
+    assert failure.value.code == "entity-unknown"
+    assert not any(action.startswith("tbody#table-body a[") for action in page.actions)
+
+
 def test_wrong_selected_notice_fails_before_transfer() -> None:
     page = fixture_page()
-    wrong = selected(9)
+    wrong = selected(9, title="Different notice", native_id=None)
     with pytest.raises(CampusError, match="Selected notice no longer matches"):
         asyncio.run(capture_notice_detail(page, wrong, interceptor=Interceptor()))
     assert not any(action.startswith("tbody#table-body a[") for action in page.actions)
@@ -237,10 +309,7 @@ def test_mismatched_detail_response_rejected() -> None:
 
 def test_malformed_addtime_falls_back_to_insert_dt() -> None:
     page = fixture_page(addtime="bad-time", insert_dt="2026-09-01")
-    target = {
-        "entity_id": notice_entity_id("course-example", "2026-09-01", "7"),
-        "course": {"id": "course-example", "label": "Example Course"},
-    }
+    target = selected(date="2026-09-01")
     snapshot = asyncio.run(capture_notice_detail(page, target, interceptor=Interceptor()))
     assert snapshot.source_url == ORIGIN + "/std/noticeDetail?no=TB_L_BOARDITEM7001&curPage=1"
 
@@ -263,11 +332,7 @@ def test_ordinary_link_named_download_stays_link_label_and_complete(tmp_path: Pa
         return await orig_evaluate(script)
 
     page.evaluate = evaluate_with_download_link
-    target = {
-        "entity_id": notice_entity_id("course-example", "2026-09-01 09:00", "7"),
-        "course": {"id": "course-example", "label": "Example Course"},
-        "has_attachments": False,
-    }
+    target = {**selected(), "has_attachments": False}
     snapshot = asyncio.run(capture_notice_detail(page, target, interceptor=Interceptor()))
     attachment_refs = [p for p in snapshot.parts if isinstance(p, ResourceReference) and p.kind == "attachment"]
     assert len(attachment_refs) == 0
@@ -298,11 +363,7 @@ def test_ordinary_link_named_download_stays_link_label_and_complete(tmp_path: Pa
 
 def test_board_attachment_flag_without_verified_control_adds_unknown_control_omission(tmp_path: Path) -> None:
     page = fixture_page()
-    target = {
-        "entity_id": notice_entity_id("course-example", "2026-09-01 09:00", "7"),
-        "course": {"id": "course-example", "label": "Example Course"},
-        "has_attachments": True,
-    }
+    target = {**selected(), "has_attachments": True}
     snapshot = asyncio.run(capture_notice_detail(page, target, interceptor=Interceptor()))
     attachment_refs = [p for p in snapshot.parts if isinstance(p, ResourceReference) and p.kind == "attachment"]
     assert len(attachment_refs) == 1
