@@ -97,6 +97,7 @@
       {"name":"course-roster-image","origin":"https://dcs-learning.cnu.ac.kr.invalid","methods":["GET"],"path_template":"/upload/dunetadmin/college/{hash}.png","reason":"course-roster-image"},
       {"name":"favicon-icon","origin":"https://dcs-learning.cnu.ac.kr.invalid","methods":["GET"],"path_template":"/assets/images/favicon-{hash}.ico","reason":"favicon"},
       {"name":"external-telemetry","origin":"http://telemetry.invalid:3000","methods":["POST"],"path_template":"/v1/events","reason":"telemetry"},
+      {"name":"external-telemetry-localhost","origin":"http://localhost:3000","methods":["POST"],"path_template":"/v1/events","reason":"telemetry"},
       {"name":"panopto-sso-popup","origin":"https://cnu.ap.panopto.com.invalid","methods":["POST"],"path_template":"/Panopto/Pages/Auth/Login.aspx","reason":"panopto-sso-popup"}
     ],
     "panoptoSaml_script": "not suppressed; apply ordinary same-origin static script guard",

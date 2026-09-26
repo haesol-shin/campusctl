@@ -2,6 +2,12 @@
 
 All notable changes to campusctl are documented here. This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Release dates follow the local date convention (KST, Asia/Seoul).
 
+## [Unreleased]
+
+### Changed
+- Sync selected domains in one guarded session with one course selection per course; validate the committed course page and each domain's own course data without reading the navigating selection response
+- Defer selection-epoch enforcement to 0.4.x while retaining the reviewed base request guard and suppression of localhost telemetry
+
 ## [0.3.2] - 2026-09-26
 
 ### Changed

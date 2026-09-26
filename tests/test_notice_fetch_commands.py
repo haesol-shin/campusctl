@@ -78,6 +78,7 @@ def test_notice_fetch_json_and_human(tmp_path: Path, monkeypatch: pytest.MonkeyP
         "course-roster-image",
         "favicon-icon",
         "external-telemetry",
+        "external-telemetry-localhost",
         "panopto-sso-popup",
     }
 

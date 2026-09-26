@@ -15,7 +15,6 @@ from campusctl import cli
 from campusctl.envelope import CampusError
 from campusctl.lock import exclusive_lock
 from campusctl.providers.cnu import sync as sync_module
-from campusctl.providers.cnu.course_context import CourseSelection
 
 COURSES = [
     {"course_id": "course-a", "label": "Course A", "class_no": None},
@@ -60,16 +59,7 @@ class FakePage:
 
 
 def _guard(page: FakePage) -> SimpleNamespace:
-    return SimpleNamespace(
-        raise_if_denied=lambda: None,
-        epoch=SimpleNamespace(
-            phase="bound",
-            course_id="course-a",
-            selection_epoch=1,
-            frame=page.main_frame,
-            document_url=page.main_frame.url,
-        ),
-    )
+    return SimpleNamespace(raise_if_denied=lambda: None)
 
 
 def test_unsupported_domain_is_rejected_before_loading_config(
@@ -98,21 +88,17 @@ def test_busy_session_lock_returns_exit_75(
 
 def test_lecture_collector_uses_committed_section_without_another_selection() -> None:
     page = FakePage([_row("new-a"), _row("other", moduletype="AS")])
-    selection = CourseSelection("course-a", 1, 1, 1, 2)
-    rows = asyncio.run(sync_module.collect_lectures_rows(page, COURSES[0], selection, _guard(page)))
+    rows = asyncio.run(sync_module.collect_lectures_rows(page, COURSES[0], _guard(page)))
     assert [row["entity_id"] for row in rows] == ["cnu_lecture:course-a:new-a"]
     assert page.course_clicks == []
-    with pytest.raises(ValueError, match="different course"):
-        asyncio.run(sync_module.collect_lectures_rows(page, COURSES[1], selection, _guard(page)))
 
 
 def test_lecture_collector_empty_and_denial() -> None:
     page = FakePage([], empty=True)
-    selection = CourseSelection("course-a", 1, 1, 1, 2)
-    assert asyncio.run(sync_module.collect_lectures_rows(page, COURSES[0], selection, _guard(page))) == []
+    assert asyncio.run(sync_module.collect_lectures_rows(page, COURSES[0], _guard(page))) == []
     denied = SimpleNamespace(raise_if_denied=lambda: (_ for _ in ()).throw(CampusError("policy-blocked", "Blocked")))
     with pytest.raises(CampusError, match="Blocked"):
-        asyncio.run(sync_module.collect_lectures_rows(page, COURSES[0], selection, denied))
+        asyncio.run(sync_module.collect_lectures_rows(page, COURSES[0], denied))
 
 
 def test_lecture_collector_keeps_non_counted_recorded_rows_out_of_incomplete_count() -> None:
@@ -121,9 +107,7 @@ def test_lecture_collector_keeps_non_counted_recorded_rows_out_of_incomplete_cou
     youtube["progress_text"] = "20분/20분"
     youtube["row_text"] = "Lecture non-counted 20분/20분 출석 미반영"
     page = FakePage([youtube, _row("incomplete")])
-    rows = asyncio.run(
-        sync_module.collect_lectures_rows(page, COURSES[0], CourseSelection("course-a", 1, 1, 1, 2), _guard(page))
-    )
+    rows = asyncio.run(sync_module.collect_lectures_rows(page, COURSES[0], _guard(page)))
     assert [(record["completion"], record["provider_state"]) for record in rows] == [
         ("recorded", "N"),
         ("incomplete", "N"),

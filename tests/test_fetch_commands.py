@@ -29,7 +29,7 @@ def test_fetch_reviewed_side_requests_and_saml_script(
     origin = "https://dcs-learning.cnu.ac.kr"
     policy = UiRequestPolicy.from_reviewed_config(config)
     assert policy.approved
-    assert len(policy.suppress) == 7
+    assert len(policy.suppress) == 8
     for path, method, kind in (
         ("/js/common/panopto-Ab_9.js", "GET", "script"),
         ("/api/v1/panopto/addInternetDisconnectionLog", "POST", "xhr"),
@@ -44,6 +44,7 @@ def test_fetch_reviewed_side_requests_and_saml_script(
         (origin + "/upload/dunetadmin/college/Ab_9.png", "GET", "image"),
         (origin + "/assets/images/favicon-Ab_9.ico", "GET", "other"),
         ("http://0.0.0.0:3000/v1/events", "POST", "fetch"),
+        ("http://localhost:3000/v1/events", "POST", "fetch"),
         ("https://cnu.ap.panopto.com/Panopto/Pages/Auth/Login.aspx", "POST", "document"),
     ):
         assert guard_ui_request(policy, url, method, {}, operation=operation, resource_type=kind) == "suppress"
@@ -138,7 +139,7 @@ def test_fetch_unpublished_surface(
         == "allow"
     )
     assert not any(s.name == "panopto-saml-script" for s in policy_a.suppress)
-    assert len(policy_a.suppress) == 7
+    assert len(policy_a.suppress) == 8
 
     policy_n = UiRequestPolicy.from_reviewed_config(notices.FETCH_POLICY)
     assert policy_n.approved is True
@@ -154,7 +155,7 @@ def test_fetch_unpublished_surface(
         == "allow"
     )
     assert not any(s.name == "panopto-saml-script" for s in policy_n.suppress)
-    assert len(policy_n.suppress) == 7
+    assert len(policy_n.suppress) == 8
 
     assert cli.main(["assignments", "--help"]) == 0
     out_help_a = capsys.readouterr().out

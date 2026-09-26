@@ -22,7 +22,7 @@ from campusctl.commands import materials as material_command
 from campusctl.commands import notices as notice_command
 from campusctl.domain_catalog import domain_catalog_path, read_domain_catalog, write_domain_catalog
 from campusctl.profiling import SpanRecorder
-from campusctl.providers.cnu import assignments, login, materials, notices, sync_all
+from campusctl.providers.cnu import assignments, login, materials, notices, sync_all, ui_policy
 from campusctl.providers.cnu.sync import sync_lectures
 from campusctl.providers.cnu.ui_policy import UiRequestDiagnostics
 from campusctl.sync import run_sync
@@ -49,13 +49,12 @@ def _roster() -> str:
         for i, cid in enumerate(IDS, 1)
     )
     return f"""{links}<script>
-for (const a of document.querySelectorAll('[data-act="moveLecture"]')) a.addEventListener('click', async e => {{
+for (const a of document.querySelectorAll('[data-act="moveLecture"]')) a.addEventListener('click', e => {{
  e.preventDefault(); const id = a.dataset.courseid;
- const response = await fetch('/api/v1/course/addSessionCourseInfo', {{method:'POST',
- headers:{{'Content-Type':'application/json'}}, body:JSON.stringify({{course_id:id}})}});
- await response.json(); sessionStorage.selected=id;
- await new Promise(resolve => setTimeout(resolve, 100));
- location.href='/std/lecture';
+ fetch('/api/v1/course/addSessionCourseInfo', {{method:'POST',
+ headers:{{'Content-Type':'application/json'}}, body:JSON.stringify({{course_id:id}})}}).then(() => {{
+  sessionStorage.selected=id; location.href='/std/lecture';
+ }});
 }});
 </script>"""
 
@@ -71,7 +70,7 @@ def _document(
     wrong_topbar: bool = False,
     archive_count_mismatch: bool = False,
     malformed_todo: bool = False,
-    third_party: tuple[str, str] | None = None,
+    third_party: tuple[str, str, str] | None = None,
     external_probe: tuple[str, str, str] | None = None,
 ) -> str:
     if path == "/std/myLecture":
@@ -157,11 +156,19 @@ async function showFiles(){await fetch('/api/v1/archive/getAttachFileList?e=fixt
         raise AssertionError(path)
     assets = (
         f'<script src="{third_party[0]}/fixture.js"></script>'
-        f'<link rel="stylesheet" href="{third_party[1]}/fixture.css">'
+        f'<link rel="stylesheet" href="{third_party[1]}/fixture.css" referrerpolicy="origin">'
+        '<link rel="stylesheet" href="/assets/fixture.css">'
+        f'<script>fetch("{third_party[2]}/v1/events",{{method:"POST"}});</script>'
         if third_party is not None
         else ""
     )
-    return '<!doctype html><html><head><meta charset="utf-8">' + assets + "</head><body>" + body + "</body></html>"
+    return (
+        '<!doctype html><html><head><meta charset="utf-8">'
+        + assets
+        + '</head><body><div class="fixture-background"></div>'
+        + body
+        + "</body></html>"
+    )
 
 
 class FixtureServer(ThreadingHTTPServer):
@@ -173,7 +180,7 @@ class FixtureServer(ThreadingHTTPServer):
         self.archive_count_mismatch = False
         self.wrong_topbar = False
         self.malformed_todo = False
-        self.third_party: tuple[str, str] | None = None
+        self.third_party: tuple[str, str, str] | None = None
         self.external_probe: tuple[str, str, str] | None = None
         super().__init__(("127.0.0.1", 0), FixtureHandler)
 
@@ -181,10 +188,13 @@ class FixtureServer(ThreadingHTTPServer):
 class FixtureHandler(BaseHTTPRequestHandler):
     server: FixtureServer
 
-    def _respond(self, body: str | dict[str, Any], status: int = 200) -> None:
+    def _respond(self, body: str | dict[str, Any], status: int = 200, content_type: str | None = None) -> None:
         data = (json.dumps(body) if isinstance(body, dict) else body).encode("utf-8")
         self.send_response(status)
-        self.send_header("Content-Type", "application/json" if isinstance(body, dict) else "text/html; charset=utf-8")
+        self.send_header(
+            "Content-Type",
+            content_type or ("application/json" if isinstance(body, dict) else "text/html; charset=utf-8"),
+        )
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
@@ -208,8 +218,19 @@ class FixtureHandler(BaseHTTPRequestHandler):
                     external_probe=self.server.external_probe,
                 )
             )
+        elif self.command == "GET" and path == "/assets/fixture.css":
+            self._respond(
+                '.fixture-background {width: 1px; height: 1px; background: url("/assets/images/fixture-a.svg")}'
+                '.fixture-background::before {content: ""; display: block; width: 1px; height: 1px;'
+                'background: url("/assets/images/fixture-b.svg")}',
+                content_type="text/css",
+            )
+        elif self.command == "GET" and path in {"/assets/images/fixture-a.svg", "/assets/images/fixture-b.svg"}:
+            self._respond(
+                '<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"/>', content_type="image/svg+xml"
+            )
         elif path == "/api/v1/course/addSessionCourseInfo":
-            self._respond({"header": {"code": 200}, "body": {"result": "Y", "data": {"course_id": selected}}})
+            self._respond("Selection receipt is intentionally not JSON.", content_type="text/plain")
         elif path == "/api/v1/board/notice/list/top":
             self._respond({"header": {"code": 200}, "body": {"list": []}})
         elif path == "/api/v1/board/notice/list":
@@ -271,15 +292,18 @@ def fixture_server() -> Iterator[FixtureServer]:
         thread.join(timeout=3)
 
 
-def _policy(source: dict[str, Any], origin: str) -> dict[str, Any]:
+def _policy(source: dict[str, Any], origin: str, telemetry_origin: str | None = None) -> dict[str, Any]:
     """Copy reviewed paths/methods to loopback, omitting origin-pinned unused extras."""
     policy = deepcopy(source)
     live = "https://dcs-learning.cnu.ac.kr"
     policy["origins"] = [origin]
-    # Production-origin static, named suppression, download, and logging-token pins
-    # are not exercised by this loopback fixture.
-    policy["static_asset_origins"] = []
-    policy["suppress"] = []
+    # Keep the reviewed localhost telemetry suppression; remap LMS routes and static assets.
+    policy["static_asset_origins"] = [origin]
+    policy["suppress"] = [
+        {**item, "origin": telemetry_origin or item["origin"]}
+        for item in policy["suppress"]
+        if item["name"] == "external-telemetry-localhost"
+    ]
     policy["selected_file_routes"] = []
     policy["routes"] = [
         {**route, "origin": origin if route["origin"] == live else route["origin"]}
@@ -303,6 +327,11 @@ def _chromium() -> str:
 
 def _install_fixture(monkeypatch: pytest.MonkeyPatch, server: FixtureServer) -> dict[str, Any]:
     origin = f"http://127.0.0.1:{server.server_port}"
+    learning_origin = ui_policy._is_learning_origin
+    monkeypatch.setattr(ui_policy, "_is_learning_origin", lambda value: value == origin or learning_origin(value))
+    telemetry_origin = server.third_party[2] if server.third_party is not None else None
+    if telemetry_origin is not None:
+        monkeypatch.setitem(ui_policy._TELEMETRY_ORIGINS, "external-telemetry-localhost", telemetry_origin)
     login_calls: list[str] = []
 
     async def login_once(page: Any, _config: dict[str, Any], **_kwargs: Any) -> None:
@@ -337,11 +366,19 @@ def _install_fixture(monkeypatch: pytest.MonkeyPatch, server: FixtureServer) -> 
     )
     # Mutable policy dictionaries remain local to this test; production pins are untouched.
     monkeypatch.setitem(
-        assignment_command.CAPABILITY, "policy", _policy(assignment_command.CAPABILITY["policy"], origin)
+        assignment_command.CAPABILITY,
+        "policy",
+        _policy(assignment_command.CAPABILITY["policy"], origin, telemetry_origin),
     )
-    monkeypatch.setitem(notice_command.CAPABILITY, "policy", _policy(notice_command.CAPABILITY["policy"], origin))
-    monkeypatch.setitem(material_command.CAPABILITY, "policy", _policy(material_command.CAPABILITY["policy"], origin))
-    monkeypatch.setattr(notice_command, "LECTURES_SYNC_POLICY", _policy(notice_command.LECTURES_SYNC_POLICY, origin))
+    monkeypatch.setitem(
+        notice_command.CAPABILITY, "policy", _policy(notice_command.CAPABILITY["policy"], origin, telemetry_origin)
+    )
+    monkeypatch.setitem(
+        material_command.CAPABILITY, "policy", _policy(material_command.CAPABILITY["policy"], origin, telemetry_origin)
+    )
+    monkeypatch.setattr(
+        notice_command, "LECTURES_SYNC_POLICY", _policy(notice_command.LECTURES_SYNC_POLICY, origin, telemetry_origin)
+    )
     monkeypatch.setattr(sync_all, "_fixture_roster_calls", roster_calls, raising=False)
     return {"browser": {"executable_path": _chromium(), "headless": True}, "_fixture_login_calls": login_calls}
 
@@ -480,8 +517,17 @@ def test_seven_courses_one_guarded_session_and_full_normalized_catalogs(
 def test_seven_course_sync_suppresses_external_assets_in_every_document(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    with fixture_server() as server, fixture_server() as cdn, fixture_server() as fonts:
-        server.third_party = (f"http://127.0.0.1:{cdn.server_port}", f"http://127.0.0.1:{fonts.server_port}")
+    with (
+        fixture_server() as server,
+        fixture_server() as cdn,
+        fixture_server() as fonts,
+        fixture_server() as telemetry,
+    ):
+        server.third_party = (
+            f"http://127.0.0.1:{cdn.server_port}",
+            f"http://127.0.0.1:{fonts.server_port}",
+            f"http://localhost:{telemetry.server_port}",
+        )
         diagnostics = UiRequestDiagnostics()
         monkeypatch.setattr(sync_all, "UiRequestDiagnostics", lambda: diagnostics)
         config = _install_fixture(monkeypatch, server)
@@ -492,7 +538,11 @@ def test_seven_course_sync_suppresses_external_assets_in_every_document(
         assert paths[("POST", "/api/v1/course/addSessionCourseInfo")] == 7
         assert cdn.requests == []
         assert fonts.requests == []
+        assert telemetry.requests == []
         assert diagnostics.suppressed_reasons.get("third-party-asset", 0) >= 2
+        assert diagnostics.suppressed_reasons.get("telemetry", 0) >= 1
+        for path in ("/assets/fixture.css", "/assets/images/fixture-a.svg", "/assets/images/fixture-b.svg"):
+            assert paths[("GET", path)] >= 1
         visited = {path for method, path, _ in server.requests if method == "GET"}
         assert {"/std/myLecture", "/std/lecture", "/std/course", "/std/task", "/std/notice", "/std/archive"} <= visited
 
@@ -538,6 +588,7 @@ def test_document_commit_spans_exclude_all_four_collector_phases(
         assert all(result["domains"][domain]["status"] == "ok" for domain in DOMAINS)
 
     profile = recorder.finish(stderr=io.StringIO())
+    assert profile["counts"]["course_selections"] == 1
     commits = [span for span in profile["spans"] if span["phase"] == "document-commit" and span["course"] == 1]
     assert {span["domain"] for span in commits} == set(DOMAINS)
     assert all(span["inclusive_ns"] == 0 for span in commits)
@@ -571,6 +622,7 @@ def test_selected_entry_topbar_mismatch_aborts_every_publication(
             for method, path, cid in server.requests
             if (method, path) == ("POST", "/api/v1/course/addSessionCourseInfo")
         ] == [IDS[0]]
+        assert ("GET", "/std/lecture", None) in server.requests
         assert not any(
             path in {"/std/course", "/std/task", "/std/notice", "/std/archive"} for _, path, _ in server.requests
         )
@@ -917,12 +969,12 @@ def test_lecture_extraction_failure_retains_only_failed_courses_prior_row(
         collector = sync_all.collect_lectures_rows
 
         async def collect_or_fail(
-            page: Any, course: dict[str, Any], selection: Any, guard: Any
+            page: Any, course: dict[str, Any], guard: Any, *, ordinal: int | None = None
         ) -> list[dict[str, Any]]:
             if course["course_id"] == IDS[3]:
                 assert page.main_frame.url.endswith("/std/course")
                 raise ValueError("Synthetic lecture extractor failed after selected document commit")
-            return await collector(page, course, selection, guard)
+            return await collector(page, course, guard, ordinal=ordinal)
 
         monkeypatch.setattr(sync_all, "collect_lectures_rows", collect_or_fail)
         result, errors = run_sync(config, tmp_path, ("lectures", "assignments"), None, headless=True)

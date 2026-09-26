@@ -13,7 +13,7 @@ from campusctl.browser import PROTOCOL_TIMEOUT_SECONDS, bounded, profile_span
 from campusctl.envelope import CampusError
 from campusctl.identity import material_entity_id
 
-from .course_context import SECTION_RESPONSE_TIMEOUT_MS, CourseSelection, bind_on_commit
+from .course_context import SECTION_RESPONSE_TIMEOUT_MS
 
 _MODAL = '#file_download.show, #file_download[style*="display: block"]'
 _ARCHIVE_MENU = 'a[href="/std/archive"]'
@@ -366,9 +366,8 @@ async def open_materials_section(
     action: Callable[[], Any],
     *,
     capture: _RequestWindow | None = None,
-    selection: CourseSelection | None = None,
 ) -> None:
-    """Open the archive with its observer armed and bind before list XHRs."""
+    """Open the archive with its observer armed before list XHRs."""
 
     async def navigate() -> None:
         if capture is None:
@@ -377,13 +376,7 @@ async def open_materials_section(
             await _step(action(), section_guard, "opening archive section")
 
     try:
-        if selection is None:
-            await navigate()
-        else:
-            async with bind_on_commit(
-                page, section_guard, frame=page.main_frame, expected_path="/std/archive", selection=selection
-            ):
-                await navigate()
+        await navigate()
     except BaseException:
         if capture is not None:
             capture.close()
@@ -393,7 +386,6 @@ async def open_materials_section(
 async def collect_materials_rows(
     page: Any,
     course: Mapping[str, Any],
-    selection: CourseSelection | None,
     section_guard: Any,
     *,
     capture: _RequestWindow | None = None,
@@ -401,21 +393,7 @@ async def collect_materials_rows(
     """Collect the complete archive from its validated, committed section document."""
     try:
         section_guard.raise_if_denied()
-        if selection is not None and capture is None:
-            raise _failure("course-sync-failed", course)
-        epoch = getattr(section_guard, "epoch", None)
-        if selection is not None and (
-            epoch is None
-            or epoch.phase != "bound"
-            or epoch.course_id != selection.course_id
-            or epoch.selection_epoch != selection.epoch
-            or epoch.frame is not page.main_frame
-            or epoch.document_url != page.main_frame.url
-        ):
-            raise _failure("course-sync-failed", course)
-        if (selection is not None and selection.course_id != course.get("course_id")) or urlsplit(
-            page.main_frame.url
-        ).path != "/std/archive":
+        if urlsplit(page.main_frame.url).path != "/std/archive":
             raise _failure("course-sync-failed", course)
         if capture is not None:
             await capture.idle(section_guard)
@@ -435,8 +413,8 @@ async def collect_materials_rows(
             payload = await _step(response.json(), section_guard, "parsing archive list response")
             if not isinstance(payload, (dict, list)):
                 raise _failure("course-sync-failed", course)
-        with profile_span("extract", domain="materials", course=selection.ordinal if selection is not None else None):
-            rows = await enumerate_archive(page, course, section_guard, selection=selection)
+        with profile_span("extract", domain="materials"):
+            rows = await enumerate_archive(page, course, section_guard)
         section_guard.raise_if_denied()
         return rows
     finally:
@@ -495,45 +473,17 @@ async def _post_names(page: Any, guard: Any, activity: _RequestWindow, after: in
     return _attachment_names(body)
 
 
-async def _restore_archive_document(page: Any, guard: Any, selection: CourseSelection | None) -> None:
-    """Rebind the same selected course around an archive menu restoration."""
-    if selection is None:
-        await _archive_navigation(page, guard, lambda: page.click(_ARCHIVE_MENU))
-        return
-    guard.raise_if_denied()
-    epoch = guard.epoch
-    frame = page.main_frame
-    if (
-        epoch.phase != "bound"
-        or epoch.operation != "materials.sync"
-        or epoch.course_id != selection.course_id
-        or epoch.selection_epoch != selection.epoch
-        or epoch.frame is not frame
-        or epoch.document_url != frame.url
-    ):
-        raise ValueError("archive restoration is not bound to the selected course")
-    guard.quarantine()
-    guard.activate(
-        epoch.policy,
-        operation="materials.sync",
-        selection=selection,
-        frame=frame,
-        document_url=frame.url,
-        navigation_path="/std/archive",
-        settled=True,
-    )
-    async with bind_on_commit(page, guard, frame=frame, expected_path="/std/archive", selection=selection):
-        await _archive_navigation(page, guard, lambda: page.click(_ARCHIVE_MENU))
+async def _restore_archive_document(page: Any, guard: Any) -> None:
+    """Restore the archive menu and validate its list response."""
+    await _archive_navigation(page, guard, lambda: page.click(_ARCHIVE_MENU))
 
 
-async def enumerate_archive(
-    page: Any, course: Mapping[str, Any], guard: Any, *, selection: CourseSelection | None = None
-) -> list[dict[str, Any]]:
+async def enumerate_archive(page: Any, course: Mapping[str, Any], guard: Any) -> list[dict[str, Any]]:
     """Enumerate every completed archive page and restore its exact post context."""
     with profile_span("dom-ready", domain="materials"):
         await _step(page.wait_for_selector("#table_list", timeout=_WAIT_MS), guard, "waiting for archive table")
     with profile_span("archive-page", domain="materials"):
-        first = await _archive_state(page, guard, 1, expected_course_id=selection.course_id if selection else None)
+        first = await _archive_state(page, guard, 1, expected_course_id=course["course_id"])
     total = first["total_count"]
     pages = (total + first["page_size"] - 1) // first["page_size"]
     if pages > 100:
@@ -546,9 +496,7 @@ async def enumerate_archive(
         with profile_span("archive-page", domain="materials"):
             if page_number > 1:
                 await _select_page(page, guard, page_number)
-            state = await _archive_state(
-                page, guard, page_number, total, expected_course_id=selection.course_id if selection else None
-            )
+            state = await _archive_state(page, guard, page_number, total, expected_course_id=course["course_id"])
         posts = state["posts"]
         counted += state["row_count"]
         for post in posts:
@@ -614,7 +562,7 @@ async def enumerate_archive(
                     with profile_span("modal", domain="materials"):
                         await _step(page.evaluate(_CLOSE_MODAL_JS), guard, "closing archive modal")
                     with profile_span("archive-restore", domain="materials"):
-                        await _restore_archive_document(page, guard, selection)
+                        await _restore_archive_document(page, guard)
                         if page_number > 1:
                             await _select_page(page, guard, page_number)
                         restored = await _archive_state(
@@ -622,7 +570,7 @@ async def enumerate_archive(
                             guard,
                             page_number,
                             total,
-                            expected_course_id=selection.course_id if selection else None,
+                            expected_course_id=course["course_id"],
                         )
                         if restored["posts"] != posts:
                             raise _failure("course-sync-failed", course)

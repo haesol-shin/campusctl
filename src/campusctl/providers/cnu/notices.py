@@ -14,8 +14,6 @@ from campusctl.browser import PROTOCOL_TIMEOUT_SECONDS, bounded, profile_span
 from campusctl.envelope import CampusError
 from campusctl.identity import notice_entity_id
 
-from .course_context import CourseSelection, bind_on_commit
-
 _ORIGIN = "https://dcs-learning.cnu.ac.kr"
 _TODO_URL = f"{_ORIGIN}/std/todo"
 _NOTICE_LIST_PATH = "/api/v1/board/std/notice/list"
@@ -290,9 +288,8 @@ def parse_legacy_notice_text(
 class _TodoCapture:
     """Observe the todo document commit and all subsequent notice-list responses."""
 
-    def __init__(self, page: Any, section_guard: Any) -> None:
+    def __init__(self, page: Any) -> None:
         self.page = page
-        self.epoch_number = getattr(section_guard.epoch, "number", None)
         self.sequence = 0
         self.document_sequence: int | None = None
         self.committed_sequence: int | None = None
@@ -339,21 +336,14 @@ class _TodoCapture:
             self.page.remove_listener("framenavigated", self.on_navigate)
 
 
-async def open_notice_todo(page: Any, section_guard: Any, *, selection: CourseSelection | None = None) -> _TodoCapture:
-    """Navigate within the exact to-do epoch and bind before the page's first list XHR."""
+async def open_notice_todo(page: Any, section_guard: Any) -> _TodoCapture:
+    """Navigate to the to-do document and capture its first list XHR."""
     section_guard.raise_if_denied()
-    epoch = section_guard.epoch
-    if epoch.phase not in {"legacy", "navigation"} or (
-        epoch.phase == "navigation" and epoch.navigation_path != "/std/todo"
-    ):
-        raise ValueError("To-do navigation has not been activated")
-    capture = _TodoCapture(page, section_guard)
+    capture = _TodoCapture(page)
 
     async def navigate() -> None:
         try:
             options = {"wait_until": "domcontentloaded"}
-            if selection is not None:
-                options["referer"] = epoch.document_url
             await bounded(page.goto(_TODO_URL, **options), PROTOCOL_TIMEOUT_SECONDS, "opening notices")
         finally:
             section_guard.raise_if_denied()
@@ -361,15 +351,7 @@ async def open_notice_todo(page: Any, section_guard: Any, *, selection: CourseSe
     try:
         await bounded(page.wait_for_load_state("networkidle"), PROTOCOL_TIMEOUT_SECONDS, "settling prior page requests")
         section_guard.raise_if_denied()
-        if selection is None:
-            if epoch.phase != "legacy":
-                raise ValueError("To-do navigation requires a validated selection")
-            await navigate()
-        else:
-            async with bind_on_commit(
-                page, section_guard, frame=page.main_frame, expected_path="/std/todo", selection=selection
-            ):
-                await navigate()
+        await navigate()
         if (
             capture.document_sequence is None
             or capture.committed_sequence is None
@@ -385,12 +367,6 @@ async def open_notice_todo(page: Any, section_guard: Any, *, selection: CourseSe
 
 async def _grid_snapshot(page: Any, interceptor: Any, capture: _TodoCapture) -> list[dict[str, Any]]:
     """Read the committed, guarded notice grid; per-course coverage is a live release gate."""
-    if capture.epoch_number != interceptor.epoch.number or (
-        interceptor.epoch.phase != "legacy"
-        and (interceptor.epoch.phase != "bound" or urlsplit(interceptor.epoch.document_url).path != "/std/todo")
-    ):
-        capture.close()
-        raise ValueError("To-do document belongs to another operation epoch")
 
     async def settle(start: int, *, required: bool) -> None:
         await bounded(page.wait_for_load_state("networkidle"), PROTOCOL_TIMEOUT_SECONDS, "settling page requests")
@@ -536,7 +512,6 @@ class _NoticeCapture:
     def __init__(self, page: Any, section_guard: Any, *, armed: bool = True) -> None:
         self.page = page
         self.section_guard = section_guard
-        self.epoch_number = getattr(section_guard.epoch, "number", None)
         self.requests: list[tuple[int, Any]] = []
         self.responses: list[Any] = []
         self.sequence = 0
@@ -585,9 +560,7 @@ class _NoticeCapture:
             self.page.remove_listener("response", self.on_response)
             self.page.remove_listener("framenavigated", self.on_navigate)
 
-    async def collect(
-        self, page: Any, course: dict[str, Any], courses: list[dict[str, Any]], selection: CourseSelection | None
-    ) -> list[dict[str, Any]]:
+    async def collect(self, page: Any, course: dict[str, Any], courses: list[dict[str, Any]]) -> list[dict[str, Any]]:
         interceptor = self.section_guard
         requests, responses, commit, notice_document = (
             self.requests,
@@ -596,15 +569,6 @@ class _NoticeCapture:
             self.notice_document,
         )
         interceptor.raise_if_denied()
-        if selection is not None and (
-            selection.course_id != course["course_id"]
-            or interceptor.epoch.selection_epoch != selection.epoch
-            or interceptor.epoch.course_id != selection.course_id
-            or self.epoch_number != interceptor.epoch.number
-            or interceptor.epoch.phase != "bound"
-            or urlsplit(interceptor.epoch.document_url).path != "/std/notice"
-        ):
-            raise ValueError("Notice selection belongs to another course")
         await bounded(page.wait_for_load_state("networkidle"), PROTOCOL_TIMEOUT_SECONDS, "settling notice board")
         interceptor.raise_if_denied()
         if self.stale or commit is None or notice_document is None or commit < notice_document:
@@ -748,17 +712,10 @@ async def open_notice_section(
     action: Callable[[], Any],
     *,
     capture: _NoticeCapture | None = None,
-    selection: CourseSelection | None = None,
 ) -> None:
-    """Open the notice board, binding its committed document before list XHRs."""
+    """Open the notice board with its response capture armed."""
     try:
-        if selection is None:
-            await bounded(action(), PROTOCOL_TIMEOUT_SECONDS, "opening course notice board")
-        else:
-            async with bind_on_commit(
-                page, section_guard, frame=page.main_frame, expected_path="/std/notice", selection=selection
-            ):
-                await bounded(action(), PROTOCOL_TIMEOUT_SECONDS, "opening course notice board")
+        await bounded(action(), PROTOCOL_TIMEOUT_SECONDS, "opening course notice board")
     except BaseException:
         if capture is not None:
             capture.close()
@@ -768,7 +725,6 @@ async def open_notice_section(
 async def collect_notice_rows(
     page: Any,
     course: dict[str, Any],
-    selection: CourseSelection | None,
     section_guard: Any,
     *,
     capture: _NoticeCapture,
@@ -777,7 +733,7 @@ async def collect_notice_rows(
 ) -> list[dict[str, Any]]:
     """Validate the already-entered board and join its verified global to-do snapshot."""
     try:
-        board = await capture.collect(page, course, courses, selection)
+        board = await capture.collect(page, course, courses)
         section_guard.raise_if_denied()
         return parse_board_rows(board, course, todo_rows)
     finally:

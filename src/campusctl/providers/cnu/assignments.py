@@ -13,7 +13,7 @@ from campusctl.browser import PROTOCOL_TIMEOUT_SECONDS, bounded, profile_span
 from campusctl.envelope import CampusError
 from campusctl.identity import assignment_entity_id
 
-from .course_context import SECTION_RESPONSE_TIMEOUT_MS, CourseSelection, bind_on_commit
+from .course_context import SECTION_RESPONSE_TIMEOUT_MS
 
 TASK_TABLE_SELECTOR = "#table_list tbody#tbody"
 TASK_RESPONSE_PATH = "/api/v1/task/stdList"
@@ -129,7 +129,6 @@ class _PageActivity:
 
     def __init__(self, page: Any) -> None:
         self.page = page
-        self.epoch_number: int | None = None
         self.pending: set[int] = set()
         self.idle = asyncio.Event()
         self.idle.set()
@@ -220,7 +219,6 @@ def arm_assignment_capture(page: Any, section_guard: Any) -> _PageActivity:
     """Observe the committed task document and every candidate list request before navigation."""
     section_guard.raise_if_denied()
     activity = _PageActivity(page)
-    activity.epoch_number = getattr(section_guard.epoch, "number", None)
     activity.start()
     return activity
 
@@ -231,17 +229,10 @@ async def open_assignment_section(
     action: Callable[[], Any],
     *,
     capture: _PageActivity | None = None,
-    selection: CourseSelection | None = None,
 ) -> None:
-    """Open the task document, binding it before its first list XHR."""
+    """Open the task document while its response capture is armed."""
     try:
-        if selection is None:
-            await bounded(action(), PROTOCOL_TIMEOUT_SECONDS, "opening the CNU task section")
-        else:
-            async with bind_on_commit(
-                page, section_guard, frame=page.main_frame, expected_path="/std/task", selection=selection
-            ):
-                await bounded(action(), PROTOCOL_TIMEOUT_SECONDS, "opening the CNU task section")
+        await bounded(action(), PROTOCOL_TIMEOUT_SECONDS, "opening the CNU task section")
     except BaseException:
         if capture is not None:
             capture.close()
@@ -251,7 +242,6 @@ async def open_assignment_section(
 async def collect_assignment_rows(
     page: Any,
     course: dict[str, Any],
-    selection: CourseSelection | None,
     section_guard: Any,
     *,
     capture: _PageActivity,
@@ -259,15 +249,6 @@ async def collect_assignment_rows(
     """Validate the already-entered task section without selecting or publishing."""
     activity = capture
     try:
-        if selection is not None and (
-            selection.course_id != course["course_id"]
-            or section_guard.epoch.selection_epoch != selection.epoch
-            or section_guard.epoch.course_id != selection.course_id
-            or activity.epoch_number != section_guard.epoch.number
-            or section_guard.epoch.phase != "bound"
-            or urlsplit(section_guard.epoch.document_url).path != "/std/task"
-        ):
-            raise ValueError("Task selection belongs to another course")
         section_guard.raise_if_denied()
         await bounded(
             asyncio.wait_for(activity.response_seen.wait(), SECTION_RESPONSE_TIMEOUT_MS / 1000),
