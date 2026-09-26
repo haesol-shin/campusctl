@@ -358,6 +358,7 @@ def _expected_row(domain: str, cid: str, n: int) -> dict[str, Any]:
     if domain == "notices":
         return {
             "entity_id": f"cnu_notice:{cid}:2026-09-02 09%3A00:{n}",
+            "native_id": f"TB_L_BOARDITEM{n}01",
             "legacy_key": f"Fixture Course {n}_2026-09-02 09:00_{n}",
             "course": course,
             "kind": "notice",
@@ -386,8 +387,10 @@ def _expected_row(domain: str, cid: str, n: int) -> dict[str, Any]:
 
 
 def test_seven_courses_one_guarded_session_and_full_normalized_catalogs(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    from campusctl import cli
+
     with fixture_server() as server:
         config = _install_fixture(monkeypatch, server)
         result, errors = run_sync(config, tmp_path, DOMAINS, None, headless=True)
@@ -434,6 +437,15 @@ def test_seven_courses_one_guarded_session_and_full_normalized_catalogs(
             else:
                 assert "/std/todo" not in visits
         assert all("log" not in path.lower() and "video" not in path.lower() for _, path, _ in server.requests)
+        monkeypatch.setenv("CAMPUSCTL_DATA_DIR", str(tmp_path))
+        assert cli.main(["notices", "list", "--json"]) == 0
+        output = capsys.readouterr()
+        assert output.err == ""
+        visible = json.loads(output.out)["result"]["notices"]
+        assert visible == [
+            {key: value for key, value in _expected_row("notices", cid, n).items() if key != "native_id"}
+            for n, cid in enumerate(IDS, 1)
+        ]
 
 
 def test_document_commit_spans_exclude_all_four_collector_phases(
