@@ -358,7 +358,7 @@ def test_course_filter_replaces_only_selected_course_and_unknown_course_leaves_c
 
     assert code == 2
     assert envelope["status"] == "user-action"
-    assert envelope["errors"][0]["code"] == "course-not-found"
+    assert envelope["errors"][0]["code"] == "course-id-required"
     assert catalog_path(tmp_path).read_bytes() == before
 
 

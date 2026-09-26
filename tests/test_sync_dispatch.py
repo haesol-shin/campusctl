@@ -106,3 +106,24 @@ def test_profile_emits_single_safe_stderr_line_without_polluting_json(
     assert record["scope"] == ["assignments"] and record["outcome"] == "ok"
     code, response = _call(["--profile", "status", "--json"], capsys)
     assert code == 2 and response["errors"][0]["code"] == "usage-error"
+
+
+def test_fresh_cache_sync_accepts_live_full_id_but_rejects_name_fragment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("CAMPUSCTL_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(cli, "load_config", lambda: {})
+    ids = ["course-a"]
+
+    async def provider(config: dict, root: Path, course_id: str | None, *, headless: bool):
+        if course_id not in ids:
+            raise CampusError("course-not-found", "Not enrolled.", status="user-action")
+        return {"courses": 1}, []
+
+    monkeypatch.setattr(sync_module, "discover_domain_modules", lambda: {"assignments": SimpleNamespace(sync=provider)})
+    code, response = _call(["sync", "--only", "assignments", "--course", "course-a", "--json"], capsys)
+    assert code == 0 and response["result"]["courses"] == 1
+    code, response = _call(["sync", "--only", "assignments", "--course", "course", "--json"], capsys)
+    assert code == 2 and response["errors"][0]["code"] == "course-id-required"
+    code, response = _call(["sync", "--only", "assignments", "--course", "1", "--json"], capsys)
+    assert code == 2 and response["errors"][0]["code"] == "course-index-unavailable"

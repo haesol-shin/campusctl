@@ -83,9 +83,7 @@ def run_sync(
             )
         if len(selected) == 1:
             outcome = outcomes[selected[0]]
-            return outcome["result"], (
-                flattened[0] if flattened and not outcome["result"] else flattened or None
-            )
+            return outcome["result"], (flattened[0] if flattened and not outcome["result"] else flattened or None)
         if flattened and not committed:
             return {"domains": outcomes}, flattened[0]
         return {"domains": outcomes}, flattened or None

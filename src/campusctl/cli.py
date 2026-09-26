@@ -395,9 +395,23 @@ def _refresh(
     config = load_config()
     mode = preflight_browser_mode(config, f"{domain}.sync", override=args.headless_override)
     return run_sync(
-        config, root, (domain,), course_id, headless=mode,
-        profile=getattr(args, "_profile", None), course_snapshot=snapshot,
+        config,
+        root,
+        (domain,),
+        course_id,
+        headless=mode,
+        profile=getattr(args, "_profile", None),
+        course_snapshot=snapshot,
     )
+
+
+def _refresh_result(
+    refresh: tuple[dict[str, Any], CampusError | list[CampusError] | None],
+) -> dict[str, Any]:
+    result, errors = refresh
+    failures = errors if isinstance(errors, list) else [errors] if errors else []
+    status = "partial" if result and failures else failures[0].status if failures else "ok"
+    return {"status": status, "result": result, "errors": [error_item(error) for error in failures]}
 
 
 def _command_key(args: argparse.Namespace | None) -> str:
@@ -536,7 +550,7 @@ def _dispatch(args: argparse.Namespace) -> tuple[Any, CampusError | list[CampusE
         config = load_config()
         for domain in domains:
             preflight_browser_mode(config, f"{domain}.sync", override=args.headless_override)
-        return run_sync(
+        result, errors = run_sync(
             config,
             root,
             domains,
@@ -545,30 +559,28 @@ def _dispatch(args: argparse.Namespace) -> tuple[Any, CampusError | list[CampusE
             profile=getattr(args, "_profile", None),
             course_snapshot=snapshot,
         )
+        if ids_only and args.course is not None:
+            rejected = errors if isinstance(errors, list) else [errors] if errors else []
+            if rejected and not result and all(error.code == "course-not-found" for error in rejected):
+                code = "course-index-unavailable" if args.course.isdecimal() else "course-id-required"
+                raise CampusError(
+                    code,
+                    "JSON course selection requires an exact full course ID.",
+                    "Use a full course ID from 'campusctl courses list --json'.",
+                    "user-action",
+                )
+        return result, errors
     if args.command == "courses" and args.courses_command == "list":
-        refresh = None
-        if args.refresh:
-            refresh = _refresh("lectures", root, None, args)
+        refresh = _refresh("lectures", root, None, args) if args.refresh else None
         try:
             roster = course_roster(root)
         except CampusError:
             if refresh is None or not refresh[1]:
                 raise
-            errors = refresh[1] if isinstance(refresh[1], list) else [refresh[1]]
-            return {
-                "refresh": {"status": "error", "result": refresh[0], "errors": [error_item(item) for item in errors]}
-            }, refresh[1]
+            return {"refresh": _refresh_result(refresh)}, refresh[1]
         result = {"cache": roster["cache"], "courses": roster["courses"]}
         if refresh is not None:
-            result["refresh"] = {
-                "status": "partial" if refresh[1] else "ok",
-                "result": refresh[0],
-                "errors": [error_item(error) for error in refresh[1]]
-                if isinstance(refresh[1], list)
-                else [error_item(refresh[1])]
-                if refresh[1]
-                else [],
-            }
+            result["refresh"] = _refresh_result(refresh)
             if refresh[1]:
                 return result, refresh[1]
         if not ids_only:
@@ -591,25 +603,9 @@ def _dispatch(args: argparse.Namespace) -> tuple[Any, CampusError | list[CampusE
             except CampusError:
                 if refresh is None or not refresh[1]:
                     raise
-                return {
-                    "refresh": {
-                        "status": "error",
-                        "result": refresh[0],
-                        "errors": [error_item(e) for e in refresh[1]]
-                        if isinstance(refresh[1], list)
-                        else [error_item(refresh[1])],
-                    }
-                }, refresh[1]
+                return {"refresh": _refresh_result(refresh)}, refresh[1]
             if refresh is not None:
-                result["refresh"] = {
-                    "status": "partial" if refresh[1] else "ok",
-                    "result": refresh[0],
-                    "errors": [error_item(e) for e in refresh[1]]
-                    if isinstance(refresh[1], list)
-                    else [error_item(refresh[1])]
-                    if refresh[1]
-                    else [],
-                }
+                result["refresh"] = _refresh_result(refresh)
                 return result, refresh[1]
             return result, error
         return _DOMAIN_MODULES[args.command].dispatch(args)
@@ -621,10 +617,7 @@ def _dispatch(args: argparse.Namespace) -> tuple[Any, CampusError | list[CampusE
         except CampusError:
             if refresh is None or not refresh[1]:
                 raise
-            errors = refresh[1] if isinstance(refresh[1], list) else [refresh[1]]
-            return {
-                "refresh": {"status": "error", "result": refresh[0], "errors": [error_item(item) for item in errors]}
-            }, refresh[1]
+            return {"refresh": _refresh_result(refresh)}, refresh[1]
         course_order = {course["course_id"]: index for index, course in enumerate(catalog["courses"])}
         lectures = catalog["lectures"]
         if course_id is not None:
@@ -641,15 +634,7 @@ def _dispatch(args: argparse.Namespace) -> tuple[Any, CampusError | list[CampusE
         )
         result = {"cache": cache_metadata(catalog, now=datetime.now(UTC), domain="lectures"), "lectures": lectures}
         if refresh is not None:
-            result["refresh"] = {
-                "status": "partial" if refresh[1] else "ok",
-                "result": refresh[0],
-                "errors": [error_item(error) for error in refresh[1]]
-                if isinstance(refresh[1], list)
-                else [error_item(refresh[1])]
-                if refresh[1]
-                else [],
-            }
+            result["refresh"] = _refresh_result(refresh)
             return result, refresh[1]
         return result, None
     if args.command == "lectures" and args.lectures_command == "play":

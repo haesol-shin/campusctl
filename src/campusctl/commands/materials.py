@@ -238,6 +238,16 @@ def dispatch(args: argparse.Namespace) -> tuple[dict[str, Any], CampusError | No
                 "user-action",
             )
         args.entity_id, selection = resolve_material_number(root, args.entity_id)
+    if selection is not None:
+        current = catalog_snapshot("materials", root)
+        if current is None or current[1] != selection["catalog_generation"]:
+            raise CampusError(
+                "selection-stale",
+                "The printed materials list changed.",
+                "Run 'campusctl materials list' again.",
+                "user-action",
+            )
+        catalog = current[0]
     rows = [row for row in catalog["materials"] if row.get("entity_id") == args.entity_id]
     if len(rows) != 1:
         raise CampusError(
