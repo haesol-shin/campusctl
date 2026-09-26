@@ -1,0 +1,10 @@
+{
+  "courses": [
+    {"course_id": "course-a", "label": "Example Course", "class_no": null},
+    {"course_id": "course-b", "label": "Example Course 2", "class_no": null}
+  ],
+  "cases": [
+    {"text": "1 Example Course 과제 제목 2026-09-01 12:00 읽지않음", "course_id": "course-a", "legacy_key": "Example Course_2026-09-01 12:00_1", "entity_id": "cnu_notice:course-a:2026-09-01 12%3A00:1", "title": "과제 제목", "is_unread": true},
+    {"text": "2 Example Course 2 과제\n제목 2026-09-02  09:30 읽음", "course_id": "course-b", "legacy_key": "Example Course 2_2026-09-02  09:30_2", "entity_id": "cnu_notice:course-b:2026-09-02  09%3A30:2", "title": "과제 제목", "is_unread": false}
+  ]
+}

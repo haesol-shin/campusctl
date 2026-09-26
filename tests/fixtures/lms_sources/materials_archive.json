@@ -1,0 +1,43 @@
+{
+  "course": {"course_id": "course-synthetic-a", "label": "Sample Course", "class_no": "01"},
+  "cases": [
+    {"name": "modal-multiple", "posts": [{"board_item_id": "board-modal", "title": "Reference sheet", "modal": [
+      {"data_id": "file-pdf", "text": "example.pdf 바로보기", "url": "javascript:;", "official": true},
+      {"data_id": "file-zip", "text": "resources.zip", "official": true}
+    ]}]},
+    {"name": "official-list-filename", "posts": [{"board_item_id": "board-filename", "title": "API name", "modal": [
+      {"data_id": "file-name", "text": "", "url": "javascript:;", "official": true}
+    ], "attachment_list": [{"boarditem_attach_file_no": "file-name", "file_name": "original.pdf 바로보기 "}]}]},
+    {"name": "unnamed-official", "posts": [{"board_item_id": "board-unnamed", "title": "Nameless control", "modal": [
+      {"data_id": "file-unnamed", "text": "", "url": "#", "official": true}
+    ], "attachment_list": [{"boarditem_attach_file_no": "file-unnamed", "file_name": ""}]}]},
+    {"name": "inline-after-modal-timeout", "posts": [{"board_item_id": "board-inline", "title": "Notes", "inline": [
+      {"data_id": "file-inline", "text": "notes.md", "official": true}
+    ]}]},
+    {"name": "unresolved-after-inline", "posts": [{"board_item_id": "board-unresolved", "title": "Unresolved control"}], "fails": true},
+    {"name": "multiple-posts", "posts": [{"board_item_id": "board-first", "title": "First", "inline": [
+      {"data_id": "file-first", "text": "first.pdf", "official": true}
+    ]}, {"board_item_id": "board-next", "title": "Following post", "modal": [
+      {"data_id": "file-next", "text": "next.pdf", "official": true}
+    ]}]},
+    {"name": "completed-empty", "posts": [], "response_body": {"records": []}, "table_ready": true},
+    {"name": "table-incomplete", "posts": [], "response_body": {"records": []}, "table_ready": false, "fails": true},
+    {"name": "empty-post", "posts": [{"board_item_id": "board-empty", "title": "No file", "modal": []}], "fails": true},
+    {"name": "duplicate-id", "posts": [{"board_item_id": "board-one", "title": "First", "modal": [
+      {"data_id": "file-shared", "text": "one.pdf", "official": true}
+    ]}, {"board_item_id": "board-two", "title": "Second", "modal": [
+      {"data_id": "file-shared", "text": "two.pdf", "official": true}
+    ]}], "fails": true},
+    {"name": "missing-id", "posts": [{"board_item_id": "board-missing", "title": "Missing identity", "modal": [
+      {"text": "unknown.pdf", "official": true}
+    ]}], "fails": true},
+    {"name": "metadata-only", "posts": [{"board_item_id": "board-media", "title": "External media", "modal": [
+      {"data_id": "file-panopto", "text": "recording.mp4", "url": "https://video.example.invalid/watch", "official": false},
+      {"data_id": "file-youtube", "text": "tutorial.pdf", "url": "https://youtube.example.invalid/watch", "official": false},
+      {"data_id": "file-unknown", "text": "mystery.bin", "official": true}
+    ]}]},
+    {"name": "failed-restore", "posts": [{"board_item_id": "board-restore", "title": "Restore failure", "inline": [
+      {"data_id": "file-restore", "text": "example.pdf", "official": true}
+    ]}], "restore_fails": true, "fails": true}
+  ]
+}

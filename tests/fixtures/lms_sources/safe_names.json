@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "normalization_cases": [
+    {
+      "case": "nfc",
+      "input_name": "café.txt",
+      "expected_name": "café.txt"
+    },
+    {
+      "case": "casefold-source-name",
+      "input_name": "Report.txt",
+      "expected_name": "Report.txt"
+    },
+    {
+      "case": "traversal-basename",
+      "input_name": "../../synthetic-report.txt",
+      "expected_name": "synthetic-report.txt"
+    },
+    {
+      "case": "windows-device-name",
+      "input_name": "CON.txt",
+      "expected_name": "resource"
+    },
+    {
+      "case": "invalid-characters",
+      "input_name": "folder\\bad:name?.txt",
+      "expected_name": "bad_name_.txt"
+    },
+    {
+      "case": "trailing-dot-and-space",
+      "input_name": "draft.txt. ",
+      "expected_name": "draft.txt"
+    },
+    {
+      "case": "empty-after-trimming",
+      "input_name": "...   ",
+      "expected_name": "resource"
+    }
+  ],
+  "casefold_collision": {
+    "input_names": ["Report.txt", "report.txt"],
+    "resource_ids": [
+      "b30d23a5f3f03ef1286f1bcc5d912d0f45412b8799a1f827e6e72076db9f510c",
+      "59c8c3ba97dec715b3d333941621ba30a958541892987065089aceda5c3b074d"
+    ],
+    "expected_names": [
+      "Report.txt",
+      "report~59c8c3ba97dec715b3d333941621ba30a958541892987065089aceda5c3b074d.txt"
+    ]
+  },
+  "suffix_boundary": {
+    "input_stem_character": "x",
+    "input_stem_repetitions": 250,
+    "suffix_resource_id": "3fe7d56ea1b3f121eb64c1cfca5cdd3023bbcd1fbb970771076e416ee97fcf87",
+    "extension": ".pdf",
+    "max_component_bytes": 200,
+    "expected_stem_repetitions": 131,
+    "expected_utf8_bytes": 200
+  }
+}

@@ -1,0 +1,24 @@
+<!-- Synthetic task page; response/idle states are supplied separately by fake pages. -->
+<button id="topbarCurrentLecture"><span class="title">[2026-2] </span><span class="divide">Synthetic Biology (01)</span></button>
+<div id="topbarLectureDropdown">
+  <a data-act="changeLecture" data-courseid="course-a">[2026-2]Synthetic Biology (01)</a>
+  <a data-act="changeLecture" data-courseid="course-b">[2026-2]Synthetic Physics (02)</a>
+</div>
+<div id="alarmList"><div class="table_dataBlank">No notifications</div></div>
+<table class="table mb-0" data-page-size="10" id="table_list">
+  <tbody id="tbody">
+    <tr><td><a data-act="detail" data-id="TB_L_REPORT101"><strong>Draft report</strong></a> Window ~ 2026-10-02 23:59</td><td><span class="text_badge complete">Complete</span></td></tr>
+    <tr style="display:none"><td><a data-act="detail" data-id="TB_L_REPORT102"><strong>Hidden exercise</strong></a></td><td>완료</td></tr>
+    <tr><td><a data-act="detail" data-id="TB_L_REPORT103"><strong>Open task</strong></a> Window ~ </td><td>미완료</td></tr>
+    <tr><td><a data-act="detail" data-id="TB_L_REPORT104"><strong>Unknown status</strong></a></td><td>Pending review</td></tr>
+    <tr><td><a data-act="detail" data-id="TB_L_REPORT105"><strong>완료 보고서</strong></a></td><td>미완료</td></tr>
+  </tbody>
+</table>
+<!-- The next rows are injected individually into the tbody for negative scenarios. -->
+<template id="absent-id"><tr><td><a data-act="detail"><strong>Unaddressable</strong></a></td></tr></template>
+<template id="blank-id"><tr><td><a data-act="detail" data-id=" "><strong>Blank</strong></a></td></tr></template>
+<template id="malformed-id"><tr><td><a data-act="detail" data-id="REPORT105"><strong>Malformed</strong></a></td></tr></template>
+<template id="duplicate-id"><tr><td><a data-act="detail" data-id="TB_L_REPORT101"><strong>Duplicate</strong></a></td></tr></template>
+<!-- Raw empty task table before XHR completion and after successful zero-item XHR. -->
+<template id="empty-task-table"><table class="table mb-0" data-page-size="10" id="table_list"><tbody id="tbody"></tbody></table></template>
+<template id="placeholder-task-row"><table id="table_list"><tbody id="tbody"><tr><td>Loading task list</td></tr></tbody></table></template>

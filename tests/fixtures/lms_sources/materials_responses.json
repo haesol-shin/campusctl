@@ -1,0 +1,27 @@
+{
+  "selected_urls": [
+    {"origin": "https://storage.invalid", "template": "/upload/{storage-id}/{encoded-filename}", "valid": "/upload/fixture-1/example.pdf", "invalid": ["/upload/foreign/example.pdf/extra", "/upload/fixture-1/a%2Fb.pdf", "/upload/fixture-1/%2e%2e", "/upload/fixture-1/%252F.pdf", "/upload/fixture-1/example.pdf?extra=1"]},
+    {"origin": "https://learning.invalid", "template": "/file/{term}/{course}/board/{board-manager}/{board-item}/{stored-filename}", "valid": "/file/term-1/course-1/board/manager-1/post-1/example.pdf", "invalid": ["/file/term-1/course-1/board/manager-1/post-1/example.pdf/extra", "/file/term-1/course-1/board/manager-1/post-1/a%2Fb.pdf", "/file/term-1/course-1/board/manager-1/post-1/%2e%2e", "/file/term-1/course-1/board/manager-1/post-1/%252f.pdf", "/file/term-1/course-1/board/manager-1/post-1/example.pdf?extra=1"]}
+  ],
+  "responses": [
+    {"name": "observed-pdf", "filename": "example.pdf", "mime": "application/x-pdf", "hex": "255044462d312e340a", "valid": true},
+    {"name": "pdf-wrong-mime", "filename": "example.pdf", "mime": "application/pdf", "hex": "255044462d312e340a", "valid": false},
+    {"name": "observed-pptx", "filename": "example.pptx", "mime": "application/vnd.openxmlformats-officedocument.presentationml.presentation", "zip_entries": ["[Content_Types].xml"], "valid": true},
+    {"name": "pptx-wrong-mime", "filename": "example.pptx", "mime": "application/zip", "zip_entries": ["[Content_Types].xml"], "valid": false},
+    {"name": "pptx-missing-entry", "filename": "example.pptx", "mime": "application/vnd.openxmlformats-officedocument.presentationml.presentation", "zip_entries": ["other.xml"], "valid": false},
+    {"name": "pptx-duplicate-entry", "filename": "example.pptx", "mime": "application/vnd.openxmlformats-officedocument.presentationml.presentation", "zip_entries": ["[Content_Types].xml", "[Content_Types].xml"], "valid": false},
+    {"name": "pptx-malformed-directory", "filename": "example.pptx", "mime": "application/vnd.openxmlformats-officedocument.presentationml.presentation", "hex": "504b030467617262616765", "valid": false},
+    {"name": "observed-zip", "filename": "example.zip", "mime": "application/zip", "zip_entries": ["nested/file.txt"], "valid": true},
+    {"name": "zip-wrong-mime", "filename": "example.zip", "mime": "application/octet-stream", "zip_entries": ["nested/file.txt"], "valid": false},
+    {"name": "unobserved-docx", "filename": "example.docx", "mime": "application/x-unmapped", "zip_entries": ["[Content_Types].xml"], "valid": true},
+    {"name": "unobserved-hwpx", "filename": "example.hwpx", "mime": null, "zip_entries": ["mimetype"], "valid": true},
+    {"name": "hwpx-missing-entry", "filename": "example.hwpx", "mime": null, "zip_entries": ["other.xml"], "valid": false},
+    {"name": "valid-ole", "filename": "example.hwp", "mime": "application/x-unmapped", "hex": "d0cf11e0a1b11ae1", "valid": true},
+    {"name": "broken-ole", "filename": "example.hwp", "mime": null, "hex": "d0cf11e000000000", "valid": false},
+    {"name": "valid-text", "filename": "example.py", "mime": "application/x-unmapped", "hex": "7072696e742831290a", "valid": true},
+    {"name": "invalid-utf8", "filename": "example.txt", "mime": "text/plain", "hex": "fffe", "valid": false}
+  ],
+  "selected_file_ids": [{"id": "file-1", "valid": true}, {"id": "foreign-file", "valid": false}],
+  "redirect_response": {"status": 302, "valid": false},
+  "get_requests": [{"headers": {}, "valid": true}, {"headers": {"rAnGe": "bytes=0-"}, "valid": false}]
+}

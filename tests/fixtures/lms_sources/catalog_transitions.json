@@ -1,0 +1,163 @@
+{
+  "schema_version": 1,
+  "transitions": {
+    "full": {
+      "previous": {
+        "schema_version": 1,
+        "generated_at": "2026-01-01T00:00:00Z",
+        "enrollment_state": "unknown",
+        "courses": [
+          {"course_id": "course-a", "label": "Old A", "class_no": "001"},
+          {"course_id": "course-b", "label": "Course B", "class_no": "002"},
+          {"course_id": "course-removed", "label": "Removed Course", "class_no": null}
+        ],
+        "failed_courses": [
+          {"course_id": "course-a", "label": "Old A", "reason": "course-sync-failed"}
+        ],
+        "assignments": [
+          {"entity_id": "assignment:old-a", "task_id": "old-a", "course": {"id": "course-a", "label": "Old A"}},
+          {"entity_id": "assignment:old-b", "task_id": "old-b", "course": {"id": "course-b", "label": "Course B"}},
+          {"entity_id": "assignment:removed", "task_id": "removed", "course": {"id": "course-removed", "label": "Removed Course"}}
+        ]
+      },
+      "roster": [
+        {"course_id": "course-a", "label": "Course A", "class_no": "001"},
+        {"course_id": "course-b", "label": "Course B", "class_no": "002"}
+      ],
+      "rows": [
+        {"entity_id": "assignment:new-a", "task_id": "new-a", "course": {"id": "course-a", "label": "Course A"}}
+      ],
+      "successful_course_ids": ["course-a", "course-b"],
+      "failed_courses": [],
+      "expected": {
+        "schema_version": 1,
+        "generated_at": "<merge-time>",
+        "enrollment_state": "known",
+        "courses": [
+          {"course_id": "course-a", "label": "Course A", "class_no": "001"},
+          {"course_id": "course-b", "label": "Course B", "class_no": "002"}
+        ],
+        "failed_courses": [],
+        "assignments": [
+          {"entity_id": "assignment:new-a", "task_id": "new-a", "course": {"id": "course-a", "label": "Course A"}}
+        ]
+      }
+    },
+    "partial": {
+      "previous": {
+        "schema_version": 1,
+        "generated_at": "2026-01-01T00:00:00Z",
+        "enrollment_state": "known",
+        "courses": [
+          {"course_id": "course-a", "label": "Course A", "class_no": "001"},
+          {"course_id": "course-b", "label": "Course B", "class_no": "002"},
+          {"course_id": "course-removed", "label": "Removed Course", "class_no": null}
+        ],
+        "failed_courses": [],
+        "assignments": [
+          {"entity_id": "assignment:old-a", "task_id": "old-a", "course": {"id": "course-a", "label": "Course A"}},
+          {"entity_id": "assignment:old-b", "task_id": "old-b", "course": {"id": "course-b", "label": "Course B"}},
+          {"entity_id": "assignment:removed", "task_id": "removed", "course": {"id": "course-removed", "label": "Removed Course"}}
+        ]
+      },
+      "roster": [
+        {"course_id": "course-a", "label": "Course A", "class_no": "001"},
+        {"course_id": "course-b", "label": "Course B", "class_no": "002"}
+      ],
+      "rows": [
+        {"entity_id": "assignment:new-a", "task_id": "new-a", "course": {"id": "course-a", "label": "Course A"}},
+        {"entity_id": "assignment:partial-b", "task_id": "partial-b", "course": {"id": "course-b", "label": "Course B"}}
+      ],
+      "successful_course_ids": ["course-a"],
+      "failed_courses": [
+        {"course_id": "course-b", "label": "Course B", "reason": "course-sync-failed"}
+      ],
+      "expected": {
+        "schema_version": 1,
+        "generated_at": "<merge-time>",
+        "enrollment_state": "known",
+        "courses": [
+          {"course_id": "course-a", "label": "Course A", "class_no": "001"},
+          {"course_id": "course-b", "label": "Course B", "class_no": "002"},
+          {"course_id": "course-removed", "label": "Removed Course", "class_no": null}
+        ],
+        "failed_courses": [
+          {"course_id": "course-b", "label": "Course B", "reason": "course-sync-failed"},
+          {"course_id": "course-removed", "label": "Removed Course", "reason": "removal-deferred"}
+        ],
+        "assignments": [
+          {"entity_id": "assignment:old-b", "task_id": "old-b", "course": {"id": "course-b", "label": "Course B"}},
+          {"entity_id": "assignment:removed", "task_id": "removed", "course": {"id": "course-removed", "label": "Removed Course"}},
+          {"entity_id": "assignment:new-a", "task_id": "new-a", "course": {"id": "course-a", "label": "Course A"}}
+        ]
+      }
+    },
+    "unknown": {
+      "previous": {
+        "schema_version": 1,
+        "generated_at": "2026-01-01T00:00:00Z",
+        "enrollment_state": "known",
+        "courses": [{"course_id": "course-a", "label": "Course A", "class_no": null}],
+        "failed_courses": [{"course_id": "course-b", "label": "Course B", "reason": "course-sync-failed"}],
+        "assignments": [
+          {"entity_id": "assignment:old-a", "task_id": "old-a", "course": {"id": "course-a", "label": "Course A"}}
+        ]
+      },
+      "expected": {
+        "schema_version": 1,
+        "generated_at": "2026-01-01T00:00:00Z",
+        "enrollment_state": "unknown",
+        "courses": [{"course_id": "course-a", "label": "Course A", "class_no": null}],
+        "failed_courses": [{"course_id": "course-b", "label": "Course B", "reason": "course-sync-failed"}],
+        "assignments": [
+          {"entity_id": "assignment:old-a", "task_id": "old-a", "course": {"id": "course-a", "label": "Course A"}}
+        ]
+      }
+    },
+    "filtered": {
+      "selected_course_id": "course-a",
+      "previous": {
+        "schema_version": 1,
+        "generated_at": "2026-01-01T00:00:00Z",
+        "enrollment_state": "unknown",
+        "courses": [
+          {"course_id": "course-a", "label": "Old A", "class_no": "001"},
+          {"course_id": "course-b", "label": "Course B", "class_no": "002"}
+        ],
+        "failed_courses": [
+          {"course_id": "course-b", "label": "Course B", "reason": "course-sync-failed"}
+        ],
+        "assignments": [
+          {"entity_id": "assignment:old-a", "task_id": "old-a", "course": {"id": "course-a", "label": "Old A"}},
+          {"entity_id": "assignment:old-b", "task_id": "old-b", "course": {"id": "course-b", "label": "Course B"}}
+        ]
+      },
+      "roster": [
+        {"course_id": "course-a", "label": "Course A", "class_no": "001"},
+        {"course_id": "course-b", "label": "Course B", "class_no": "002"}
+      ],
+      "rows": [
+        {"entity_id": "assignment:new-a", "task_id": "new-a", "course": {"id": "course-a", "label": "Course A"}},
+        {"entity_id": "assignment:unused-b", "task_id": "unused-b", "course": {"id": "course-b", "label": "Course B"}}
+      ],
+      "successful_course_ids": ["course-a", "course-b"],
+      "failed_courses": [],
+      "expected": {
+        "schema_version": 1,
+        "generated_at": "<merge-time>",
+        "enrollment_state": "unknown",
+        "courses": [
+          {"course_id": "course-a", "label": "Course A", "class_no": "001"},
+          {"course_id": "course-b", "label": "Course B", "class_no": "002"}
+        ],
+        "failed_courses": [
+          {"course_id": "course-b", "label": "Course B", "reason": "course-sync-failed"}
+        ],
+        "assignments": [
+          {"entity_id": "assignment:new-a", "task_id": "new-a", "course": {"id": "course-a", "label": "Course A"}},
+          {"entity_id": "assignment:old-b", "task_id": "old-b", "course": {"id": "course-b", "label": "Course B"}}
+        ]
+      }
+    }
+  }
+}

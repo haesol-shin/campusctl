@@ -1,0 +1,3 @@
+interface:
+  display_name: "Campusctl"
+  short_description: "Use the campusctl CLI for lecture and course actions"

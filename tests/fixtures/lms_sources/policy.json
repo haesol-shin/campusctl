@@ -1,0 +1,9 @@
+{
+  "approved": false,
+  "read_only_evidence": null,
+  "origins": [],
+  "routes": [],
+  "allowed_media": [],
+  "max_bytes": null,
+  "notes": "No logging, media, stream or range permission"
+}

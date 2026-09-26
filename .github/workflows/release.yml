@@ -1,0 +1,48 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@v6
+      - name: Verify versions and prepare release notes
+        env:
+          TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv run --locked python scripts/release.py --check
+          python - <<'PY'
+          import os
+          import re
+          import tomllib
+          from pathlib import Path
+
+          version = tomllib.loads(Path('pyproject.toml').read_text(encoding='utf-8'))['project']['version']
+          tag = os.environ['TAG']
+          if tag != 'v' + version:
+              raise SystemExit(f'tag {tag} disagrees with project version {version}')
+          changelog = Path('CHANGELOG.md').read_text(encoding='utf-8')
+          match = re.search(rf'(?ms)^## \[{re.escape(version)}\] - \d{{4}}-\d{{2}}-\d{{2}}\s*\n(.*?)(?=^## \[|\Z)', changelog)
+          if not match or not match.group(1).strip():
+              raise SystemExit(f'missing or empty changelog section for {version}')
+          notes = match.group(1).strip() + f'''\n\n## Install\n```\nuv tool install --with-executables-from playwright git+https://github.com/haesol-shin/campusctl@{tag}\ncampusctl setup\n```\nUpgrade: `uv tool upgrade campusctl`\n'''
+          Path(os.environ['RUNNER_TEMP'], 'release-notes.md').write_text(notes, encoding='utf-8')
+          PY
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: gh release create "$TAG" --verify-tag --title "campusctl $TAG" --notes-file "$RUNNER_TEMP/release-notes.md"

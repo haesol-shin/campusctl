@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "course_id": "course-synthetic-navigation-001",
+  "section": "task",
+  "selectors": {
+    "course_row": "[data-act=\"moveLecture\"][data-courseid=\"course-synthetic-navigation-001\"]",
+    "section_link": "a[href=\"/std/task\"]"
+  },
+  "response_timing_ms": {
+    "course_row_to_menu": 8500,
+    "section_click_to_list": 2900
+  },
+  "session_request": {"e": "opaque-encrypted-selection"},
+  "session_response": {
+    "header": {"msg": "OK", "code": 200},
+    "body": {
+      "result": "Y",
+      "data": {
+        "course_id": "course-synthetic-navigation-001",
+        "course_nm": "Synthetic Navigation Course",
+        "term_cd": "1",
+        "term_year": "2026",
+        "subject_cd": "synthetic",
+        "class_no": "01"
+      }
+    }
+  },
+  "topbar": {
+    "current_label": "Synthetic Navigation Course",
+    "selected_link": {
+      "selector": "#topbarLectureDropdown a[data-act=\"changeLecture\"][data-courseid]",
+      "data-courseid": "course-synthetic-navigation-001",
+      "data-coursenm": "Synthetic Navigation Course"
+    }
+  },
+  "expected_events": [
+    "click_course_row",
+    "wait_for_course_menu",
+    "click_section_link"
+  ]
+}

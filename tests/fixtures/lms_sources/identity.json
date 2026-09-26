@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "vectors": {
+    "assignment": {
+      "course_id": "course-synthetic-identity-001",
+      "task_id": "task-synthetic-identity-001",
+      "expected_entity_id": "cnu_assignment:course-synthetic-identity-001:task-synthetic-identity-001"
+    },
+    "notice": {
+      "course_id": "course-synthetic-identity-002",
+      "course_label": "Synthetic Course",
+      "displayed_date_time": "2026-01-02 03:04",
+      "number": "notice-synthetic-002",
+      "expected_entity_id": "cnu_notice:course-synthetic-identity-002:2026-01-02 03%3A04:notice-synthetic-002",
+      "expected_legacy_key": "Synthetic Course_2026-01-02 03:04_notice-synthetic-002"
+    },
+    "material": {
+      "course_id": "course-synthetic-identity-003",
+      "file_id": "file-synthetic-identity-003",
+      "expected_entity_id": "cnu_lms_material:course-synthetic-identity-003:file-synthetic-identity-003"
+    }
+  }
+}

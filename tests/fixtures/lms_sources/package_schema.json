@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "manifest": {
+    "schema_version": 1,
+    "entity_id": "cnu_assignment:course-synthetic-package-001:task-synthetic-package-001",
+    "kind": "assignment",
+    "course": {
+      "id": "course-synthetic-package-001",
+      "label": "Synthetic Course"
+    },
+    "source_ref": {
+      "origin": "https://lms.example.invalid",
+      "page_path": "/std/task",
+      "provider_native_id": "task-synthetic-package-001"
+    },
+    "retrieved_at": "2026-01-02T03:04:05Z",
+    "content_path": "content.md",
+    "completeness": "policy-filtered",
+    "resources": [
+      {
+        "resource_id": "4409d6c33c0e0c5420cceb88573437fd8af1711a5f4f1641977597d4ce0949c9",
+        "kind": "attachment",
+        "path": "attachments/synthetic-attachment.txt",
+        "source_ref": {
+          "origin": "https://lms.example.invalid",
+          "page_path": "/std/task",
+          "provider_native_id": "file-synthetic-package-001"
+        },
+        "original_name": "synthetic-attachment.txt",
+        "media_type": "text/plain",
+        "size_bytes": 27,
+        "provider_file_id": "file-synthetic-package-001",
+        "sha256": "ee1939ca0f55437478a864621c179b40e6c366ee8c0672944f2b1c888a2f2e2d"
+      }
+    ],
+    "omitted_resources": [
+      {
+        "resource_id": "9d00c3d71f9ec93ec89408e50b0b39c5b99217dcb0b76e17abce624a1bc1c099",
+        "source_ref": {
+          "origin": "https://external.example.invalid",
+          "page_path": "/synthetic/image.png",
+          "provider_native_id": null
+        },
+        "original_name": "synthetic-image.png",
+        "media_type": "image/png",
+        "reason": "external-origin"
+      }
+    ]
+  },
+  "digest_inputs": {
+    "content_md_utf8": "# Synthetic package fixture\n\n[Omitted: external-origin]\n",
+    "resources_utf8": {
+      "attachments/synthetic-attachment.txt": "synthetic attachment bytes\n"
+    }
+  },
+  "canonicalization": {
+    "encoding": "utf-8",
+    "sort_keys": true,
+    "separators": [",", ":"],
+    "ensure_ascii": false,
+    "manifest_digest_excludes": ["retrieved_at"],
+    "record_encoding": "u64be-name-length || name-utf8 || u64be-content-length || content",
+    "record_order": ["package.json", "content.md", "included resource paths in lexical order"]
+  },
+  "expected": {
+    "included_file_resource_id": "4409d6c33c0e0c5420cceb88573437fd8af1711a5f4f1641977597d4ce0949c9",
+    "omitted_inline_resource_id": "9d00c3d71f9ec93ec89408e50b0b39c5b99217dcb0b76e17abce624a1bc1c099",
+    "manifest_sha256_without_retrieved_at": "add4eec8f47d2f21d63c7671453347bc0ce7b6fad055c609c34a683b63040ea3",
+    "package_sha256": "1427be9522c94c13a3988f42f110a5fa3f3b505ced82a6d6e3e95b13e78f0509"
+  }
+}

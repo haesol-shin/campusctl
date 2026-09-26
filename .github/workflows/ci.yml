@@ -1,0 +1,198 @@
+name: CI
+
+# Run lint, the full hosted test matrix, and Windows installation smoke on every PR, main push, and release tag.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint and format
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv sync --locked --python 3.12
+      - run: uv run ruff check
+      - run: uv run ruff format --check
+
+  test:
+    name: pytest (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            python-version: "3.11"
+          - os: windows-latest
+            python-version: "3.12"
+          - os: windows-latest
+            python-version: "3.13"
+          - os: macos-latest
+            python-version: "3.12"
+          - os: ubuntu-latest
+            python-version: "3.12"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv sync --locked --python ${{ matrix.python-version }}
+      - run: uv run pytest -q
+
+  windows-smoke:
+    name: Windows installation and runtime smoke
+    runs-on: windows-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Install the uv tool and expose its command shims
+        shell: pwsh
+        run: |
+          uv tool install --with-executables-from playwright .
+          $toolBin = (uv tool dir --bin).Trim()
+          if (-not $toolBin) { throw "uv returned an empty tool bin directory" }
+          Add-Content -Path $env:GITHUB_PATH -Value $toolBin
+      - name: Verify uv tool commands and UTF-8 CLI responses
+        shell: pwsh
+        run: |
+          @'
+          import json
+          import os
+          import shutil
+          import subprocess
+
+
+          tool_bin = os.path.normcase(os.path.abspath(subprocess.check_output(["uv", "tool", "dir", "--bin"], text=True).strip()))
+          for name in ("campusctl", "playwright"):
+              path = subprocess.check_output(["powershell", "-NoProfile", "-Command", f"(Get-Command {name}).Source"], text=True).strip()
+              if os.path.normcase(os.path.dirname(os.path.abspath(path))) != tool_bin:
+                  raise AssertionError(f"{name} did not resolve under the uv tool bin directory: {path}")
+
+          help_result = subprocess.run(["campusctl", "--help", "--json"], capture_output=True, timeout=30)
+          if help_result.returncode != 0 or b"Campus LMS control CLI" not in help_result.stdout:
+              raise AssertionError("campusctl --help did not complete successfully")
+
+          temp_root = os.path.join(os.environ["RUNNER_TEMP"], "campusctl-smoke-" + os.urandom(8).hex())
+          os.makedirs(temp_root)
+          env = os.environ.copy()
+          env["CAMPUSCTL_CONFIG_DIR"] = os.path.join(temp_root, "config")
+          env["CAMPUSCTL_DATA_DIR"] = os.path.join(temp_root, "data")
+          for args in (["campusctl", "--version", "--json"], ["campusctl", "doctor", "--json"]):
+              result = subprocess.run(args, capture_output=True, timeout=60, env=env)
+              try:
+                  envelope = json.loads(result.stdout.decode("utf-8"))
+              except (UnicodeError, json.JSONDecodeError) as error:
+                  raise AssertionError(f"{args} did not produce UTF-8 JSON") from error
+              if result.stderr:
+                  raise AssertionError(f"{args} wrote unexpected stderr")
+              if args[1] == "--version" and (result.returncode != 0 or not envelope["result"].get("version")):
+                  raise AssertionError("version response was missing its version")
+              if args[1] == "doctor" and (
+                  result.returncode != 2
+                  or envelope["status"] != "user-action"
+                  or envelope["result"].get("display_available") is not None
+              ):
+                  raise AssertionError("Windows doctor did not report valid setup status and unknown display availability")
+          shutil.rmtree(temp_root, ignore_errors=True)
+          tool_root = subprocess.check_output(["uv", "tool", "dir"], text=True).strip()
+          tool_python = os.path.join(tool_root, "campusctl", "Scripts", "python.exe")
+          if not os.path.isfile(tool_python):
+              raise AssertionError(f"uv-installed campusctl Python environment was not found: {tool_python}")
+          driver = r"""
+          import sys
+          from campusctl import cli
+          from campusctl.envelope import CampusError
+          mode = sys.argv[1]
+          if mode == "ok":
+              cli._dispatch = lambda _: ({"title": "\uac15\uc758"}, None)
+              args = ["courses", "list", "--json"]
+          elif mode == "error":
+              cli._dispatch = lambda _: (None, CampusError("smoke", "\ud14c\uc2a4\ud2b8", None, "error"))
+              args = ["courses", "list", "--json"]
+          else:
+              cli._dispatch = lambda _: ({"title": "\uac15\uc758"}, [CampusError("smoke", "\ud14c\uc2a4\ud2b8")])
+              args = ["sync", "--json"]
+          raise SystemExit(cli.main(args))
+          """
+          for mode, expected_status, expected_exit in (("ok", "ok", 0), ("error", "error", 1), ("partial", "partial", 1)):
+              response = subprocess.run([tool_python, "-c", driver, mode], capture_output=True, timeout=30)
+              if response.returncode != expected_exit or response.stderr:
+                  raise AssertionError(f"{mode} response failed: exit={response.returncode}")
+              envelope = json.loads(response.stdout.decode("utf-8"))
+              if envelope["status"] != expected_status:
+                  raise AssertionError(f"{mode} response had unexpected status")
+              if mode == "error":
+                  if envelope["errors"][0]["message"] != "\ud14c\uc2a4\ud2b8":
+                      raise AssertionError("error response did not preserve Korean JSON")
+              elif envelope["result"].get("title") != "\uac15\uc758":
+                  raise AssertionError(f"{mode} response did not preserve Korean JSON")
+          '@ | python -
+      - name: Install Chromium
+        shell: pwsh
+        run: playwright install chromium
+      - name: Launch headed Chromium with a bounded wait
+        shell: pwsh
+        run: |
+          @'
+          import subprocess
+          code = """from playwright.sync_api import sync_playwright
+          with sync_playwright() as playwright:
+              browser = playwright.chromium.launch(headless=False)
+              browser.close()
+          """
+          subprocess.run(["uv", "run", "--no-project", "--python", "3.12", "--with", "playwright", "python", "-c", code], timeout=120, check=True)
+          '@ | python -
+      - name: Exercise disposable Windows Credential Manager entry
+        shell: pwsh
+        run: |
+          @'
+          import os
+          import secrets
+          import sys
+          import uuid
+
+          sys.path.insert(0, os.path.join(os.getcwd(), "src"))
+          import keyring
+          from campusctl.credentials import _backend
+
+          _backend(keyring)
+          service = "campusctl-ci-smoke-" + uuid.uuid4().hex
+          account = "probe-" + uuid.uuid4().hex
+          password = secrets.token_urlsafe(32)
+          keyring.set_password(service, account, password)
+          try:
+              if keyring.get_password(service, account) != password:
+                  raise AssertionError("Credential Manager did not return the disposable value")
+          finally:
+              keyring.delete_password(service, account)
+          if keyring.get_password(service, account) is not None:
+              raise AssertionError("Disposable Credential Manager entry was not deleted")
+          '@ | uv run --no-project --python 3.12 --with keyring python -
