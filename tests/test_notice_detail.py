@@ -5,6 +5,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from urllib.parse import urljoin
 
 import pytest
 
@@ -31,7 +32,7 @@ class Fixture(HTMLParser):
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         fields = dict(attrs)
-        if tag == "a" and fields.get("href", "").startswith("/std/noticeDetail"):
+        if tag == "a" and "noticeDetail?no=" in (fields.get("href") or ""):
             self.links.append(fields["href"] or "")
         if tag == "img":
             self.image = fields.get("src")
@@ -118,7 +119,7 @@ class FakePage:
                 },
             )
         elif selector.startswith("tbody#table-body a["):
-            self.url = ORIGIN + self.fixture.links[0]
+            self.url = urljoin(self.url, self.fixture.links[0])
             self._respond(
                 "/api/v1/board/notice/info",
                 {
@@ -250,8 +251,27 @@ def test_selected_notice_detail_capture_readonly() -> None:
     )
     assert "example guidance [link URL omitted]" in snapshot.parts
     assert "Second instruction." in snapshot.parts[-1]
-    assert page.actions[-1].startswith('tbody#table-body a[href="/std/noticeDetail?no=TB_L_BOARDITEM7001')
+    assert page.actions[-1].startswith('tbody#table-body a[href="noticeDetail?no=TB_L_BOARDITEM7001')
     assert not any("read" in action.lower() or "upload" in action.lower() for action in page.actions)
+    assert not page.listeners
+
+
+@pytest.mark.parametrize(
+    "href",
+    [
+        "../noticeDetail?no=TB_L_BOARDITEM7001&curPage=1",
+        "https://other.invalid/std/noticeDetail?no=TB_L_BOARDITEM7001&curPage=1",
+        "noticeDetail?no=TB_L_BOARDITEM7001&curPage=1&extra=1",
+        "noticeDetail?no=TB_L_BOARDITEM7001&no=TB_L_BOARDITEM7001&curPage=1",
+        "noticeDetail?no=TB_L_BOARDITEM7001&curPage=1&curPage=1",
+    ],
+)
+def test_unreviewed_notice_href_rejected_before_click(href: str) -> None:
+    page = fixture_page()
+    page.fixture.links[0] = href
+    with pytest.raises(CampusError, match="link is missing or ambiguous"):
+        asyncio.run(capture_notice_detail(page, selected(), interceptor=Interceptor()))
+    assert not any(action.startswith("tbody#table-body a[") for action in page.actions)
     assert not page.listeners
 
 
@@ -259,7 +279,7 @@ def test_todo_number_different_from_board_row_index_opens_selected_notice() -> N
     page = fixture_page(board_number=1)
     snapshot = asyncio.run(capture_notice_detail(page, selected(6), interceptor=Interceptor()))
     assert snapshot.source_url == ORIGIN + "/std/noticeDetail?no=TB_L_BOARDITEM7001&curPage=1"
-    assert page.actions[-1].startswith('tbody#table-body a[href="/std/noticeDetail?no=TB_L_BOARDITEM7001')
+    assert page.actions[-1].startswith('tbody#table-body a[href="noticeDetail?no=TB_L_BOARDITEM7001')
 
 
 def test_unique_title_day_without_native_identity_preserves_legacy_number() -> None:
