@@ -262,14 +262,6 @@ FETCH_POLICY: dict[str, Any] = {
             "reason": "logging",
         },
         {
-            "name": "panopto-saml-script",
-            "origin": _ORIGIN,
-            "path_template": "/js/common/panoptoSaml-{hash}.js",
-            "operation": _FETCH_OPERATION,
-            "methods": ["GET"],
-            "reason": "media-integration",
-        },
-        {
             "name": "panopto-connectivity-check",
             "origin": _ORIGIN,
             "path_template": "/api/v1/panopto/checkInternetConnection",

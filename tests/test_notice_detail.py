@@ -4,6 +4,7 @@ import asyncio
 from html.parser import HTMLParser
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -64,6 +65,25 @@ class FakePage:
         self.url = ORIGIN + "/std/myLecture"
         self.listeners: dict[str, object] = {}
         self.actions: list[str] = []
+        png_bytes = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4"
+
+        async def fake_get(url: str, **_kwargs: Any) -> Any:
+            class ImgResponse:
+                status = 200
+                headers = {"content-type": "image/png", "content-length": str(len(png_bytes))}
+
+                def __init__(self, u: str) -> None:
+                    self.url = u
+
+                async def body(self) -> bytes:
+                    return png_bytes
+
+                async def dispose(self) -> None:
+                    pass
+
+            return ImgResponse(url)
+
+        self.context = SimpleNamespace(request=SimpleNamespace(get=fake_get))
 
     def on(self, event: str, callback: object) -> None:
         self.listeners[event] = callback
@@ -225,7 +245,58 @@ def test_malformed_addtime_falls_back_to_insert_dt() -> None:
     assert snapshot.source_url == ORIGIN + "/std/noticeDetail?no=TB_L_BOARDITEM7001&curPage=1"
 
 
-def test_notice_with_attachments_emits_omission_reference() -> None:
+def test_ordinary_link_named_download_stays_link_label_and_complete(tmp_path: Path) -> None:
+    page = fixture_page()
+    orig_evaluate = page.evaluate
+
+    async def evaluate_with_download_link(script: str) -> object:
+        if "#noticeDetail" in script:
+            return {
+                "native_id": page.fixture.detail_native,
+                "title": "Notice with download link",
+                "parts": [
+                    {"kind": "text", "text": "Click here to "},
+                    {"kind": "link", "text": "download syllabus"},
+                    {"kind": "text", "text": "."},
+                ],
+            }
+        return await orig_evaluate(script)
+
+    page.evaluate = evaluate_with_download_link
+    target = {
+        "entity_id": notice_entity_id("course-example", "2026-09-01 09:00", "7"),
+        "course": {"id": "course-example", "label": "Example Course"},
+        "has_attachments": False,
+    }
+    snapshot = asyncio.run(capture_notice_detail(page, target, interceptor=Interceptor()))
+    attachment_refs = [p for p in snapshot.parts if isinstance(p, ResourceReference) and p.kind == "attachment"]
+    assert len(attachment_refs) == 0
+    assert "download syllabus [link URL omitted]" in snapshot.parts
+
+    from campusctl.commands.notices import FETCH_POLICY
+    from campusctl.providers.cnu.request_policy import RequestPolicy
+    from campusctl.providers.cnu.ui_policy import UiRequestPolicy
+    from campusctl.source_package import build_source_package
+
+    ui_policy = UiRequestPolicy.from_reviewed_config(FETCH_POLICY)
+    policy = RequestPolicy(ui_policy, "notice")
+    pkg = asyncio.run(
+        build_source_package(
+            page,
+            snapshot,
+            entity_id=target["entity_id"],
+            kind="notice",
+            course_id=target["course"]["id"],
+            course_label=target["course"]["label"],
+            root=tmp_path / "data",
+            policy=policy,
+        )
+    )
+    assert pkg["completeness"] == "complete"
+    assert len(pkg["omitted_resources"]) == 0
+
+
+def test_board_attachment_flag_without_verified_control_adds_unknown_control_omission(tmp_path: Path) -> None:
     page = fixture_page()
     target = {
         "entity_id": notice_entity_id("course-example", "2026-09-01 09:00", "7"),
@@ -237,3 +308,26 @@ def test_notice_with_attachments_emits_omission_reference() -> None:
     assert len(attachment_refs) == 1
     assert attachment_refs[0].label == "Notice attachment"
     assert attachment_refs[0].official_target is None
+
+    from campusctl.commands.notices import FETCH_POLICY
+    from campusctl.providers.cnu.request_policy import RequestPolicy
+    from campusctl.providers.cnu.ui_policy import UiRequestPolicy
+    from campusctl.source_package import build_source_package
+
+    ui_policy = UiRequestPolicy.from_reviewed_config(FETCH_POLICY)
+    policy = RequestPolicy(ui_policy, "notice")
+    pkg = asyncio.run(
+        build_source_package(
+            page,
+            snapshot,
+            entity_id=target["entity_id"],
+            kind="notice",
+            course_id=target["course"]["id"],
+            course_label=target["course"]["label"],
+            root=tmp_path / "data",
+            policy=policy,
+        )
+    )
+    assert pkg["completeness"] == "policy-filtered"
+    assert len(pkg["omitted_resources"]) == 1
+    assert pkg["omitted_resources"][0]["reason"] == "unapproved-file-route"

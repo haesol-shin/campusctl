@@ -74,12 +74,14 @@ def test_fetch_unpublished_surface(
     policy_a = UiRequestPolicy.from_reviewed_config(assignments.FETCH_POLICY)
     assert policy_a.approved is True
     assert not any(r.path == "/api/v1/week/getStdActivityStatus" for r in policy_a.routes)
-    assert any(s.name == "panopto-saml-script" for s in policy_a.suppress)
+    assert not any(s.name == "panopto-saml-script" for s in policy_a.suppress)
+    assert len(policy_a.suppress) == 3
 
     policy_n = UiRequestPolicy.from_reviewed_config(notices.FETCH_POLICY)
     assert policy_n.approved is True
     assert not any(r.path == "/api/v1/week/getStdActivityStatus" for r in policy_n.routes)
-    assert any(s.name == "panopto-saml-script" for s in policy_n.suppress)
+    assert not any(s.name == "panopto-saml-script" for s in policy_n.suppress)
+    assert len(policy_n.suppress) == 3
 
     assert cli.main(["assignments", "--help"]) == 0
     out_help_a = capsys.readouterr().out

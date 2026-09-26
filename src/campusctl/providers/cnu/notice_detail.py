@@ -27,7 +27,7 @@ _BOARD_JS = """() => [...document.querySelectorAll('tbody#table-body > tr')].map
 
 # Fixture selectors identify content, not an official file control. The latter
 # remains a separate live-release gate and must not be invented from an image/link.
-_DETAIL_JS = """() => {
+_DETAIL_JS = r"""() => {
     const article = document.querySelector('#noticeDetail');
     const body = article?.querySelector('#noticeContent');
     if (!article || !body) return null;
@@ -54,9 +54,9 @@ _DETAIL_JS = """() => {
         }
         if (node.tagName === 'A') {
             const label = (node.textContent || '').trim();
-            const isDownload = node.getAttribute('data-act') === 'downloadFile' || /download/i.test(node.getAttribute('href') || '');
+            const isOfficialControl = node.getAttribute('data-act') === 'downloadFile';
             const fileId = node.getAttribute('data-id') || node.getAttribute('data-file_no') || null;
-            if (isDownload || fileId) {
+            if (isOfficialControl && fileId) {
                 const name = node.getAttribute('data-name') || label || 'attachment';
                 const href = node.getAttribute('href');
                 parts.push({
@@ -64,7 +64,7 @@ _DETAIL_JS = """() => {
                     file_id: fileId,
                     label: label || 'attachment',
                     name,
-                    url: href && /^https?:\\/\\//i.test(href) ? href : null,
+                    url: href && /^https?:\/\//i.test(href) ? href : null,
                 });
             } else {
                 parts.push({kind: 'link', text: label});

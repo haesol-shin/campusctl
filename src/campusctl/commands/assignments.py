@@ -173,14 +173,6 @@ FETCH_POLICY = {
             "reason": "logging",
         },
         {
-            "name": "panopto-saml-script",
-            "origin": _LMS,
-            "path_template": "/js/common/panoptoSaml-{hash}.js",
-            "operation": _FETCH_OPERATION,
-            "methods": ["GET"],
-            "reason": "media-integration",
-        },
-        {
             "name": "panopto-connectivity-check",
             "origin": _LMS,
             "path_template": "/api/v1/panopto/checkInternetConnection",

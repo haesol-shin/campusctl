@@ -57,7 +57,12 @@ def test_notice_fetch_json_and_human(tmp_path: Path, monkeypatch: pytest.MonkeyP
     ui_policy = UiRequestPolicy.from_reviewed_config(notices.FETCH_POLICY)
     assert ui_policy.approved is True
     assert not any(r.path == "/api/v1/week/getStdActivityStatus" for r in ui_policy.routes)
-    assert any(s.name == "panopto-saml-script" for s in ui_policy.suppress)
+    assert not any(s.name == "panopto-saml-script" for s in ui_policy.suppress)
+    assert {s.name for s in ui_policy.suppress} == {
+        "panopto-script",
+        "panopto-disconnection-log",
+        "panopto-connectivity-check",
+    }
 
     # 2. Test successful dispatch (complete package)
     fake_pkg_complete = {
