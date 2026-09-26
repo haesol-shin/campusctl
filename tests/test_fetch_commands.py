@@ -13,6 +13,50 @@ from campusctl import cli
 from campusctl.commands import assignments, notices
 from campusctl.envelope import CampusError, make_envelope
 from campusctl.presentation import render_human
+from campusctl.providers.cnu.ui_policy import UiRequestDenied, UiRequestPolicy, guard_ui_request
+
+
+@pytest.mark.parametrize(
+    ("config", "operation", "sync_config", "sync_operation"),
+    [
+        (assignments.FETCH_POLICY, "assignments.fetch", assignments.CAPABILITY["policy"], "assignments.sync"),
+        (notices.FETCH_POLICY, "notices.fetch", notices.CAPABILITY["policy"], "notices.sync"),
+    ],
+)
+def test_fetch_panopto_side_requests_and_saml_script(
+    config: dict[str, Any], operation: str, sync_config: dict[str, Any], sync_operation: str
+) -> None:
+    origin = "https://dcs-learning.cnu.ac.kr"
+    policy = UiRequestPolicy.from_reviewed_config(config)
+    assert policy.approved
+    assert len(policy.suppress) == 3
+    for path, method, kind in (
+        ("/js/common/panopto-Ab_9.js", "GET", "script"),
+        ("/api/v1/panopto/addInternetDisconnectionLog", "POST", "xhr"),
+        ("/api/v1/panopto/checkInternetConnection", "GET", "xhr"),
+    ):
+        assert (
+            guard_ui_request(policy, origin + path, method, {}, operation=operation, resource_type=kind) == "suppress"
+        )
+
+    saml_url = origin + "/js/common/panoptoSaml-Ab_9.js"
+    assert guard_ui_request(policy, saml_url, "GET", {}, operation=operation, resource_type="script") == "allow"
+    for url, method, kind, headers in (
+        (saml_url + "?v=1", "GET", "script", {}),
+        (origin + "/js/common/panoptoSaml-Ab_9.js/extra", "GET", "script", {}),
+        (saml_url, "POST", "script", {}),
+        (saml_url, "GET", "xhr", {}),
+        (saml_url, "GET", "script", {"Range": "bytes=0-1"}),
+    ):
+        with pytest.raises(UiRequestDenied):
+            guard_ui_request(policy, url, method, headers, operation=operation, resource_type=kind)
+
+    sync_policy = UiRequestPolicy.from_reviewed_config(sync_config)
+    assert sync_policy.approved
+    assert (
+        guard_ui_request(sync_policy, saml_url, "GET", {}, operation=sync_operation, resource_type="script")
+        == "suppress"
+    )
 
 
 def _setup_catalogs(root: Path) -> None:
