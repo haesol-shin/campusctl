@@ -537,7 +537,14 @@ async def open_session(
                     else await bounded(context.new_page(), PROTOCOL_TIMEOUT_SECONDS, "opening a browser page")
                 )
 
-            if operation in {"assignments.sync", "notices.sync", "materials.sync", "materials.download"}:
+            if operation in {
+                "assignments.sync",
+                "notices.sync",
+                "materials.sync",
+                "materials.download",
+                "assignments.fetch",
+                "notices.fetch",
+            }:
                 sso_tracking = _track_sso_popups(context)
             recorder = current_profile()
             if recorder is not None and recorder.enabled and hasattr(page, "on"):
