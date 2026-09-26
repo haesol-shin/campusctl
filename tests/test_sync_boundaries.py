@@ -560,6 +560,58 @@ def test_guarded_roster_two_courses_and_late_requests_before_local_server() -> N
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("failure", ["http", "payload"])
+def test_selection_response_failure_latches_without_course_navigation(failure: str) -> None:
+    async def scenario() -> None:
+        origin = "https://lms.example.invalid"
+        frame = SimpleNamespace(url=origin + "/post-login")
+        target = Target()
+        guard = await install_ui_request_interceptor(
+            target,
+            policy(origin, "assignments.sync"),
+            operation="assignments.sync",
+            diagnostics=UiRequestDiagnostics(),
+            require_selection=True,
+        )
+
+        class LocalRoute(Route):
+            async def continue_(self) -> None:
+                self.action = "continue"
+
+        async def send(request: Request) -> None:
+            route = LocalRoute(request, 0)
+            await target.handler(route)
+            assert route.action == "continue"
+
+        try:
+            guard.arm_roster(frame=frame, document_url=frame.url)
+            roster_url = origin + "/std/myLecture"
+            await send(Request(roster_url, frame, frame.url, method="GET", resource_type="document"))
+            frame.url = roster_url
+            guard.bind_roster(frame=frame, document_url=roster_url)
+            guard.arm_selection(frame=frame, document_url=roster_url)
+            request = Request(origin + "/api/v1/course/addSessionCourseInfo", frame, roster_url)
+            if failure == "http":
+
+                async def rejected_response() -> Any:
+                    return SimpleNamespace(status=503)
+
+                request.response = rejected_response
+            else:
+                request.course_id = ""
+            await send(request)
+            with pytest.raises(UiRequestDenied):
+                await asyncio.wait_for(guard._selection_response, timeout=1)
+            await asyncio.sleep(0)
+            assert frame.url == roster_url
+            with pytest.raises(UiRequestDenied):
+                guard.raise_if_denied()
+        finally:
+            await guard.close()
+
+    asyncio.run(scenario())
+
+
 def test_real_chromium_keeps_original_selection_post_and_waits_for_response() -> None:
     pytest.importorskip("playwright.async_api")
     from playwright.async_api import async_playwright

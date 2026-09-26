@@ -1158,6 +1158,15 @@ class UiRequestInterceptor:
             raise UiRequestDenied("route")
         return course_id, response
 
+    def _selection_response_done(self, finished: asyncio.Task[tuple[str, Any]]) -> None:
+        if finished.cancelled():
+            return
+        try:
+            finished.result()
+        except Exception:
+            if self._denial is None:
+                self._denial = UiRequestDenied("route")
+
     async def _handle_request(self, route: Any) -> None:
         request = route.request
         epoch = self._epoch
@@ -1300,9 +1309,7 @@ class UiRequestInterceptor:
                 recorder.request(category, "allowed")
             await route.continue_()
             self._selection_response = asyncio.create_task(self._read_selection_response(request, epoch))
-            self._selection_response.add_done_callback(
-                lambda finished: finished.exception() if not finished.cancelled() else None
-            )
+            self._selection_response.add_done_callback(self._selection_response_done)
         else:
             if recorder is not None:
                 recorder.request(category, "allowed")
