@@ -145,12 +145,21 @@ def cache_metadata(catalog: dict[str, Any], *, now: datetime, domain: str | None
 
 
 @contextlib.contextmanager
-def _selection_lock(root: Path, kind: str) -> Iterator[None]:
-    error = CampusError(
-        "selection-write-failed",
-        f"The printed {kind} selection could not be saved.",
-        f"Run 'campusctl {kind} list' again.",
-        "error",
+def _selection_lock(root: Path, kind: str, *, read: bool = False) -> Iterator[None]:
+    """Readers report selection-busy/user-action/2; writers report selection-write-failed/error/1."""
+    error = (
+        CampusError(
+            "selection-busy",
+            f"The printed {kind} selection is being updated.",
+            f"Wait briefly, then retry the {kind} selection.",
+        )
+        if read
+        else CampusError(
+            "selection-write-failed",
+            f"The printed {kind} selection could not be saved.",
+            f"Run 'campusctl {kind} list' again.",
+            "error",
+        )
     )
     try:
         ensure_private_dir(root)
@@ -163,7 +172,11 @@ def _selection_lock(root: Path, kind: str) -> Iterator[None]:
                 yield
             return
         except CampusError as failure:
-            if failure.code != "session-busy" or time.monotonic() >= deadline:
+            if failure.code != "session-busy":
+                if failure.code == "lock-unavailable":
+                    raise error from None
+                raise
+            if time.monotonic() >= deadline:
                 raise error from None
             time.sleep(0.01)
 
@@ -253,6 +266,11 @@ def publish_course_snapshot(
 
 
 def read_course_snapshot(root: Path) -> dict[str, Any]:
+    with _selection_lock(root, "courses", read=True):
+        return _read_course_snapshot_locked(root)
+
+
+def _read_course_snapshot_locked(root: Path) -> dict[str, Any]:
     try:
         value = json.loads(course_snapshot_path(root).read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -292,14 +310,15 @@ def _selection_stale() -> CampusError:
 
 def assert_course_snapshot_current(root: Path, snapshot: dict[str, Any]) -> None:
     """Recheck under the browser session lock immediately before network entry."""
-    try:
-        current = course_roster(root)
-    except CampusError as error:
-        if error.code == "catalog-missing":
-            raise _selection_stale() from None
-        raise
-    if snapshot["roster_generation"] != current["roster_generation"]:
-        raise _selection_stale()
+    with _selection_lock(root, "courses", read=True):
+        try:
+            current = course_roster(root)
+        except CampusError as error:
+            if error.code == "catalog-missing":
+                raise _selection_stale() from None
+            raise
+        if snapshot["roster_generation"] != current["roster_generation"]:
+            raise _selection_stale()
 
 
 def material_snapshot_path(root: Path) -> Path:
@@ -330,6 +349,11 @@ def publish_material_snapshot(
 
 
 def read_material_snapshot(root: Path) -> dict[str, Any]:
+    with _selection_lock(root, "materials", read=True):
+        return _read_material_snapshot_locked(root)
+
+
+def _read_material_snapshot_locked(root: Path) -> dict[str, Any]:
     try:
         value = json.loads(material_snapshot_path(root).read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -360,22 +384,30 @@ def _material_stale() -> CampusError:
     )
 
 
-def assert_material_snapshot_current(root: Path, snapshot: dict[str, Any]) -> None:
-    """Recheck under the browser session lock before selected-file transfer."""
+def _assert_material_snapshot_current_locked(root: Path, snapshot: dict[str, Any]) -> None:
     current = catalog_snapshot("materials", root)
     if current is None or current[1] != snapshot["catalog_generation"]:
         raise _material_stale()
 
 
+def assert_material_snapshot_current(root: Path, snapshot: dict[str, Any]) -> None:
+    """Recheck under the browser session lock before selected-file transfer."""
+    with _selection_lock(root, "materials", read=True):
+        _assert_material_snapshot_current_locked(root, snapshot)
+
+
 def resolve_material_number(root: Path, number: str) -> tuple[str, dict[str, Any]]:
     """Return one printed full ID and its generation precondition."""
-    snapshot = read_material_snapshot(root)
-    assert_material_snapshot_current(root, snapshot)
-    try:
-        if not number.isdecimal() or int(number) < 1 or int(number) > len(snapshot["entity_ids"]):
-            raise ValueError("invalid index")
-    except (AttributeError, ValueError):
-        raise CampusError(
-            "selection-invalid", "The printed material number is out of range.", "Run 'campusctl materials list' again."
-        ) from None
-    return snapshot["entity_ids"][int(number) - 1], snapshot
+    with _selection_lock(root, "materials", read=True):
+        snapshot = _read_material_snapshot_locked(root)
+        _assert_material_snapshot_current_locked(root, snapshot)
+        try:
+            if not number.isdecimal() or int(number) < 1 or int(number) > len(snapshot["entity_ids"]):
+                raise ValueError("invalid index")
+        except (AttributeError, ValueError):
+            raise CampusError(
+                "selection-invalid",
+                "The printed material number is out of range.",
+                "Run 'campusctl materials list' again.",
+            ) from None
+        return snapshot["entity_ids"][int(number) - 1], snapshot

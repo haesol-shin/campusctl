@@ -22,6 +22,7 @@ from campusctl.catalog_view import (
     publish_course_snapshot,
     publish_material_snapshot,
     read_course_snapshot,
+    read_material_snapshot,
     resolve_material_number,
 )
 from campusctl.domain_catalog import domain_catalog_path, write_domain_catalog
@@ -260,3 +261,59 @@ def test_selection_lock_timeout_keeps_previous_list(tmp_path: Path) -> None:
         publish_material_snapshot(tmp_path, generation, ["material:b"])
     assert (failure.value.code, failure.value.status) == ("selection-write-failed", "error")
     assert resolve_material_number(tmp_path, "1")[0] == "material:a"
+
+
+def test_reader_cannot_select_failed_inflight_material_list(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = domain_catalog_path("materials", tmp_path)
+    write_domain_catalog("materials", {"courses": [_course("id-a", "A")]}, path)
+    generation = catalog_snapshot("materials", tmp_path)[1]
+    publish_material_snapshot(tmp_path, generation, ["material:a"])
+    b_installed = threading.Event()
+    release_b = threading.Event()
+    reader_started = threading.Event()
+
+    def pending_failure(_path: Path) -> None:
+        b_installed.set()
+        assert release_b.wait(2)
+        raise OSError("synthetic directory sync failure")
+
+    monkeypatch.setattr("campusctl.catalog_view._fsync_directory", pending_failure)
+
+    def reader_during_publication() -> tuple[str, dict[str, object]]:
+        reader_started.set()
+        return resolve_material_number(tmp_path, "1")
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        failing_b = pool.submit(publish_material_snapshot, tmp_path, generation, ["material:b"])
+        try:
+            assert b_installed.wait(2)
+            reader = pool.submit(reader_during_publication)
+            assert reader_started.wait(2)
+            assert not reader.done()
+        finally:
+            release_b.set()
+        with pytest.raises(CampusError) as failure:
+            failing_b.result(timeout=2)
+        assert failure.value.code == "selection-write-failed"
+        assert reader.result(timeout=2)[0] == "material:a"
+
+
+def test_snapshot_readers_return_actionable_busy_on_lock_timeout(tmp_path: Path) -> None:
+    write_catalog({"courses": [_course("id-a", "A")]}, catalog_path(tmp_path))
+    roster = course_roster(tmp_path)
+    snapshot = publish_course_snapshot(tmp_path, roster)
+    path = domain_catalog_path("materials", tmp_path)
+    write_domain_catalog("materials", {"courses": [_course("id-a", "A")]}, path)
+    generation = catalog_snapshot("materials", tmp_path)[1]
+    materials = publish_material_snapshot(tmp_path, generation, ["material:a"])
+    with exclusive_lock(tmp_path / "selection.lock"):
+        for reader in (
+            lambda: read_course_snapshot(tmp_path),
+            lambda: read_material_snapshot(tmp_path),
+            lambda: resolve_material_number(tmp_path, "1"),
+            lambda: assert_course_snapshot_current(tmp_path, snapshot),
+            lambda: assert_material_snapshot_current(tmp_path, materials),
+        ):
+            with pytest.raises(CampusError) as failure:
+                reader()
+            assert (failure.value.code, failure.value.status) == ("selection-busy", "user-action")
