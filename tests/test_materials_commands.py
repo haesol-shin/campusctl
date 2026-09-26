@@ -14,6 +14,7 @@ from campusctl.commands import discover_domain_modules, materials
 from campusctl.domain_catalog import write_domain_catalog
 from campusctl.providers.cnu import attachment_transfer
 from campusctl.providers.cnu import materials as provider
+from campusctl.providers.cnu.sync_all import DomainOutcome
 from campusctl.providers.cnu.ui_policy import UiRequestPolicy
 
 ID = "cnu_lms_material:course-a:file-1"
@@ -338,17 +339,23 @@ def test_end_to_end_fixture_cli_scenario(
     monkeypatch.setattr("campusctl.config.load_config", lambda: {})
     calls = _fake_network(monkeypatch, tmp_path)
 
-    async def sync_fixture(config: Any, root: Path, course_id: Any, **kwargs: Any) -> tuple[dict[str, Any], list[Any]]:
-        assert kwargs["reviewed_policy"] is materials.CAPABILITY["policy"]
+    async def sync_fixture(
+        config: Any, root: Path, domains: tuple[str, ...], course_id: Any, **kwargs: Any
+    ) -> dict[str, DomainOutcome]:
+        assert domains == ("materials",)
         _catalog(root)
         return {
-            "courses": 1,
-            "materials": 1,
-            "failed_courses": [],
-            "catalog": {"generated_at": "2026-09-25T10:00:00Z", "enrollment_state": "known"},
-        }, []
+            "materials": DomainOutcome(
+                {
+                    "courses": 1,
+                    "materials": 1,
+                    "failed_courses": [],
+                    "catalog": {"generated_at": "2026-09-25T10:00:00Z", "enrollment_state": "known"},
+                }
+            )
+        }
 
-    monkeypatch.setattr(provider, "sync_materials", sync_fixture)
+    monkeypatch.setattr("campusctl.sync.sync_all", sync_fixture)
     assert _cli(["sync", "--only", "materials"], capsys) == (0, "Synced 1 course, 1 material.\n")
     code, human_list = _cli(["materials", "list"], capsys)
     assert code == 0 and ID in human_list
