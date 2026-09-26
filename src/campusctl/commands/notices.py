@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from campusctl.catalog_view import cache_metadata
 from campusctl.domain_catalog import domain_catalog_path, read_domain_catalog
 from campusctl.envelope import CampusError, UsageError
 from campusctl.paths import data_dir
@@ -155,6 +156,7 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     listing = commands.add_parser("list", help="list cached notices")
     listing.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
     listing.add_argument("--course", help="limit results to one course ID")
+    listing.add_argument("--refresh", action="store_true")
 
 
 def dispatch(args: argparse.Namespace) -> tuple[dict[str, Any], CampusError | list[CampusError] | None]:
@@ -166,12 +168,7 @@ def dispatch(args: argparse.Namespace) -> tuple[dict[str, Any], CampusError | li
     if args.course is not None:
         rows = [row for row in rows if row["course"]["id"] == args.course]
     return {
-        "cache": {
-            "generated_at": catalog["generated_at"],
-            "path_present": True,
-            "enrollment_state": catalog["enrollment_state"],
-            "failed_courses": catalog["failed_courses"],
-        },
+        "cache": {**cache_metadata(catalog, now=datetime.now(UTC), domain="notices"), "path_present": True},
         "notices": rows,
     }, None
 
@@ -179,14 +176,6 @@ def dispatch(args: argparse.Namespace) -> tuple[dict[str, Any], CampusError | li
 async def sync(
     config: dict[str, Any], root: Path, course_id: str | None, *, headless: bool = False
 ) -> tuple[dict[str, Any], list[CampusError]]:
-    """Delegate network work to the provider, after enforcing headed-only mode."""
-    if headless:
-        raise CampusError(
-            "headless-unavailable",
-            "Headless notice sync is not approved for this LMS.",
-            "Run headed notice sync until headless compatibility is reviewed.",
-            "user-action",
-        )
     from campusctl.providers.cnu.notices import sync_notices
 
     return await sync_notices(config, root, course_id, headless=headless, reviewed_policy=CAPABILITY["policy"])

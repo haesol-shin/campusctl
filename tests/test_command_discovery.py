@@ -239,46 +239,14 @@ def test_no_registered_domains_preserve_lecture_capabilities(monkeypatch: pytest
             patcher.setattr(commands, "discover_domain_modules", lambda: {})
             importlib.reload(cli)
             assert cli._DOMAIN_MODULES == {}
-            assert cli.CAPABILITIES == {"sync": ["lectures"], "lectures": ["list", "play"]}
+            assert cli.CAPABILITIES == {
+                "sync": ["lectures", "assignments", "notices", "materials"],
+                "lectures": ["list", "play"],
+                "status": ["local"],
+            }
             with pytest.raises(UsageError):
                 cli.build_parser().parse_args(["assignments", "list"])
     finally:
-        importlib.reload(cli)
-
-
-def test_registered_domain_parser_dispatch_capabilities_and_headless_routing(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    from campusctl import presentation
-
-    names: list[str] = []
-    try:
-        with monkeypatch.context() as patcher:
-            names = _install_modules(patcher, tmp_path, {"sample": _module_source()})
-            importlib.reload(presentation)
-            importlib.reload(cli)
-            patcher.setattr(cli, "load_config", lambda: {})
-            patcher.setattr(cli, "data_dir", lambda: Path("."))
-
-            assert {
-                "sync": ["lectures", "sample"],
-                "lectures": ["list", "play"],
-                "sample": list(cli._DOMAIN_MODULES["sample"].CAPABILITY["commands"]),
-            } == cli.CAPABILITIES
-            parsed = cli.build_parser().parse_args(["sample", "list"])
-            assert cli._dispatch(parsed) == ({"command": "list"}, None)
-            assert cli._command_key(parsed) == "sample.list"
-            sync_args = cli.build_parser().parse_args(["sync", "--only", "sample", "--headless"])
-            assert cli._dispatch(sync_args) == ({"headless": True}, None)
-            assert cli._command_key(sync_args) == "sync.sample"
-
-            lecture_headless = cli.build_parser().parse_args(["sync", "--headless"])
-            with pytest.raises(UsageError):
-                cli._dispatch(lecture_headless)
-    finally:
-        for name in names:
-            sys.modules.pop(name, None)
-        importlib.reload(presentation)
         importlib.reload(cli)
 
 

@@ -71,7 +71,7 @@ def test_discovery_gate_and_assignment_cli(
     assert code == 0
     assert response["result"]["assignments"][0]["task_id"] == "TB_L_REPORT1"
     code, response = _call(["assignments", "list", "--course", "unknown"], capsys)
-    assert code == 0 and response["result"]["assignments"] == []
+    assert code == 2 and response["errors"][0]["code"] == "course-id-required"
 
 
 def test_human_assignment_renderer_has_full_ids(
@@ -88,8 +88,8 @@ def test_human_assignment_renderer_has_full_ids(
     assert "Old A — Not submitted — Due: —" in output
     assert "cnu_assignment:course-a:TB_L_REPORT1\n" in output
     monkeypatch.setattr(cli, "load_config", lambda: {"provider": "cnu"})
-    assert cli.main(["sync", "--only", "assignments", "--headless"]) == 2
-    assert "headless" in capsys.readouterr().out
+    assert cli.main(["--headless", "sync", "--only", "assignments"]) == 2
+    assert "Headless" in capsys.readouterr().out
     _install(monkeypatch, tmp_path, {"course-a": {"rows": fixture_rows()}})
     assert cli.main(["sync", "--only", "assignments", "--course", "course-a"]) == 0
     assert "Synced 1 course, 5 assignments." in capsys.readouterr().out
@@ -158,6 +158,6 @@ def test_fixture_cli_sync_list_partial_rollback_policy_and_lock(
             code, response = _call(["sync", "--only", "assignments", "--course", "course-a"], capsys)
         assert code == 75 and response["status"] == "busy"
         assert response["errors"][0]["code"] == "session-busy"
-    code, response = _call(["sync", "--only", "assignments", "--headless"], capsys)
+    code, response = _call(["--headless", "sync", "--only", "assignments"], capsys)
     assert code == 2 and response["errors"][0]["code"] == "headless-unavailable"
     assert read_domain_catalog("assignments", domain_catalog_path("assignments", tmp_path)) == previous

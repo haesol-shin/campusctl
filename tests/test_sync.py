@@ -147,6 +147,11 @@ def _install_fake_sync(
 
     monkeypatch.setenv("CAMPUSCTL_DATA_DIR", str(data_dir))
     monkeypatch.setattr(cli, "load_config", lambda: {})
+    from campusctl import browser
+    from campusctl.providers.cnu import courses as course_module
+
+    monkeypatch.setattr(browser, "open_session", fake_open_session)
+    monkeypatch.setattr(course_module, "discover_courses", fake_discover)
     monkeypatch.setattr(sync_module, "open_session", fake_open_session)
     monkeypatch.setattr(sync_module, "ensure_logged_in", fake_login)
     monkeypatch.setattr(sync_module, "discover_courses", fake_discover)
@@ -194,6 +199,9 @@ def test_provider_modes_preserve_filtered_rows_and_failed_course(
 
 
 def _invoke(argv: list[str], capsys: pytest.CaptureFixture[str]) -> tuple[int, dict[str, Any]]:
+    # This provider fixture covers lecture-only sync; the CLI default is all domains.
+    if argv[0] == "sync" and "--only" not in argv:
+        argv = [*argv, "--only", "lectures"]
     exit_code = cli.main([*argv, "--json"])
     captured = capsys.readouterr()
     assert captured.err == ""
@@ -355,7 +363,7 @@ def test_course_filter_replaces_only_selected_course_and_unknown_course_leaves_c
 
     assert code == 2
     assert envelope["status"] == "user-action"
-    assert envelope["errors"][0]["code"] == "course-not-found"
+    assert envelope["errors"][0]["code"] == "course-id-required"
     assert catalog_path(tmp_path).read_bytes() == before
 
 

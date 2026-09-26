@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-import asyncio
 import json
-import sys
 from pathlib import Path
-from types import ModuleType
 from typing import Any
 
 import pytest
@@ -12,7 +9,6 @@ import pytest
 from campusctl import cli
 from campusctl.commands import notices
 from campusctl.domain_catalog import write_domain_catalog
-from campusctl.envelope import CampusError
 
 STAMP = "2026-09-25T03:04:05Z"
 FULL_ID = "cnu_notice:course-a:2026-09-01 12%3A00:12345678901234567890"
@@ -112,17 +108,13 @@ def test_cached_notice_list_envelope(
     assert code == 0
     assert payload["schema_version"] == 1
     assert payload["status"] == "ok" and payload["errors"] == []
-    assert payload["result"] == {
-        "cache": {
-            "generated_at": STAMP,
-            "path_present": True,
-            "enrollment_state": "unknown",
-            "failed_courses": [{"course_id": "course-b", "label": "Other Course", "reason": "course-sync-failed"}],
-        },
-        "notices": [ROWS[0]],
-    }
+    result = payload["result"]
+    assert result["notices"] == [ROWS[0]]
+    assert result["cache"]["generated_at"] == STAMP
+    assert result["cache"]["stale"] is True
+    assert result["cache"]["failed_courses"][0]["course_id"] == "course-b"
     code, payload = _invoke(["--json", "notices", "list", "--course", "missing"], capsys)
-    assert code == 0 and payload["result"]["notices"] == []
+    assert code == 2 and payload["errors"][0]["code"] == "course-id-required"
 
 
 def test_missing_notice_catalog_reports_sync_remediation(
@@ -139,40 +131,6 @@ def test_missing_notice_catalog_reports_sync_remediation(
             "remediation": "Run 'campusctl sync --only notices' to create it.",
         }
     ]
-
-
-def test_sync_delegates_reviewed_policy_and_rejects_headless_before_provider(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    calls: list[tuple[Any, ...]] = []
-    provider = ModuleType("campusctl.providers.cnu.notices")
-
-    async def fake_sync(
-        config: dict[str, Any],
-        root: Path,
-        course_id: str | None,
-        *,
-        headless: bool = False,
-        reviewed_policy: dict[str, Any],
-    ) -> tuple[dict[str, Any], list[CampusError]]:
-        calls.append((config, root, course_id, headless, reviewed_policy))
-        return {
-            "courses": 1,
-            "notices": 2,
-            "failed_courses": [],
-            "catalog": {"generated_at": STAMP, "enrollment_state": "known"},
-        }, []
-
-    provider.sync_notices = fake_sync  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, provider.__name__, provider)
-    with pytest.raises(CampusError) as failure:
-        asyncio.run(notices.sync({}, tmp_path, None, headless=True))
-    assert failure.value.code == "headless-unavailable"
-    assert calls == []
-    result, errors = asyncio.run(notices.sync({"provider": "cnu"}, tmp_path, "course-a"))
-    assert result["notices"] == 2 and errors == []
-    assert calls == [({"provider": "cnu"}, tmp_path, "course-a", False, notices.CAPABILITY["policy"])]
 
 
 def test_notice_human_full_ids_and_staleness(

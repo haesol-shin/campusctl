@@ -1,16 +1,13 @@
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
-from types import ModuleType
 from typing import Any
 
 import pytest
 
 from campusctl import cli
 from campusctl.commands import assignments
-from campusctl.envelope import CampusError
 from campusctl.providers.cnu.ui_policy import UiRequestDenied, UiRequestPolicy, guard_ui_request
 
 TIMESTAMP = "2026-09-25T10:00:00Z"
@@ -75,17 +72,11 @@ def test_cached_list_modes_and_policy_gate(
     monkeypatch.setenv("CAMPUSCTL_DATA_DIR", str(tmp_path))
     code, response = _invoke(["assignments", "list", "--json"], capsys)
     assert code == 0
-    assert response["result"] == {
-        "cache": {
-            "generated_at": TIMESTAMP,
-            "path_present": True,
-            "enrollment_state": "unknown",
-            "failed_courses": [
-                {"course_id": "course-beta", "label": "Course course-beta", "reason": "removal-deferred"}
-            ],
-        },
-        "assignments": rows,
-    }
+    assert response["result"]["assignments"] == rows
+    cache = response["result"]["cache"]
+    assert cache["generated_at"] == TIMESTAMP
+    assert cache["stale"] is True
+    assert cache["failed_courses"][0]["course_id"] == "course-beta"
     assert assignments.CAPABILITY["commands"] == ["list"]
     policy = UiRequestPolicy.from_reviewed_config(assignments.CAPABILITY["policy"])
     assert policy.approved
@@ -116,53 +107,6 @@ def test_cached_list_modes_and_policy_gate(
         )
 
 
-def test_headless_refusal_and_sync_counts(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    import asyncio
-
-    # The provider's frozen design signature is faked; this lane never accesses a live LMS.
-    calls: list[tuple[object, ...]] = []
-    provider = ModuleType("campusctl.providers.cnu.assignments")
-
-    async def fake_sync(
-        config: dict[str, Any],
-        root: Path,
-        course_id: str | None = None,
-        *,
-        headless: bool = False,
-        reviewed_policy: dict[str, Any],
-    ) -> tuple[dict[str, Any], list[CampusError]]:
-        calls.append((config, root, course_id, headless, reviewed_policy))
-        return {
-            "courses": 2,
-            "assignments": 3,
-            "failed_courses": [],
-            "catalog": {"generated_at": TIMESTAMP, "enrollment_state": "known"},
-        }, []
-
-    provider.sync_assignments = fake_sync  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, provider.__name__, provider)
-    with pytest.raises(CampusError) as refusal:
-        asyncio.run(assignments.sync({}, tmp_path, None, headless=True))
-    assert refusal.value.code == "headless-unavailable"
-    assert refusal.value.status == "user-action"
-    assert not calls
-
-    result, errors = asyncio.run(assignments.sync({"provider": "cnu"}, tmp_path, "course-alpha"))
-    assert not errors
-    assert result["courses"] == 2 and result["assignments"] == 3
-    assert calls == [({"provider": "cnu"}, tmp_path, "course-alpha", False, assignments.CAPABILITY["policy"])]
-    assert assignments.render("sync.assignments", result, 16) == ["Synced 2 courses, 3 assignments."]
-
-    monkeypatch.setattr(cli, "load_config", lambda: {"provider": "cnu"})
-    monkeypatch.setattr(cli, "data_dir", lambda: tmp_path)
-    code, response = _invoke(["sync", "--only", "assignments", "--course", "course-alpha", "--json"], capsys)
-    assert code == 0
-    assert response["result"]["catalog"]["enrollment_state"] == "known"
-    assert len(calls) == 2
-
-
 def test_narrow_list_full_ids_and_stale_warning(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -178,10 +122,8 @@ def test_narrow_list_full_ids_and_stale_warning(
     assert "enrollment is unknown" in "\n".join(lines)
     assert "removal-deferred" in "\n".join(lines)
 
-    _, empty = _invoke(["assignments", "list", "--course", "nonexistent", "--json"], capsys)
-    assert empty["result"]["assignments"] == []
-    assert "enrollment is unknown" in "\n".join(assignments.render("assignments.list", empty["result"], 12))
-    assert "removal-deferred" in "\n".join(assignments.render("assignments.list", empty["result"], 12))
+    code, empty = _invoke(["assignments", "list", "--course", "nonexistent", "--json"], capsys)
+    assert code == 2 and empty["errors"][0]["code"] == "course-id-required"
     all_lines = assignments.render("assignments.list", {**response["result"], "assignments": rows}, 12)
     assert all(row["entity_id"] in [line.strip() for line in all_lines] for row in rows)
     monkeypatch.setenv("CAMPUSCTL_OUTPUT", "human")

@@ -521,7 +521,15 @@ class FakeSessions:
         self.active = False
 
     @asynccontextmanager
-    async def open_session(self, config: dict[str, Any], *, data_dir: Path | None = None):
+    async def open_session(
+        self,
+        config: dict[str, Any],
+        *,
+        data_dir: Path | None = None,
+        headless: bool = False,
+        operation: str | None = None,
+    ):
+        assert not headless and operation == "lectures.play"
         self.opens += 1
         self.active = True
         try:
@@ -1050,9 +1058,15 @@ def test_ctrl_c_during_youtube_playback_closes_modal_and_releases_session_lock(
     open_fake_session = sessions.open_session
 
     @asynccontextmanager
-    async def locked_session(config: dict[str, Any], *, data_dir: Path | None = None):
+    async def locked_session(
+        config: dict[str, Any],
+        *,
+        data_dir: Path | None = None,
+        headless: bool = False,
+        operation: str | None = None,
+    ):
         with exclusive_lock(lock_path):
-            async with open_fake_session(config, data_dir=data_dir) as session:
+            async with open_fake_session(config, data_dir=data_dir, headless=headless, operation=operation) as session:
                 yield session
 
     monkeypatch.setattr(browser_module, "open_session", locked_session)

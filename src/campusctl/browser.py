@@ -6,8 +6,9 @@ import json
 import os
 import sys
 import urllib.parse
-from collections.abc import AsyncIterator, Callable
-from contextlib import asynccontextmanager, suppress
+from collections.abc import AsyncIterator, Callable, Iterator
+from contextlib import asynccontextmanager, contextmanager, suppress
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,17 @@ NORMAL_CHROME_USER_AGENT = (
 
 # Tests may supply a fake async_playwright-compatible factory without importing Playwright.
 PLAYWRIGHT_FACTORY: Callable[[], Any] | None = None
+_PRE_BROWSER_CHECK: ContextVar[Callable[[], None] | None] = ContextVar("pre_browser_check", default=None)
+
+
+@contextmanager
+def pre_browser_check(check: Callable[[], None]) -> Iterator[None]:
+    """Scope a local-selection check to the next browser session lock."""
+    token = _PRE_BROWSER_CHECK.set(check)
+    try:
+        yield
+    finally:
+        _PRE_BROWSER_CHECK.reset(token)
 
 
 @dataclass
@@ -313,6 +325,9 @@ async def open_session(
     )
 
     with exclusive_lock(lock_path):
+        check = _PRE_BROWSER_CHECK.get()
+        if check is not None:
+            check()
         if mode == "local" and not headless:
             _check_display()
 
