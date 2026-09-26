@@ -317,6 +317,24 @@ def test_course_filter_replaces_only_selected_course_and_unknown_course_leaves_c
     assert catalog_path(tmp_path).read_bytes() == before
 
 
+def test_first_scoped_sync_cannot_claim_full_enrollment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _install_fake_sync(monkeypatch, tmp_path, courses=COURSES[:1], empty_courses={"course-a"})
+    code, _ = _invoke(["sync", "--course", "course-a"], capsys)
+    assert code == 0
+    scoped = read_catalog(catalog_path(tmp_path))
+    assert scoped["courses"] == COURSES[:1]
+    assert scoped["enrollment_state"] == "unknown"
+    assert scoped["failed_courses"] == []
+
+    code, _ = _invoke(["sync"], capsys)
+    assert code == 0
+    full = read_catalog(catalog_path(tmp_path))
+    assert full["enrollment_state"] == "known"
+    assert full["failed_courses"] == []
+
+
 def test_zero_row_course_is_a_successful_empty_course(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

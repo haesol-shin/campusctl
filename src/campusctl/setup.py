@@ -243,7 +243,7 @@ def run_guided_setup(
                 if snapshot is None:
                     break
                 health = cache_metadata(snapshot[0], now=now, domain=domain)
-                if health["failed_courses"] or (domain == "lectures" and health["enrollment_state"] != "known"):
+                if health["failed_courses"] or health["enrollment_state"] != "known":
                     break
             else:
                 step("sync", "reused")

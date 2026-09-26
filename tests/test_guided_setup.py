@@ -242,7 +242,7 @@ def test_published_four_domain_catalogs_skip_first_sync_offer(
     assert error is None and result["steps"][-1] == {"name": "sync", "status": "skipped"}
 
 
-@pytest.mark.parametrize("partial_domain", ["lectures", "notices"])
+@pytest.mark.parametrize("partial_domain", ["lectures", "assignments", "notices", "materials"])
 def test_partial_catalog_reoffers_first_sync(
     ready: dict[str, Any], monkeypatch: pytest.MonkeyPatch, partial_domain: str
 ) -> None:
@@ -255,8 +255,9 @@ def test_partial_catalog_reoffers_first_sync(
         lecture_catalog["enrollment_state"] = "unknown"
     write_catalog(lecture_catalog, catalog_path(root))
     for domain in ("assignments", "notices", "materials"):
-        health = {"courses": []}
-        if domain == partial_domain:
+        health = {"courses": [], "enrollment_state": "unknown" if domain == partial_domain else "known"}
+        if domain == "notices" and partial_domain == "notices":
+            health["enrollment_state"] = "known"
             health["failed_courses"] = [{"course_id": "synthetic-id", "reason": "course-sync-failed"}]
         write_domain_catalog(domain, health, domain_catalog_path(domain, root))
     prompts: list[str] = []

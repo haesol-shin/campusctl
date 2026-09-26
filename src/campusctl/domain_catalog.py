@@ -317,7 +317,7 @@ def merge_domain_catalog(
         return {
             "schema_version": SCHEMA_VERSION,
             "generated_at": _same_timestamp(),
-            "enrollment_state": previous.get("enrollment_state", "known") if previous else "known",
+            "enrollment_state": previous.get("enrollment_state", "unknown") if previous else "unknown",
             "courses": merged_courses,
             "failed_courses": merged_failures,
             key: merged_rows,
