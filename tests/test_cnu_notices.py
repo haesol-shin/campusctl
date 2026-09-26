@@ -1,23 +1,14 @@
 from __future__ import annotations
 
 import asyncio
-from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
-from campusctl.commands.notices import CAPABILITY
 from campusctl.envelope import CampusError
 from campusctl.providers.cnu import notices
-from campusctl.providers.cnu.ui_policy import (
-    UiRequestDenied,
-    UiRequestDiagnostics,
-    UiRequestPolicy,
-    guard_ui_request,
-    install_ui_request_interceptor,
-)
 
 L = "https://lms.example.invalid"
 COURSES = [
@@ -28,19 +19,6 @@ COURSES = [
 
 def native_board_id(suffix: int) -> str:
     return f"TB_L_BOARDITEM{suffix}"
-
-
-def policy() -> dict[str, Any]:
-    configured = deepcopy(CAPABILITY["policy"])
-    configured["origins"] = [L, "https://dcs-learning.cnu.ac.kr"]
-    configured["static_asset_origins"] = [L]
-    for collection in ("routes", "suppress"):
-        for entry in configured[collection]:
-            if entry.get("logging_token_reviewed"):
-                continue
-            if entry["origin"] == "https://dcs-learning.cnu.ac.kr":
-                entry["origin"] = L
-    return configured
 
 
 def row(number: str, native: str, *, title: str = "Board notice", date: str = "2026-09-01") -> dict[str, Any]:
@@ -391,14 +369,11 @@ def collect_board(
 
     monkeypatch.setattr(notices, "_ORIGIN", L)
     page.handler = lambda route: route.continue_()
-    guard = SimpleNamespace(raise_if_denied=lambda: None)
 
     async def exercise() -> list[dict[str, Any]]:
-        capture = notices.arm_notice_capture(page, guard)
+        capture = notices.arm_notice_capture(page)
         await page.click('a[href="/std/notice"]')
-        return await notices.collect_notice_rows(
-            page, COURSES[0], guard, capture=capture, courses=courses, todo_rows=[]
-        )
+        return await notices.collect_notice_rows(page, COURSES[0], capture=capture, courses=courses, todo_rows=[])
 
     return asyncio.run(exercise())
 
@@ -531,13 +506,12 @@ def test_unsettled_global_todo_cannot_confirm_board_empty(monkeypatch: pytest.Mo
     page.handler = lambda route: route.continue_()
     monkeypatch.setattr(notices, "_ORIGIN", L)
     monkeypatch.setattr(notices, "_TODO_URL", L + "/std/todo")
-    guard = SimpleNamespace(raise_if_denied=lambda: None)
 
     async def exercise() -> None:
-        capture = await notices.open_notice_todo(page, guard)
+        capture = await notices.open_notice_todo(page)
         page.todo_pending = True
         with pytest.raises(CampusError) as error:
-            await notices.collect_notice_todo(page, guard, COURSES, capture=capture)
+            await notices.collect_notice_todo(page, COURSES, capture=capture)
         assert error.value.code == "browser-timeout"
         assert not page.listeners
 
@@ -585,97 +559,16 @@ def test_unmatched_todo_keeps_board_timestamp() -> None:
     assert parsed[0]["is_unread"] is None
 
 
-def test_suppressed_side_requests_do_not_become_denials() -> None:
-    async def exercise() -> None:
-        page = FakePage()
-        diagnostics = UiRequestDiagnostics()
-        interceptor = await install_ui_request_interceptor(
-            page,
-            UiRequestPolicy.from_reviewed_config(policy()),
-            operation="notices.sync",
-            diagnostics=diagnostics,
-        )
-        try:
-            for url, method, resource in [
-                (L + "/js/common/panoptoSaml-abcdef.js", "GET", "script"),
-                ("http://0.0.0.0:3000/v1/events", "POST", "fetch"),
-                ("http://localhost:3000/v1/events", "POST", "fetch"),
-                ("https://third-party.invalid/css2", "GET", "stylesheet"),
-                (L + "/assets/images/favicon-abcdef.ico", "GET", "other"),
-            ]:
-                request = SimpleNamespace(url=url, method=method, resource_type=resource, redirected_from=None)
-
-                async def headers() -> dict[str, str]:
-                    return {}
-
-                request.all_headers = headers
-                route = FakeRoute(request, page)
-                await page.handler(route)
-                assert route.action == "abort"
-            interceptor.raise_if_denied()
-            request = SimpleNamespace(
-                url="https://dcs-learning.cnu.ac.kr/api/v1/week/getStdActivityStatus",
-                method="POST",
-                resource_type="xhr",
-                redirected_from=None,
-                all_headers=headers,
-            )
-            route = FakeRoute(request, page)
-            await page.handler(route)
-            assert route.action == "continue"
-            assert diagnostics.suppressed_count == 5
-        finally:
-            await interceptor.close()
-
-    asyncio.run(exercise())
-
-
-def test_policy_rejects_unknown_data_redirect_and_range() -> None:
-    reviewed = UiRequestPolicy.from_reviewed_config(policy())
-    assert reviewed.approved
-    for url, method, resource, headers in [
-        (L + "/std/noticeDetail?no=" + native_board_id(1), "GET", "document", {}),
-        (L + "/api/v1/board/notice/info", "POST", "xhr", {}),
-        ("https://other.invalid/v1/events", "POST", "fetch", {}),
-        (L + "/std/notice", "GET", "document", {"Range": "bytes=0-10"}),
-    ]:
-        with pytest.raises(UiRequestDenied):
-            guard_ui_request(reviewed, url, method, headers, operation="notices.sync", resource_type=resource)
-    with pytest.raises(UiRequestDenied):
-        guard_ui_request(
-            reviewed,
-            L + "/std/notice",
-            "GET",
-            {},
-            operation="notices.sync",
-            resource_type="document",
-            redirected_from=L + "/std/myLecture",
-        )
-    malformed = deepcopy(policy())
-    malformed["routes"].append(
-        {
-            "origin": "https://unreviewed.invalid",
-            "path": "/api/v1/board/notice/info",
-            "operation": "notices.sync",
-            "methods": ["POST"],
-        }
-    )
-    assert not UiRequestPolicy.from_reviewed_config(malformed).approved
-
-
 def test_collector_uses_prearmed_board_and_independent_expected_row(monkeypatch: pytest.MonkeyPatch) -> None:
 
     page = FakePage()
     monkeypatch.setattr(notices, "_ORIGIN", L)
     page.handler = lambda route: route.continue_()
-    guard = SimpleNamespace(raise_if_denied=lambda: None)
 
     async def exercise() -> None:
-        capture = notices.arm_notice_capture(page, guard)
+        capture = notices.arm_notice_capture(page)
         await page.click('a[href="/std/notice"]')
-        actual = await notices.collect_notice_rows(
-            page, COURSES[0], guard, capture=capture, courses=COURSES, todo_rows=[]
-        )
+        actual = await notices.collect_notice_rows(page, COURSES[0], capture=capture, courses=COURSES, todo_rows=[])
         assert actual == [
             {
                 "entity_id": "cnu_notice:course-a:2026-09-01 08%3A00:1",
@@ -703,22 +596,20 @@ def test_collector_refuses_stale_course_switch_during_board(monkeypatch: pytest.
     page = FakePage()
     monkeypatch.setattr(notices, "_ORIGIN", L)
     page.handler = lambda route: route.continue_()
-    guard = SimpleNamespace(raise_if_denied=lambda: None)
 
     async def exercise() -> None:
-        capture = notices.arm_notice_capture(page, guard)
+        capture = notices.arm_notice_capture(page)
         await page.click('a[href="/std/notice"]')
         await page.request("/api/v1/course/addSessionCourseInfo", "POST")
         with pytest.raises(ValueError, match="cleanly"):
             await notices.collect_notice_rows(
                 page,
                 COURSES[0],
-                guard,
                 capture=capture,
                 courses=COURSES,
                 todo_rows=[],
             )
-        capture = notices.arm_notice_capture(page, guard)
+        capture = notices.arm_notice_capture(page)
         await page.click('a[href="/std/notice"]')
         evaluate = page.evaluate
 
@@ -733,7 +624,6 @@ def test_collector_refuses_stale_course_switch_during_board(monkeypatch: pytest.
             await notices.collect_notice_rows(
                 page,
                 COURSES[0],
-                guard,
                 capture=capture,
                 courses=COURSES,
                 todo_rows=[],
@@ -742,43 +632,18 @@ def test_collector_refuses_stale_course_switch_during_board(monkeypatch: pytest.
     asyncio.run(exercise())
 
 
-def test_denied_todo_collection_releases_capture(monkeypatch: pytest.MonkeyPatch) -> None:
-    page = FakePage()
-    monkeypatch.setattr(notices, "_ORIGIN", L)
-    monkeypatch.setattr(notices, "_TODO_URL", L + "/std/todo")
-    page.handler = lambda route: route.continue_()
-    denied = False
-
-    def check_guard() -> None:
-        if denied:
-            raise UiRequestDenied("route")
-
-    guard = SimpleNamespace(raise_if_denied=check_guard)
-
-    async def scenario() -> None:
-        nonlocal denied
-        capture = await notices.open_notice_todo(page, guard)
-        denied = True
-        with pytest.raises(UiRequestDenied):
-            await notices.collect_notice_todo(page, guard, COURSES, capture=capture)
-        assert not page.listeners
-
-    asyncio.run(scenario())
-
-
 def test_failed_notice_navigation_releases_capture() -> None:
 
     page = FakePage()
     page.main_frame.url = L + "/std/lecture"
-    guard = SimpleNamespace(raise_if_denied=lambda: None)
 
     async def fail() -> None:
         raise RuntimeError("synthetic notice navigation failed")
 
     async def scenario() -> None:
-        capture = notices.arm_notice_capture(page, guard)
+        capture = notices.arm_notice_capture(page)
         with pytest.raises(RuntimeError, match="synthetic notice navigation failed"):
-            await notices.open_notice_section(page, guard, fail, capture=capture)
+            await notices.open_notice_section(page, fail, capture=capture)
         assert not page.listeners
 
     asyncio.run(scenario())

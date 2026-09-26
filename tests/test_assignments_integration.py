@@ -31,29 +31,13 @@ def _install(monkeypatch: pytest.MonkeyPatch, root: Path, server: Any) -> dict[s
     return config
 
 
-def test_discovery_gate_and_assignment_cli(
+def test_assignment_discovery_and_cli(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from campusctl import commands
 
     assert discover_domain_modules()["assignments"] is assignments
     assert cli.CAPABILITIES["assignments"] == ["list"]
-    assert "policy" not in cli.CAPABILITIES
     assert cli.build_parser().parse_args(["assignments", "list"]).command == "assignments"
-    # An explicitly unapproved complete module is ignored even when it is importable.
-    rejected = tmp_path / "unreviewed.py"
-    rejected.write_text(
-        "CAPABILITY = {'commands': ['list'], 'policy': {'approved': False, "
-        "'read_only_evidence': None, 'origins': [], 'routes': [], "
-        "'allowed_media': [], 'max_bytes': None}}\n"
-        "def register(subparsers): pass\n"
-        "def dispatch(args): pass\n"
-        "def render(command, result, width): pass\n"
-        "async def sync(config, root, course_id, *, headless=False): pass\n",
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(commands, "__path__", [*commands.__path__, str(tmp_path)])
-    assert "unreviewed" not in discover_domain_modules()
     old_catalog(tmp_path)
     monkeypatch.setenv("CAMPUSCTL_DATA_DIR", str(tmp_path))
     code, response = _call(["assignments", "list", "--course", "course-a"], capsys)
@@ -87,7 +71,7 @@ def test_human_assignment_renderer_has_full_ids(
         assert "Synced 1 course, 1 assignment." in capsys.readouterr().out
 
 
-def test_browser_cli_sync_list_policy_and_lock(
+def test_browser_cli_sync_list_and_lock(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     old_catalog(tmp_path)
@@ -101,10 +85,6 @@ def test_browser_cli_sync_list_policy_and_lock(
         assert len(listed["result"]["assignments"]) == 7  # Complete roster removes unenrolled cached rows.
         assert listed["result"]["cache"]["failed_courses"] == []
         previous = read_domain_catalog("assignments", domain_catalog_path("assignments", tmp_path))
-        server.unreviewed = True
-        code, response = _call(["--headless", "sync", "--only", "assignments", "--course", IDS[0]], capsys)
-        assert code == 1 and response["errors"][0]["code"] == "policy-blocked"
-        assert read_domain_catalog("assignments", domain_catalog_path("assignments", tmp_path)) == previous
         if os.name != "nt":
             with exclusive_lock(tmp_path / "session.lock"):
                 code, response = _call(["--headless", "sync", "--only", "assignments", "--course", IDS[0]], capsys)

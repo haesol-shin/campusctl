@@ -17,7 +17,6 @@ from campusctl.envelope import CampusError
 from campusctl.material_files import safe_component
 from campusctl.providers.cnu.attachment_transfer import OfficialAttachmentTarget, fetch_official_attachment
 from campusctl.providers.cnu.request_policy import ALLOWED_EXTENSIONS, MAX_ATTACHMENT_BYTES, RequestPolicy
-from campusctl.providers.cnu.ui_policy import guard_ui_request
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,7 +65,7 @@ def _failed() -> CampusError:
 
 
 def _blocked() -> CampusError:
-    return CampusError("policy-blocked", "Selected source request is not approved.", status="error")
+    return CampusError("fetch-failed", "Selected attachment does not match its official file control.", status="error")
 
 
 def _name(reference: ResourceReference) -> str:
@@ -163,27 +162,13 @@ def _escape(value: str) -> str:
     return value.replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]").replace("\n", " ")
 
 
-def _image_allowed(reference: ResourceReference, policy: RequestPolicy) -> bool:
+def _image_allowed(reference: ResourceReference) -> bool:
     parsed = urlsplit(reference.source_url)
-    return (
-        reference.kind == "image"
-        and f"{parsed.scheme}://{parsed.netloc}" in policy.ui_policy.origins
-        and parsed.path.lower().endswith((".png", ".jpg", ".jpeg"))
-        and not parsed.username
-        and not parsed.password
-    )
+    return reference.kind == "image" and parsed.path.lower().endswith((".png", ".jpg", ".jpeg"))
 
 
-async def _image_bytes(page: object, reference: ResourceReference, policy: RequestPolicy) -> tuple[bytes, str]:
+async def _image_bytes(page: object, reference: ResourceReference) -> tuple[bytes, str]:
     url = reference.source_url
-    guard_ui_request(
-        policy.ui_policy,
-        url,
-        "GET",
-        {},
-        operation="assignments.fetch" if policy.filename == "assignment" else "notices.fetch",
-        resource_type="image",
-    )
     response = await page.context.request.get(url, max_redirects=0)
     try:
         if response.status != 200 or response.url != url:
@@ -226,9 +211,7 @@ async def build_source_package(
     course_id: str,
     course_label: str,
     root: Path,
-    policy: RequestPolicy,
     out: Path | None = None,
-    interceptor: object | None = None,
 ) -> dict:
     """Package only already-bound selected detail; the caller holds the session lock."""
     if kind not in {"assignment", "notice"} or not entity_id or not course_id:
@@ -259,7 +242,8 @@ async def build_source_package(
                 continue
             order += 1
             rid = resource_id(entity_id, course_id, part, order)
-            identity = source_ref(part.source_url, part.provider_file_id)
+            identity_url = snapshot.source_url if kind == "notice" and part.kind == "attachment" else part.source_url
+            identity = source_ref(identity_url, part.provider_file_id)
             prior = references.get(rid)
             if prior is not None:
                 if prior[0] != part or prior[1] != identity:
@@ -272,17 +256,13 @@ async def build_source_package(
             media_type = None
             name = _name(part)
             if part.kind == "image":
-                if not _image_allowed(part, policy):
-                    reason = (
-                        "external-origin"
-                        if source_ref(part.source_url)["origin"] not in policy.ui_policy.origins
-                        else "unsupported-media-type"
-                    )
+                if not _image_allowed(part):
+                    reason = "unsupported-media-type"
                 else:
-                    contents, media_type = await _image_bytes(page, part, policy)
+                    contents, media_type = await _image_bytes(page, part)
             elif part.kind == "attachment":
-                if not _approved_attachment_route(policy, kind):
-                    reason = "unapproved-file-route"
+                if kind == "notice":
+                    reason = "unverified-notice-attachment"
                 elif name.rsplit(".", 1)[-1].casefold() not in ALLOWED_EXTENSIONS:
                     reason = "unsupported-media-type"
                 else:
@@ -291,20 +271,15 @@ async def build_source_package(
                         target is None
                         or part.provider_file_id != target.file_id
                         or target.parent_kind != kind
-                        or target.parent_id
-                        != (snapshot.provider_native_id if kind == "assignment" else _notice_parent(target, entity_id))
+                        or target.parent_id != snapshot.provider_native_id
                     ):
                         raise _blocked()
-                    transfer_policy = RequestPolicy(policy.ui_policy, name, policy.diagnostics)
                     fetched = await fetch_official_attachment(
                         page,
                         target,
-                        transfer_policy,
+                        RequestPolicy(name),
                         staging,
                         max_bytes=MAX_ATTACHMENT_BYTES,
-                        interceptor=interceptor,
-                        operation=kind + "s.fetch",
-                        metadata_path=_approved_attachment_route(policy, kind),
                     )
                     try:
                         contents = fetched.temp_path.read_bytes()
@@ -358,14 +333,11 @@ async def build_source_package(
             "source_ref": source_ref(snapshot.source_url, snapshot.provider_native_id),
             "retrieved_at": datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z"),
             "content_path": "content.md",
-            "completeness": "policy-filtered" if omitted else "complete",
+            "completeness": "partial" if omitted else "complete",
             "resources": records,
             "omitted_resources": omitted,
         }
         digest = _digest(manifest, content, files)
-        if interceptor is not None:
-            # A latched guard denial anywhere in the selected run forbids publication.
-            interceptor.raise_if_denied()
         destination = Path(out).absolute() if out is not None else parent / digest
         if destination.exists() or destination.is_symlink():
             previous = _verified_existing(destination, digest) if out is None else None
@@ -387,23 +359,6 @@ async def build_source_package(
     finally:
         if staging.exists():
             shutil.rmtree(staging)
-
-
-def _notice_parent(target: OfficialAttachmentTarget, entity_id: str) -> str:
-    # Native board ID is established by the selected detail adapter, never inferred from the composite ID.
-    return target.parent_id if entity_id.startswith("cnu_notice:") else ""
-
-
-def _approved_attachment_route(policy: RequestPolicy, kind: str) -> str | None:
-    operation = "assignments.fetch" if kind == "assignment" else "notices.fetch"
-    routes = [
-        entry.path
-        for entry in policy.ui_policy.routes
-        if entry.operation == operation
-        and entry.methods == frozenset({"POST"})
-        and entry.path == "/api/v1/archive/fileDownload"
-    ]
-    return routes[0] if len(routes) == 1 else None
 
 
 def _link(reference: ResourceReference, path: str | None, reason: str | None) -> str:

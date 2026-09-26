@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from html.parser import HTMLParser
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,6 +12,7 @@ import pytest
 
 from campusctl.envelope import CampusError
 from campusctl.identity import notice_entity_id
+from campusctl.providers.cnu.attachment_transfer import OfficialAttachmentTarget
 from campusctl.providers.cnu.notice_detail import capture_notice_detail
 from campusctl.source_package import ResourceReference
 
@@ -163,7 +165,8 @@ class FakePage:
         self.listeners["response"](response)
 
     async def wait_for_selector(self, selector: str) -> None:
-        return None
+        assert selector == 'a[href="/std/notice"]'
+        self.actions.append("wait:notice-menu")
 
     async def wait_for_load_state(self, state: str) -> None:
         return None
@@ -188,11 +191,6 @@ class FakePage:
                 {"kind": "text", "text": ".\nSecond instruction."},
             ],
         }
-
-
-class Interceptor:
-    def raise_if_denied(self) -> None:
-        return None
 
 
 def fixture_page(
@@ -241,7 +239,7 @@ def selected(
 
 def test_selected_notice_detail_capture_readonly() -> None:
     page = fixture_page()
-    snapshot = asyncio.run(capture_notice_detail(page, selected(), interceptor=Interceptor()))
+    snapshot = asyncio.run(capture_notice_detail(page, selected()))
     assert snapshot.provider_native_id is None  # Live provider-native mapping remains unverified.
     assert snapshot.source_url == ORIGIN + "/std/noticeDetail?no=TB_L_BOARDITEM7001&curPage=1"
     assert snapshot.parts[0] == "# Example notice\n\n"
@@ -252,6 +250,12 @@ def test_selected_notice_detail_capture_readonly() -> None:
     assert "example guidance [link URL omitted]" in snapshot.parts
     assert "Second instruction." in snapshot.parts[-1]
     assert page.actions[-1].startswith('tbody#table-body a[href="noticeDetail?no=TB_L_BOARDITEM7001')
+    assert page.actions[:4] == [
+        "roster",
+        '[data-act="moveLecture"][data-courseid="course-example"]',
+        "wait:notice-menu",
+        'a[href="/std/notice"]',
+    ]
     assert not any("read" in action.lower() or "upload" in action.lower() for action in page.actions)
     assert not page.listeners
 
@@ -270,34 +274,34 @@ def test_unreviewed_notice_href_rejected_before_click(href: str) -> None:
     page = fixture_page()
     page.fixture.links[0] = href
     with pytest.raises(CampusError, match="link is missing or ambiguous"):
-        asyncio.run(capture_notice_detail(page, selected(), interceptor=Interceptor()))
+        asyncio.run(capture_notice_detail(page, selected()))
     assert not any(action.startswith("tbody#table-body a[") for action in page.actions)
     assert not page.listeners
 
 
 def test_todo_number_different_from_board_row_index_opens_selected_notice() -> None:
     page = fixture_page(board_number=1)
-    snapshot = asyncio.run(capture_notice_detail(page, selected(6), interceptor=Interceptor()))
+    snapshot = asyncio.run(capture_notice_detail(page, selected(6)))
     assert snapshot.source_url == ORIGIN + "/std/noticeDetail?no=TB_L_BOARDITEM7001&curPage=1"
     assert page.actions[-1].startswith('tbody#table-body a[href="noticeDetail?no=TB_L_BOARDITEM7001')
 
 
 def test_unique_title_day_without_native_identity_preserves_legacy_number() -> None:
     page = fixture_page(board_number=1)
-    snapshot = asyncio.run(capture_notice_detail(page, selected(6, native_id=None), interceptor=Interceptor()))
+    snapshot = asyncio.run(capture_notice_detail(page, selected(6, native_id=None)))
     assert snapshot.source_url == ORIGIN + "/std/noticeDetail?no=TB_L_BOARDITEM7001&curPage=1"
 
 
 def test_native_identity_disambiguates_same_title_day() -> None:
     page = fixture_page(duplicate_title_day=True)
-    snapshot = asyncio.run(capture_notice_detail(page, selected(), interceptor=Interceptor()))
+    snapshot = asyncio.run(capture_notice_detail(page, selected()))
     assert snapshot.source_url == ORIGIN + "/std/noticeDetail?no=TB_L_BOARDITEM7001&curPage=1"
 
 
 def test_duplicate_title_day_without_native_identity_rejected_before_click() -> None:
     page = fixture_page(duplicate_title_day=True)
     with pytest.raises(CampusError) as failure:
-        asyncio.run(capture_notice_detail(page, selected(6, native_id=None), interceptor=Interceptor()))
+        asyncio.run(capture_notice_detail(page, selected(6, native_id=None)))
     assert failure.value.code == "entity-unknown"
     assert not any(action.startswith("tbody#table-body a[") for action in page.actions)
 
@@ -306,8 +310,10 @@ def test_stale_native_identity_cannot_select_another_notice() -> None:
     page = fixture_page(board_number=6)
     stale = selected(6, native_id="TB_L_BOARDITEM7999")
     with pytest.raises(CampusError) as failure:
-        asyncio.run(capture_notice_detail(page, stale, interceptor=Interceptor()))
+        asyncio.run(capture_notice_detail(page, stale))
     assert failure.value.code == "entity-unknown"
+    assert "Notice detail" in failure.value.message
+    assert "TB_L_BOARDITEM7999" not in failure.value.message
     assert not any(action.startswith("tbody#table-body a[") for action in page.actions)
 
 
@@ -315,7 +321,7 @@ def test_wrong_selected_notice_fails_before_transfer() -> None:
     page = fixture_page()
     wrong = selected(9, title="Different notice", native_id=None)
     with pytest.raises(CampusError, match="Selected notice no longer matches"):
-        asyncio.run(capture_notice_detail(page, wrong, interceptor=Interceptor()))
+        asyncio.run(capture_notice_detail(page, wrong))
     assert not any(action.startswith("tbody#table-body a[") for action in page.actions)
     assert not page.listeners
 
@@ -323,14 +329,14 @@ def test_wrong_selected_notice_fails_before_transfer() -> None:
 def test_mismatched_detail_response_rejected() -> None:
     page = fixture_page(wrong_info=True)
     with pytest.raises(CampusError, match="another board item"):
-        asyncio.run(capture_notice_detail(page, selected(), interceptor=Interceptor()))
+        asyncio.run(capture_notice_detail(page, selected()))
     assert not page.listeners
 
 
 def test_malformed_addtime_falls_back_to_insert_dt() -> None:
     page = fixture_page(addtime="bad-time", insert_dt="2026-09-01")
     target = selected(date="2026-09-01")
-    snapshot = asyncio.run(capture_notice_detail(page, target, interceptor=Interceptor()))
+    snapshot = asyncio.run(capture_notice_detail(page, target))
     assert snapshot.source_url == ORIGIN + "/std/noticeDetail?no=TB_L_BOARDITEM7001&curPage=1"
 
 
@@ -353,18 +359,13 @@ def test_ordinary_link_named_download_stays_link_label_and_complete(tmp_path: Pa
 
     page.evaluate = evaluate_with_download_link
     target = {**selected(), "has_attachments": False}
-    snapshot = asyncio.run(capture_notice_detail(page, target, interceptor=Interceptor()))
+    snapshot = asyncio.run(capture_notice_detail(page, target))
     attachment_refs = [p for p in snapshot.parts if isinstance(p, ResourceReference) and p.kind == "attachment"]
     assert len(attachment_refs) == 0
     assert "download syllabus [link URL omitted]" in snapshot.parts
 
-    from campusctl.commands.notices import FETCH_POLICY
-    from campusctl.providers.cnu.request_policy import RequestPolicy
-    from campusctl.providers.cnu.ui_policy import UiRequestPolicy
     from campusctl.source_package import build_source_package
 
-    ui_policy = UiRequestPolicy.from_reviewed_config(FETCH_POLICY)
-    policy = RequestPolicy(ui_policy, "notice")
     pkg = asyncio.run(
         build_source_package(
             page,
@@ -374,29 +375,40 @@ def test_ordinary_link_named_download_stays_link_label_and_complete(tmp_path: Pa
             course_id=target["course"]["id"],
             course_label=target["course"]["label"],
             root=tmp_path / "data",
-            policy=policy,
         )
     )
     assert pkg["completeness"] == "complete"
     assert len(pkg["omitted_resources"]) == 0
 
 
-def test_board_attachment_flag_without_verified_control_adds_unknown_control_omission(tmp_path: Path) -> None:
+def test_notice_attachment_with_unverified_url_remains_omitted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     page = fixture_page()
     target = {**selected(), "has_attachments": True}
-    snapshot = asyncio.run(capture_notice_detail(page, target, interceptor=Interceptor()))
+    snapshot = asyncio.run(capture_notice_detail(page, target))
     attachment_refs = [p for p in snapshot.parts if isinstance(p, ResourceReference) and p.kind == "attachment"]
     assert len(attachment_refs) == 1
     assert attachment_refs[0].label == "Notice attachment"
     assert attachment_refs[0].official_target is None
+    unverified = replace(
+        attachment_refs[0],
+        source_url="/unverified/file?id=TB_L_FILE999",
+        original_name="worksheet.pdf",
+        provider_file_id="TB_L_FILE999",
+        official_target=OfficialAttachmentTarget(
+            "TB_L_FILE999", "notice", NATIVE, 'a[data-act="downloadFile"]', "/unverified/file?id=TB_L_FILE999"
+        ),
+    )
+    snapshot = replace(
+        snapshot, parts=tuple(unverified if part is attachment_refs[0] else part for part in snapshot.parts)
+    )
 
-    from campusctl.commands.notices import FETCH_POLICY
-    from campusctl.providers.cnu.request_policy import RequestPolicy
-    from campusctl.providers.cnu.ui_policy import UiRequestPolicy
     from campusctl.source_package import build_source_package
 
-    ui_policy = UiRequestPolicy.from_reviewed_config(FETCH_POLICY)
-    policy = RequestPolicy(ui_policy, "notice")
+    async def deny_transfer(*_args: Any, **_kwargs: Any) -> None:
+        pytest.fail("Unverified notice attachment must not be transferred")
+
+    monkeypatch.setattr("campusctl.source_package.fetch_official_attachment", deny_transfer)
+
     pkg = asyncio.run(
         build_source_package(
             page,
@@ -406,9 +418,14 @@ def test_board_attachment_flag_without_verified_control_adds_unknown_control_omi
             course_id=target["course"]["id"],
             course_label=target["course"]["label"],
             root=tmp_path / "data",
-            policy=policy,
         )
     )
-    assert pkg["completeness"] == "policy-filtered"
+    assert pkg["completeness"] == "partial"
     assert len(pkg["omitted_resources"]) == 1
-    assert pkg["omitted_resources"][0]["reason"] == "unapproved-file-route"
+    assert pkg["omitted_resources"][0]["reason"] == "unverified-notice-attachment"
+    assert pkg["omitted_resources"][0]["source_ref"] == {
+        "origin": ORIGIN,
+        "page_path": "/std/noticeDetail",
+        "provider_native_id": "TB_L_FILE999",
+    }
+    assert "/unverified/file" not in str(pkg)

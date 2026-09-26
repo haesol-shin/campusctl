@@ -86,7 +86,7 @@ def _session_lock_path(config: dict[str, Any], data_dir: Path | None) -> Path:
 
 @contextmanager
 def session_lock(config: dict[str, Any], *, data_dir: Path | None = None) -> Iterator[None]:
-    """Own the single browser lock across guarded browser cleanup and catalog publication.
+    """Own the single browser lock across browser cleanup and catalog publication.
 
     Pass the same config and data_dir to open_session inside this scope. A nested
     acquisition is prohibited; open_session recognizes this scope instead.
@@ -118,7 +118,7 @@ class BrowserSession:
 
 
 async def settle_sso_popups(session: BrowserSession, *, domain: str | None = None, timeout: float = 8.0) -> None:
-    """Allow pre-guard roster SSO popups to finish without changing guarded policy."""
+    """Allow roster SSO popups to finish before course traversal."""
     with profile_span("sso-settle", domain=domain):
         profile_count("sso_settles")
         try:
@@ -504,7 +504,7 @@ async def open_session(
                 pages = context.pages
                 if require_owned_page or not pages:
                     # Combined sync owns a fresh page even when CDP has parked tabs.
-                    # Cleanup closes this page beneath the still-installed request guard.
+                    # Cleanup closes this page, leaving parked tabs untouched.
                     page = await bounded(context.new_page(), PROTOCOL_TIMEOUT_SECONDS, "opening a browser page")
                     owns_page = True
                 else:

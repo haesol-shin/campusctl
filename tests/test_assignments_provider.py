@@ -119,30 +119,13 @@ def old_catalog(root: Path) -> None:
     )
 
 
-def test_standalone_rejects_unapproved_reviewed_policy_before_opening_browser(tmp_path: Path) -> None:
-    with pytest.raises(CampusError) as failure:
-        asyncio.run(provider.sync_assignments({}, tmp_path, reviewed_policy={"approved": False}))
-    error = failure.value
-    assert (error.code, error.message, error.remediation, error.status) == (
-        "policy-unapproved",
-        "Assignment request policy is not approved.",
-        None,
-        "user-action",
-    )
-    assert not (tmp_path / "catalog" / "assignments.json").exists()
-
-
 def test_standalone_sync_normalizes_all_browser_courses(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from test_sync_all import COURSES as BROWSER_COURSES
     from test_sync_all import IDS, _expected_row, fixture_server
 
-    from campusctl.commands.assignments import CAPABILITY
-
     with fixture_server() as server:
         config = _browser_fixture(monkeypatch, server)
-        result, errors = asyncio.run(
-            provider.sync_assignments(config, tmp_path, headless=True, reviewed_policy=CAPABILITY["policy"])
-        )
+        result, errors = asyncio.run(provider.sync_assignments(config, tmp_path, headless=True))
         assert errors == []
         assert result["courses"] == 7 and result["assignments"] == 7
         catalog = read_domain_catalog("assignments", domain_catalog_path("assignments", tmp_path))
@@ -171,20 +154,6 @@ def test_standalone_filtered_sync_preserves_cached_other_courses(
             asyncio.run(provider.sync_assignments(config, tmp_path, "missing.invalid", headless=True))
         assert failure.value.code == "course-not-found"
         assert read_domain_catalog("assignments", domain_catalog_path("assignments", tmp_path)) == catalog
-
-
-def test_standalone_guard_denial_never_publishes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from test_sync_all import fixture_server
-
-    old_catalog(tmp_path)
-    before = read_domain_catalog("assignments", domain_catalog_path("assignments", tmp_path))
-    with fixture_server() as server:
-        server.unreviewed = True
-        config = _browser_fixture(monkeypatch, server)
-        with pytest.raises(CampusError) as failure:
-            asyncio.run(provider.sync_assignments(config, tmp_path, headless=True))
-        assert failure.value.code == "policy-blocked"
-        assert read_domain_catalog("assignments", domain_catalog_path("assignments", tmp_path)) == before
 
 
 @pytest.mark.parametrize(
@@ -225,14 +194,13 @@ def test_collector_accepts_proven_empty_or_inaccessible_body_but_rejects_count_m
     activity.document_count = 1
     activity.std_after_document.append((2, request))
     activity.responses.append(response)
-    guard = SimpleNamespace(raise_if_denied=lambda: None)
 
     async def exercise() -> None:
         if failure is not None:
             with pytest.raises(ValueError, match=failure):
-                await provider._collect_assignment_rows(page, COURSES[0], activity, response, guard)
+                await provider._collect_assignment_rows(page, COURSES[0], activity, response)
         else:
-            result = await provider._collect_assignment_rows(page, COURSES[0], activity, response, guard)
+            result = await provider._collect_assignment_rows(page, COURSES[0], activity, response)
             assert [row["title"] for row in result] == [row["title"] for row in rows]
             assert all(row["course"]["id"] == "course-a" for row in result)
 
@@ -248,15 +216,14 @@ def test_failed_task_navigation_closes_armed_capture() -> None:
         on=lambda event, callback: listeners[event].append(callback),
         remove_listener=lambda event, callback: listeners[event].remove(callback),
     )
-    guard = SimpleNamespace(raise_if_denied=lambda: None)
 
     async def fail() -> None:
         raise RuntimeError("synthetic task navigation failed")
 
     async def exercise() -> None:
-        capture = provider.arm_assignment_capture(page, guard)
+        capture = provider.arm_assignment_capture(page)
         with pytest.raises(RuntimeError, match="synthetic task navigation failed"):
-            await provider.open_assignment_section(page, guard, fail, capture=capture)
+            await provider.open_assignment_section(page, fail, capture=capture)
         assert all(not callbacks for callbacks in listeners.values())
 
     asyncio.run(exercise())

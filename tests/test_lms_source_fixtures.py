@@ -115,18 +115,6 @@ def test_lms_source_fixture_shapes_are_frozen() -> None:
         },
     )
 
-    policy = _load("policy.json")
-    _keys(policy, {"approved", "read_only_evidence", "origins", "routes", "allowed_media", "max_bytes", "notes"})
-    assert policy == {
-        "approved": False,
-        "read_only_evidence": None,
-        "origins": [],
-        "routes": [],
-        "allowed_media": [],
-        "max_bytes": None,
-        "notes": "No logging, media, stream or range permission",
-    }
-
     navigation = _load("course_navigation.json")
     _keys(
         navigation,
@@ -152,20 +140,3 @@ def test_lms_source_fixture_shapes_are_frozen() -> None:
     assert navigation["session_response"]["body"]["data"]["course_id"] == navigation["course_id"]
     _keys(navigation["topbar"], {"current_label", "selected_link"})
     _keys(navigation["topbar"]["selected_link"], {"selector", "data-courseid", "data-coursenm"})
-
-    headers = _load("request_headers.json")
-    _keys(headers, {"schema_version", "synthetic_only", "route", "request", "cases"})
-    assert headers["schema_version"] == 1
-    assert headers["synthetic_only"] is True
-    _keys(headers["route"], {"origin", "path", "operation", "methods"})
-    _keys(headers["request"], {"url", "method", "resource_type"})
-    assert headers["request"]["method"] == "GET"
-    assert headers["route"]["methods"] == ["GET"]
-    assert headers["cases"] == [
-        {"name": "ordinary_get", "headers": {}, "expected_decision": "allow"},
-        {
-            "name": "mixed_case_range",
-            "headers": {"rAnGe": "bytes=0-1023"},
-            "expected_decision": "block",
-        },
-    ]

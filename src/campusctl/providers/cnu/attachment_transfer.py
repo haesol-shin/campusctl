@@ -1,4 +1,4 @@
-"""One selected official attachment, guarded before consuming its response body."""
+"""One selected official attachment, bound and validated before consuming its body."""
 
 from __future__ import annotations
 
@@ -18,12 +18,10 @@ from campusctl.providers.cnu.request_policy import (
     ResponseValidator,
     guard_response,
 )
-from campusctl.providers.cnu.ui_policy import (
-    SelectedFileRequest,
-    UiRequestDenied,
-    UiRequestInterceptor,
+from campusctl.providers.cnu.selected_file_policy import (
+    FILE_TEMPLATES,
+    SelectedFileDenied,
     bind_selected_file_request,
-    guard_ui_request,
     match_selected_file_path,
 )
 
@@ -49,12 +47,7 @@ def _blocked() -> CampusError:
     return CampusError("policy-blocked", "Selected attachment request is not approved.", status="error")
 
 
-def _selected_url(
-    payload: Any,
-    target: OfficialAttachmentTarget,
-    policy: RequestPolicy,
-    operation: str = "materials.download",
-) -> tuple[str, SelectedFileRequest]:
+def _selected_url(payload: Any, target: OfficialAttachmentTarget) -> str:
     if not isinstance(payload, dict):
         raise _blocked()
     header = payload.get("header")
@@ -87,13 +80,11 @@ def _selected_url(
             if isinstance(value, str) and value.startswith(("https://", "http://")):
                 try:
                     bind_selected_file_request(
-                        policy.ui_policy,
                         selected_file_id=target.file_id,
                         resolved_url=value,
                         source="fileDownload-response",
-                        operation=operation,
                     )
-                except UiRequestDenied:
+                except SelectedFileDenied:
                     return
                 urls.append(value)
             elif isinstance(value, dict):
@@ -108,19 +99,17 @@ def _selected_url(
         raise _blocked()
     url = urls[0]
     selected = bind_selected_file_request(
-        policy.ui_policy,
         selected_file_id=target.file_id,
         resolved_url=url,
         source="fileDownload-response",
-        operation=operation,
     )
     if target.parent_kind in {"archive", "notice"}:
-        for entry in policy.ui_policy.selected_file_routes:
-            if entry.origin == selected.origin:
-                matched = match_selected_file_path(entry.path_template, selected.path)
+        for origin, template in FILE_TEMPLATES.items():
+            if origin == selected.origin:
+                matched = match_selected_file_path(template, selected.path)
                 if matched is not None and "board-item" in matched and matched["board-item"] != target.parent_id:
                     raise _blocked()
-    return url, selected
+    return url
 
 
 async def fetch_official_attachment(
@@ -130,17 +119,14 @@ async def fetch_official_attachment(
     temp_dir: Path,
     *,
     max_bytes: int,
-    interceptor: UiRequestInterceptor | None = None,
-    operation: str = "materials.download",
     metadata_path: str = "/api/v1/archive/fileDownload",
 ) -> FetchedAttachment:
     """Fetch the URL returned by this selected official control's UI action.
 
     The caller verifies parent_kind/parent_id in the page and supplies a parent-
     scoped locator. The control must uniquely match this file ID. A candidate URL
-    is only a cross-check, never provenance. PR1.1 protects the page's metadata
-    POST; the temporary route suppresses its duplicate browser download. The
-    context.request GET is explicitly guarded because it bypasses page.route.
+    is only a cross-check, never provenance. The temporary route suppresses only
+    duplicate selected browser downloads; unrelated page requests are not filtered.
     """
     if (
         not target.file_id
@@ -161,7 +147,7 @@ async def fetch_official_attachment(
 
     first_request: list[Any] = []
     provisional_urls: list[str] = []
-    fatal_denials: list[UiRequestDenied] = []
+    fatal_denials: list[CampusError] = []
     inflight: set[asyncio.Task[Any]] = set()
     bound_url: str | None = None
     response: Any = None
@@ -172,23 +158,14 @@ async def fetch_official_attachment(
     result: FetchedAttachment | None = None
     metadata_url = f"https://dcs-learning.cnu.ac.kr{metadata_path}"
     parent_url: str | None = None
-    selected_result: list[tuple[str, SelectedFileRequest]] = []
-    metadata_failures: list[CampusError] = []
 
-    async def resolve_metadata(request: Any, metadata_response: Any) -> tuple[str, SelectedFileRequest]:
+    async def resolve_metadata(request: Any, metadata_response: Any) -> str:
         if not click_started or request.url != metadata_url or request.method != "POST":
             raise _blocked()
         previous = request.redirected_from
         metadata_headers = await request.all_headers()
-        guard_ui_request(
-            policy.ui_policy,
-            request.url,
-            request.method,
-            metadata_headers,
-            operation=operation,
-            resource_type="fetch",
-            redirected_from=previous.url if previous is not None else None,
-        )
+        if previous is not None:
+            raise _blocked()
         parent = urlsplit(parent_url or "")
         referer = urlsplit(
             next((value for name, value in metadata_headers.items() if name.casefold() == "referer"), "")
@@ -200,27 +177,7 @@ async def fetch_official_attachment(
             or metadata_response.status != 200
         ):
             raise _blocked()
-        return _selected_url(await metadata_response.json(), target, policy, operation=operation)
-
-    async def capture_metadata(request: Any, metadata_response: Any) -> None:
-        nonlocal bound_url
-        if not first_request or request is not first_request[0]:
-            return
-        try:
-            url, selected = await resolve_metadata(request, metadata_response)
-        except CampusError as error:
-            metadata_failures.append(error)
-            return
-        selected_result.append((url, selected))
-        bound_url = url
-        assert interceptor is not None
-        interceptor.bind_selected_document(selected)
-
-    def record_duplicate() -> None:
-        if policy.diagnostics is not None:
-            policy.diagnostics.suppressed_count += 1
-            counts = policy.diagnostics.suppressed_reasons
-            counts["duplicate-download"] = counts.get("duplicate-download", 0) + 1
+        return _selected_url(await metadata_response.json(), target)
 
     def capture(request: Any) -> None:
         if click_started and request.method == "POST" and request.url == metadata_url and not first_request:
@@ -239,25 +196,23 @@ async def fetch_official_attachment(
         request = route.request
         parsed = urlsplit(request.url)
         selected_route = request.method == "GET" and any(
-            f"{parsed.scheme}://{parsed.netloc}" == entry.origin
-            and match_selected_file_path(entry.path_template, parsed.path) is not None
-            for entry in policy.ui_policy.selected_file_routes
+            f"{parsed.scheme}://{parsed.netloc}" == origin
+            and match_selected_file_path(template, parsed.path) is not None
+            for origin, template in FILE_TEMPLATES.items()
         )
         if click_started and selected_route:
             try:
                 request_headers = await request.all_headers()
             except Exception:
-                fatal_denials.append(UiRequestDenied("route"))
+                fatal_denials.append(_blocked())
                 await route.abort()
                 return
             if any(name.casefold() == "range" for name in request_headers):
-                fatal_denials.append(UiRequestDenied("range"))
+                fatal_denials.append(_blocked())
             elif bound_url is None:
                 provisional_urls.append(request.url)
-            elif request.url == bound_url:
-                record_duplicate()
-            else:
-                fatal_denials.append(UiRequestDenied("route"))
+            elif request.url != bound_url:
+                fatal_denials.append(_blocked())
             await route.abort()
         else:
             await route.fallback()
@@ -266,8 +221,6 @@ async def fetch_official_attachment(
         await page.wait_for_load_state("networkidle")
         page.on("request", capture)
         listening = True
-        if interceptor is not None:
-            interceptor.capture_response(metadata_path, capture_metadata)
         await page.route("**/*", suppress_duplicate)
         route_installed = True
         async with page.expect_response(
@@ -277,34 +230,13 @@ async def fetch_official_attachment(
             click_started = True
             await control.click(no_wait_after=True)
         official_response = await pending.value
-        if metadata_failures:
-            raise metadata_failures[0]
-        if selected_result:
-            url, selected = selected_result[0]
-        else:
-            url, selected = await resolve_metadata(official_response.request, official_response)
-            bound_url = url
-        for provisional in provisional_urls:
-            if provisional == url:
-                record_duplicate()
-            else:
-                fatal_denials.append(UiRequestDenied("route"))
+        url = await resolve_metadata(official_response.request, official_response)
+        bound_url = url
+        if any(provisional != url for provisional in provisional_urls):
+            fatal_denials.append(_blocked())
         if fatal_denials:
             raise fatal_denials[0]
-        if interceptor is not None:
-            interceptor.raise_if_denied()
-        headers: dict[str, str] = {}
-        guard_ui_request(
-            policy.ui_policy,
-            url,
-            "GET",
-            headers,
-            operation=operation,
-            resource_type="fetch",
-            selected_file=selected,
-            selected_file_id=target.file_id,
-        )
-        response = await page.context.request.get(url, headers=headers, max_redirects=0)
+        response = await page.context.request.get(url, headers={}, max_redirects=0)
         if response.url != url or response.status != 200:
             raise _blocked()
         response_headers = {key.lower(): value for key, value in response.headers.items()}
@@ -312,14 +244,7 @@ async def fetch_official_attachment(
         validator = ResponseValidator(policy, max_bytes)
         validator.declared(length)
         media_type = response_headers.get("content-type")
-        guard_response(
-            policy,
-            url,
-            media_type,
-            response_headers.get("content-disposition"),
-            operation=operation,
-            selected_file_id=target.file_id,
-        )
+        guard_response(policy, media_type, response_headers.get("content-disposition"))
         body = await response.body()
         if len(body) > max_bytes:
             raise CampusError("file-too-large", "Selected attachment exceeds the approved byte limit.")
@@ -341,9 +266,6 @@ async def fetch_official_attachment(
             temp_path.unlink(missing_ok=True)
         raise
     finally:
-        if interceptor is not None:
-            interceptor.stop_capture()
-            interceptor.unbind_selected_document()
         try:
             try:
                 if response is not None:
@@ -367,12 +289,5 @@ async def fetch_official_attachment(
         if temp_path is not None:
             temp_path.unlink(missing_ok=True)
         raise fatal_denials[0]
-    if interceptor is not None:
-        try:
-            interceptor.raise_if_denied()
-        except UiRequestDenied:
-            if temp_path is not None:
-                temp_path.unlink(missing_ok=True)
-            raise
     assert result is not None
     return result

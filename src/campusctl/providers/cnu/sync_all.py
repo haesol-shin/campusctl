@@ -1,15 +1,13 @@
-"""One guarded CNU session for serial, course-bound domain collection."""
+"""One CNU session for serial, course-bound domain collection."""
 
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
-
-from playwright.async_api import Error as PlaywrightError
 
 from campusctl import browser
 from campusctl.catalog import _validate_catalog as validate_lecture_catalog
@@ -33,12 +31,6 @@ from campusctl.providers.cnu.roster_diagnostics import (
     stop_roster_requests,
 )
 from campusctl.providers.cnu.sync import COURSE_ROOM_URL_ANCHOR, _merge_health, collect_lectures_rows
-from campusctl.providers.cnu.sync import _course_failure as lecture_failure
-from campusctl.providers.cnu.ui_policy import (
-    UiRequestDiagnostics,
-    UiRequestPolicy,
-    install_ui_request_interceptor,
-)
 
 _SECTION_PATH = {
     "lectures": "/std/course",
@@ -46,7 +38,19 @@ _SECTION_PATH = {
     "notices": "/std/notice",
     "materials": "/std/archive",
 }
+
 _SELECTION_PATH = "/api/v1/course/addSessionCourseInfo"
+
+
+def _error_detail(error: Exception) -> str:
+    """Expose a stable error kind without leaking browser URLs or response payloads."""
+    if isinstance(error, CampusError):
+        if error.code == "browser-timeout":
+            match = re.fullmatch(r"Timed out while ([A-Za-z ]+)\.", error.message)
+            if match is not None:
+                return f"{match[1]} timed out"
+        return error.code
+    return type(error).__name__
 
 
 @dataclass(slots=True)
@@ -62,10 +66,8 @@ class _Stage:
     successful: set[str] = field(default_factory=set)
     failures: list[dict[str, str]] = field(default_factory=list)
     errors: list[CampusError] = field(default_factory=list)
-    suppressed_count: int = 0
-    suppressed_reasons: dict[str, int] = field(default_factory=dict)
 
-    def fail(self, domain: str, course: dict[str, Any], error: Exception | None = None) -> None:
+    def fail(self, domain: str, course: dict[str, Any], step: str, error: Exception | None = None) -> None:
         if course["course_id"] in self.successful or any(
             failed["course_id"] == course["course_id"] for failed in self.failures
         ):
@@ -78,74 +80,33 @@ class _Stage:
         }:
             reason = error.code
         self.failures.append({"course_id": course["course_id"], "label": course["label"], "reason": reason})
-        if domain == "lectures":
-            self.errors.append(lecture_failure(course))
-        elif domain == "assignments":
-            self.errors.append(assignments._course_failure(course, reason))
-        elif domain == "notices":
-            self.errors.append(notices._error(reason))
-        else:
-            self.errors.append(
-                error if isinstance(error, CampusError) and error.code == reason else materials._failure(reason, course)
-            )
-
-
-def _policies(domains: tuple[str, ...], reviewed_policy: Mapping[str, Any] | None = None) -> dict[str, UiRequestPolicy]:
-    from campusctl.commands.assignments import CAPABILITY as ASSIGNMENTS
-    from campusctl.commands.materials import CAPABILITY as MATERIALS
-    from campusctl.commands.notices import CAPABILITY as NOTICES
-    from campusctl.commands.notices import LECTURES_SYNC_POLICY
-
-    reviewed = {
-        "lectures": LECTURES_SYNC_POLICY,
-        "assignments": ASSIGNMENTS["policy"],
-        "notices": NOTICES["policy"],
-        "materials": MATERIALS["policy"],
-    }
-    if reviewed_policy is not None:
-        if len(domains) != 1:
-            raise ValueError("A reviewed policy override is limited to one domain")
-        reviewed[domains[0]] = reviewed_policy
-    policies = {domain: UiRequestPolicy.from_reviewed_config(reviewed[domain]) for domain in domains}
-    if reviewed_policy is not None:
-        domain = domains[0]
-        policy = policies[domain]
-        if domain == "assignments" and (
-            not policy.approved or not any(route.operation == "assignments.sync" for route in policy.routes)
-        ):
-            raise CampusError("policy-unapproved", "Assignment request policy is not approved.", None, "user-action")
-        if not policy.approved and domain == "notices":
-            raise CampusError("policy-blocked", "The reviewed notice policy is unavailable.", None, "error")
-        if not policy.approved and domain == "materials":
-            raise CampusError(
-                "policy-blocked",
-                "Materials sync policy has not been approved.",
-                "Use only an owner-reviewed operation.",
+        detail = _error_detail(error) if error is not None else "prerequisite unavailable"
+        self.errors.append(
+            CampusError(
+                reason,
+                f"{domain} sync failed for {course['label']} ({course['course_id']}) at {step}: {detail}",
+                "Check the course in the LMS and retry sync.",
                 "error",
             )
-    if any(not policy.approved for policy in policies.values()):
-        raise CampusError("policy-blocked", "A requested sync policy is not approved.", None, "error")
-    return policies
+        )
 
 
-async def _settle(page: Any, guard: Any) -> None:
+async def _settle(page: Any) -> None:
     await browser.bounded(
-        page.wait_for_load_state("networkidle"), browser.PROTOCOL_TIMEOUT_SECONDS, "settling guarded page"
+        page.wait_for_load_state("networkidle"), browser.PROTOCOL_TIMEOUT_SECONDS, "settling page requests"
     )
-    guard.raise_if_denied()
 
 
-async def _roster(page: Any, guard: Any, root: Path, headless: bool, domain: str) -> list[dict[str, Any]]:
+async def _roster(page: Any, root: Path, headless: bool, domain: str) -> list[dict[str, Any]]:
     trace = start_roster_requests(page, headless=headless)
     try:
         try:
-            guard.raise_if_denied()
             with browser.profile_span("roster", domain=domain):
                 with browser.profile_span("document-commit", domain=domain):
                     await browser.bounded(
                         page.goto(MY_LECTURE_URL, wait_until="domcontentloaded"),
                         browser.PROTOCOL_TIMEOUT_SECONDS,
-                        "opening guarded course roster",
+                        "opening course roster",
                     )
                 trace.step = "wait"
                 with browser.profile_span("dom-ready", domain=domain):
@@ -154,7 +115,7 @@ async def _roster(page: Any, guard: Any, root: Path, headless: bool, domain: str
                         browser.PROTOCOL_TIMEOUT_SECONDS,
                         "waiting for course roster",
                     )
-                await _settle(page, guard)
+                await _settle(page)
                 trace.step = "evaluate"
                 with browser.profile_span("extract", domain=domain):
                     raw = await browser.bounded(
@@ -166,25 +127,24 @@ async def _roster(page: Any, guard: Any, root: Path, headless: bool, domain: str
                 roster = parse_courses(raw)
                 if len(roster) != len(raw):
                     raise ValueError("Roster contains duplicate or unaddressable courses")
-                guard.raise_if_denied()
                 return roster
         except Exception as error:
-            if isinstance(error, CampusError) and error.code == "policy-blocked":
-                raise
-            guard.raise_if_denied()
             await capture_roster_failure(
                 page, operation=f"{domain}.sync", step=trace.step, elapsed_s=trace.elapsed_s, root=root
             )
             raise CampusError(
-                "course-discovery-failed", "Enrolled courses could not be discovered.", "Retry the sync.", "error"
+                "course-discovery-failed",
+                f"{domain} roster {trace.step}: {_error_detail(error)}",
+                "Retry the sync.",
+                "error",
             ) from None
     finally:
         stop_roster_requests(page)
 
 
-async def _select_course(page: Any, guard: Any, course: dict[str, Any], ordinal: int, domain: str) -> None:
+async def _select_course(page: Any, course: dict[str, Any], ordinal: int, domain: str) -> None:
     """Prove the selected course from its committed entry page, not the navigating POST body."""
-    await _settle(page, guard)
+    await _settle(page)
     frame = page.main_frame
     sequence = 0
     requests: list[tuple[int, Any]] = []
@@ -215,7 +175,7 @@ async def _select_course(page: Any, guard: Any, course: dict[str, Any], ordinal:
                 "selecting a roster course",
             )
         browser.profile_count("course_selections")
-        await _settle(page, guard)
+        await _settle(page)
         await browser.bounded(
             page.wait_for_selector('a[href="/std/course"]', state="attached"),
             browser.PROTOCOL_TIMEOUT_SECONDS,
@@ -231,97 +191,83 @@ async def _select_course(page: Any, guard: Any, course: dict[str, Any], ordinal:
             or topbar_id != course["course_id"]
         ):
             raise ValueError("Course entry does not match its roster selection")
-        guard.raise_if_denied()
     finally:
         page.remove_listener("request", on_request)
         page.remove_listener("framenavigated", on_navigate)
 
 
-async def _return_to_roster(page: Any, guard: Any) -> None:
-    await _settle(page, guard)
+async def _return_to_roster(page: Any) -> None:
+    await _settle(page)
     previous = page.main_frame.url
     await browser.bounded(
         page.goto(MY_LECTURE_URL, wait_until="domcontentloaded", referer=previous),
         browser.PROTOCOL_TIMEOUT_SECONDS,
-        "returning to the guarded roster",
+        "returning to the roster",
     )
-    await _settle(page, guard)
+    await _settle(page)
 
 
 async def _section(
     page: Any,
-    guard: Any,
     ordinal: int,
     domain: str,
-    policy: UiRequestPolicy,
     course: dict[str, Any],
     courses: list[dict[str, Any]],
     todo: dict[str, list[dict[str, Any]]],
 ) -> list[dict[str, Any]]:
-    await _settle(page, guard)
-    guard.set_policy(policy, operation=f"{domain}.sync")
-    frame = page.main_frame
+    await _settle(page)
+    if urlsplit(page.main_frame.url).path == "/std/todo":
+        await browser.bounded(
+            page.go_back(wait_until="domcontentloaded"),
+            browser.PROTOCOL_TIMEOUT_SECONDS,
+            f"returning to selected course menu for {domain}",
+        )
+        if await _wait_for_topbar_course_id(page) != course["course_id"]:
+            raise ValueError(f"{domain} menu belongs to another course")
     if domain == "lectures":
         with browser.profile_span("document-commit", domain=domain, course=ordinal):
             await browser.bounded(
                 page.click(COURSE_ROOM_URL_ANCHOR), browser.PROTOCOL_TIMEOUT_SECONDS, "opening lecture section"
             )
-        return await collect_lectures_rows(page, course, guard, ordinal=ordinal)
+        return await collect_lectures_rows(page, course, ordinal=ordinal)
     if domain == "assignments":
-        capture = assignments.arm_assignment_capture(page, guard)
+        capture = assignments.arm_assignment_capture(page)
         with browser.profile_span("document-commit", domain=domain, course=ordinal):
-            await assignments.open_assignment_section(
-                page, guard, lambda: page.click('a[href="/std/task"]'), capture=capture
-            )
-        return await assignments.collect_assignment_rows(page, course, guard, capture=capture)
+            await assignments.open_assignment_section(page, lambda: page.click('a[href="/std/task"]'), capture=capture)
+        return await assignments.collect_assignment_rows(page, course, capture=capture)
     if domain == "notices":
-        capture = notices.arm_notice_capture(page, guard)
-        with browser.profile_span("document-commit", domain=domain, course=ordinal):
-            await notices.open_notice_section(
-                page,
-                guard,
-                lambda: page.goto(
-                    urlsplit(frame.url)._replace(path="/std/notice", query="", fragment="").geturl(),
-                    referer=frame.url,
-                    wait_until="domcontentloaded",
-                ),
-                capture=capture,
-            )
-        return await notices.collect_notice_rows(
-            page, course, guard, capture=capture, courses=courses, todo_rows=todo[course["course_id"]]
+        await browser.bounded(
+            page.wait_for_selector('a[href="/std/notice"]', state="attached"),
+            browser.PROTOCOL_TIMEOUT_SECONDS,
+            "waiting for notice menu",
         )
-    capture = await materials.arm_materials_capture(page, guard)
-
-    async def open_archive() -> None:
-        if urlsplit(frame.url).path == "/std/todo":
-            # A failed to-do prerequisite skips the board; the to-do has no archive menu.
-            previous = frame.url
-            await page.goto(
-                urlsplit(previous)._replace(path="/std/archive", query="", fragment="").geturl(),
-                referer=previous,
-                wait_until="domcontentloaded",
-            )
-        else:
-            await page.click('a[href="/std/archive"]')
-
+        capture = notices.arm_notice_capture(page)
+        with browser.profile_span("document-commit", domain=domain, course=ordinal):
+            await notices.open_notice_section(page, lambda: page.click('a[href="/std/notice"]'), capture=capture)
+        return await notices.collect_notice_rows(
+            page, course, capture=capture, courses=courses, todo_rows=todo[course["course_id"]]
+        )
+    if await _wait_for_topbar_course_id(page) != course["course_id"]:
+        raise ValueError("Archive menu belongs to another course")
+    await browser.bounded(
+        page.wait_for_selector('a[href="/std/archive"]', state="attached"),
+        browser.PROTOCOL_TIMEOUT_SECONDS,
+        "waiting for archive menu",
+    )
+    capture = await materials.arm_materials_capture(page)
     with browser.profile_span("document-commit", domain=domain, course=ordinal):
-        await materials.open_materials_section(page, guard, open_archive, capture=capture)
-    return await materials.collect_materials_rows(page, course, guard, capture=capture)
+        await materials.open_materials_section(page, lambda: page.click('a[href="/std/archive"]'), capture=capture)
+    return await materials.collect_materials_rows(page, course, capture=capture)
 
 
 async def _todo(
     page: Any,
-    guard: Any,
-    policy: UiRequestPolicy,
     courses: list[dict[str, Any]],
     selected_course_id: str | None,
 ) -> tuple[dict[str, list[dict[str, Any]]], set[str]]:
-    await _settle(page, guard)
-    guard.set_policy(policy, operation="notices.sync")
-    capture = await notices.open_notice_todo(page, guard)
-    return await notices.collect_notice_todo(
-        page, guard, courses, capture=capture, selected_course_id=selected_course_id
-    )
+    await _settle(page)
+    capture = await notices.open_notice_todo(page)
+    return await notices.collect_notice_todo(page, courses, capture=capture, selected_course_id=selected_course_id)
 
 
 def _stage_catalog(
@@ -380,11 +326,6 @@ def _stage_catalog(
         ),
         "failed_courses": result_failures,
         "catalog": {"generated_at": merged["generated_at"], "enrollment_state": merged["enrollment_state"]},
-        **(
-            {"suppressed_count": stage.suppressed_count, "suppressed_reasons": stage.suppressed_reasons}
-            if domain == "assignments"
-            else {}
-        ),
     }
 
 
@@ -396,9 +337,8 @@ async def sync_all(
     *,
     headless: bool = False,
     course_snapshot: dict[str, Any] | None = None,
-    reviewed_policy: Mapping[str, Any] | None = None,
 ) -> dict[str, DomainOutcome]:
-    """Collect once and publish only after the guarded browser has closed under its lock."""
+    """Collect once and publish only after the browser has closed under its lock."""
     from campusctl.catalog_view import DOMAINS, assert_course_snapshot_current
 
     if (
@@ -409,35 +349,37 @@ async def sync_all(
         raise CampusError(
             "unsupported-domain", "Unknown or duplicate sync domain.", "Use a supported --only subset.", "user-action"
         )
-    policies = _policies(domains, reviewed_policy)
     staged = {domain: _Stage() for domain in domains}
-    diagnostics = UiRequestDiagnostics()
     operation = f"{domains[0]}.sync"
     roster: list[dict[str, Any]] | None = None
-    selected_courses: list[dict[str, Any]] = []
-    guard: Any = None
+    session_step = "browser open"
     discovery_failed = False
     with browser.session_lock(config, data_dir=root):
         if course_snapshot is not None:
-            assert_course_snapshot_current(root, course_snapshot)
+            try:
+                assert_course_snapshot_current(root, course_snapshot)
+            except CampusError as error:
+                raise CampusError(
+                    error.code,
+                    f"{domains[0]} catalog snapshot: {_error_detail(error)}",
+                    error.remediation,
+                    error.status,
+                ) from None
         try:
             async with browser.open_session(
                 config, data_dir=root, headless=headless, operation=operation, require_owned_page=True
             ) as session:
                 page = session.page
+                session_step = "authentication"
                 with browser.profile_span("auth", domain=domains[0]):
                     await ensure_logged_in(
                         page, config, target_url=MY_LECTURE_URL, expected_selector=COURSE_LINK_SELECTOR
                     )
+                session_step = "SSO settling"
                 await browser.settle_sso_popups(session, domain=domains[0])
-                guard = await install_ui_request_interceptor(
-                    session.context,
-                    policies[domains[0]],
-                    operation=operation,
-                    diagnostics=diagnostics,
-                )
+                session_step = "roster discovery"
                 try:
-                    roster = await _roster(page, guard, root, headless, domains[0])
+                    roster = await _roster(page, root, headless, domains[0])
                 except CampusError as error:
                     if error.code == "course-discovery-failed":
                         discovery_failed = True
@@ -448,7 +390,7 @@ async def sync_all(
                 if not selected_courses and course_id is not None:
                     raise CampusError(
                         "course-not-found",
-                        "The requested course ID was not found among enrolled courses.",
+                        f"{domains[0]} roster lookup: the requested course ID was not found among enrolled courses.",
                         "Check the course ID and retry.",
                         "user-action",
                     )
@@ -456,107 +398,73 @@ async def sync_all(
                 todo_rows: dict[str, list[dict[str, Any]]] = {}
                 todo_failures: set[str] = set()
                 todo_completed = False
+                session_step = "course traversal"
                 for ordinal, course in enumerate(selected_courses, 1):
                     if selected_before:
                         try:
-                            guard.set_policy(policies[domains[0]], operation=operation)
-                            await _return_to_roster(page, guard)
+                            await _return_to_roster(page)
                         except Exception as error:
-                            guard.raise_if_denied()
-                            if isinstance(error, CampusError) and error.code == "policy-blocked":
-                                raise
                             raise CampusError(
                                 "course-sync-failed",
-                                "The guarded course roster could not be rebound.",
+                                f"{domains[0]} roster return: {_error_detail(error)}",
                                 "Retry sync after the course page settles.",
                                 "error",
                             ) from None
                     try:
-                        await _select_course(page, guard, course, ordinal, domains[0])
+                        await _select_course(page, course, ordinal, domains[0])
                     except Exception as error:
-                        guard.raise_if_denied()
-                        if isinstance(error, CampusError) and error.code == "policy-blocked":
-                            raise
-                        # A mismatched committed entry cannot supply rows to any domain.
-                        raise CampusError(
-                            "course-sync-failed",
-                            "Course selection could not be validated.",
-                            "Check the course in the LMS and retry sync.",
-                            "error",
-                        ) from None
+                        for domain in domains:
+                            staged[domain].fail(domain, course, "course selection", error)
+                        # No course data is trusted until its committed entry proves identity.
+                        # Returning to the roster before the next selection is the recovery gate.
+                        selected_before = True
+                        continue
                     selected_before = True
-                    for domain in domains:
+                    for domain_index, domain in enumerate(domains):
                         if domain == "notices" and not todo_completed:
                             try:
-                                todo_rows, todo_failures = await _todo(
-                                    page, guard, policies["notices"], roster, course_id
-                                )
-                            except Exception as error:
-                                guard.raise_if_denied()
-                                if isinstance(error, CampusError) and error.code == "policy-blocked":
-                                    raise
-                                if urlsplit(page.main_frame.url).path != "/std/todo":
-                                    raise CampusError(
-                                        "course-sync-failed",
-                                        "The global to-do navigation did not commit.",
-                                        "Retry sync after the course page settles.",
-                                        "error",
-                                    ) from None
+                                todo_rows, todo_failures = await _todo(page, roster, course_id)
+                            except Exception:
+                                # A failed to-do read cannot attest to notice coverage; the
+                                # next section rebinds the selected course before opening its menu.
                                 todo_failures = {item["course_id"] for item in selected_courses}
                             todo_completed = True
                         if domain == "notices" and course["course_id"] in todo_failures:
-                            staged[domain].fail(domain, course)
+                            staged[domain].fail(domain, course, "todo extraction")
                             continue
-                        before_suppressed = diagnostics.suppressed_count
-                        before_reasons = dict(diagnostics.suppressed_reasons)
                         try:
-                            rows = await _section(
-                                page, guard, ordinal, domain, policies[domain], course, roster, todo_rows
-                            )
-                            guard.raise_if_denied()
+                            rows = await _section(page, ordinal, domain, course, roster, todo_rows)
                         except Exception as error:
-                            guard.raise_if_denied()
-                            if isinstance(error, CampusError) and error.code == "policy-blocked":
-                                raise
-                            path = urlsplit(page.main_frame.url).path
+                            try:
+                                path = urlsplit(page.main_frame.url).path
+                            except Exception:
+                                path = ""
                             if path != _SECTION_PATH[domain] and (domain != "lectures" or path != "/std/lecture"):
-                                raise CampusError(
-                                    "course-sync-failed",
-                                    "A section navigation did not commit.",
-                                    "Retry sync after the course page settles.",
-                                    "error",
-                                ) from None
-                            staged[domain].fail(domain, course, error)
+                                for pending in domains[domain_index:]:
+                                    staged[pending].fail(pending, course, "section navigation", error)
+                                # The current document cannot establish course identity. Restore
+                                # the roster before attempting another enrolled course.
+                                break
+                            staged[domain].fail(domain, course, "section extraction", error)
                         else:
                             staged[domain].successful.add(course["course_id"])
                             staged[domain].rows.extend(rows)
-                        finally:
-                            if domain == "assignments":
-                                staged[domain].suppressed_count += diagnostics.suppressed_count - before_suppressed
-                                for reason, count in diagnostics.suppressed_reasons.items():
-                                    difference = count - before_reasons.get(reason, 0)
-                                    if difference:
-                                        reasons = staged[domain].suppressed_reasons
-                                        reasons[reason] = reasons.get(reason, 0) + difference
-                await _settle(page, guard)
-                guard.raise_if_denied()
+                session_step = "final page settling"
+                await _settle(page)
+        except CampusError as error:
+            if error.code in {"course-not-found", "course-discovery-failed", "course-sync-failed"}:
+                raise
+            raise CampusError(
+                error.code, f"{domains[0]} {session_step}: {_error_detail(error)}", error.remediation, error.status
+            ) from None
+        except Exception as error:
+            raise CampusError(
+                "course-sync-failed",
+                f"{domains[0]} {session_step}: {_error_detail(error)}",
+                "Check the LMS session and retry sync.",
+                "error",
+            ) from None
         finally:
-            if guard is not None:
-                try:
-                    guard.raise_if_denied()
-                finally:
-                    try:
-                        # Browser cleanup has ended: the closed local context or stopped CDP driver
-                        # already detached its client-side route; other unroute failures are fatal.
-                        await guard.close()
-                    except PlaywrightError as error:
-                        message = str(error).casefold()
-                        if (
-                            "target page, context or browser has been closed" not in message
-                            and "connection closed" not in message
-                        ):
-                            raise
-                guard.raise_if_denied()
             if discovery_failed and course_id is None:
                 for domain in domains:
                     if domain == "lectures":
@@ -565,18 +473,25 @@ async def sync_all(
                         _mark_enrollment_unknown(root)
                     else:
                         mark_enrollment_unknown(domain, root)
-        if domains == ("assignments",):
-            staged["assignments"].suppressed_count = diagnostics.suppressed_count
-            staged["assignments"].suppressed_reasons = dict(diagnostics.suppressed_reasons)
         if roster is None:
-            raise CampusError("course-discovery-failed", "Course roster unavailable.", None, "error")
+            raise CampusError("course-discovery-failed", f"{domains[0]} roster unavailable.", None, "error")
         prepared: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {}
         for domain in domains:
             try:
                 prepared[domain] = _stage_catalog(domain, staged[domain], roster, course_id, root)
-            except CampusError as error:
+            except Exception as error:
+                code = error.code if isinstance(error, CampusError) else "course-sync-failed"
+                status = error.status if isinstance(error, CampusError) else "error"
+                remediation = (
+                    error.remediation if isinstance(error, CampusError) else "Check catalog data and retry sync."
+                )
                 outcomes = {pending: DomainOutcome(status="not-started") for pending in domains}
-                outcomes[domain] = DomainOutcome(errors=[error], status=error.status)
+                outcomes[domain] = DomainOutcome(
+                    errors=[
+                        CampusError(code, f"{domain} catalog preparation: {_error_detail(error)}", remediation, status)
+                    ],
+                    status=status,
+                )
                 return outcomes
         outcomes: dict[str, DomainOutcome] = {}
         for index, domain in enumerate(domains):
@@ -590,7 +505,7 @@ async def sync_all(
             except (CampusError, OSError):
                 failure = CampusError(
                     "catalog-write-failed",
-                    f"The {domain} catalog could not be published.",
+                    f"{domain} catalog publication failed at serialize-write.",
                     "Check catalog storage and retry sync.",
                     "error",
                 )
@@ -608,12 +523,9 @@ async def sync_one(
     course_id: str | None,
     *,
     headless: bool = False,
-    reviewed_policy: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, Any], list[CampusError]]:
-    """Preserve standalone provider signatures while sharing the guarded traversal."""
-    outcome = (await sync_all(config, root, (domain,), course_id, headless=headless, reviewed_policy=reviewed_policy))[
-        domain
-    ]
+    """Preserve standalone provider signatures while sharing course traversal."""
+    outcome = (await sync_all(config, root, (domain,), course_id, headless=headless))[domain]
     if outcome.status == "error" and outcome.errors and not outcome.result:
         raise outcome.errors[0]
     return outcome.result, outcome.errors

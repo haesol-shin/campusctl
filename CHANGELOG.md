@@ -5,8 +5,9 @@ All notable changes to campusctl are documented here. This project follows [Keep
 ## [Unreleased]
 
 ### Changed
-- Sync selected domains in one guarded session with one course selection per course; validate the committed course page and each domain's own course data without reading the navigating selection response
-- Defer selection-epoch enforcement to 0.4.x while retaining the reviewed base request guard and suppression of localhost telemetry
+- Sync selected domains in one browser session with one course selection per course; verify committed course identity before publishing rows
+- Let the LMS load its own page requests during sync and fetch, and open notice and archive sections through their menus
+- Name the failing domain and step in sync and fetch errors while retaining selected-file binding and attachment response validation
 
 ## [0.3.2] - 2026-09-26
 

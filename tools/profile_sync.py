@@ -132,19 +132,15 @@ def _group(name: str) -> str:
 def _safe_profile(profile: object) -> dict | None:
     if not isinstance(profile, dict) or profile.get("schema_version") != 1:
         return None
-    from campusctl.profiling import COUNT_NAMES, DISPOSITIONS, DOMAINS, PHASES, ROUTES
+    from campusctl.profiling import COUNT_NAMES, DOMAINS, PHASES
 
     counts = profile.get("counts")
-    routes = profile.get("routes")
-    spans = profile.get("spans")
-    if not isinstance(counts, dict) or not isinstance(routes, dict) or not isinstance(spans, list):
+    if "routes" in profile:
         return None
-    if len(spans) > 4096 or len(routes) > len(ROUTES) * len(DISPOSITIONS):
+    spans = profile.get("spans")
+    if not isinstance(counts, dict) or not isinstance(spans, list) or len(spans) > 4096:
         return None
     if set(counts) != COUNT_NAMES or any(type(value) is not int or value < 0 for value in counts.values()):
-        return None
-    allowed_routes = {f"{route}:{disposition}" for route in ROUTES for disposition in DISPOSITIONS}
-    if not set(routes) <= allowed_routes or any(type(value) is not int or value < 0 for value in routes.values()):
         return None
     keys = {"phase", "domain", "course", "window", "failed", "count", "inclusive_ns", "exclusive_ns"}
     for span in spans:
@@ -169,7 +165,6 @@ def _safe_profile(profile: object) -> dict | None:
     return {
         "spans": spans,
         "counts": counts,
-        "routes": routes,
         "event_loop_lag_ns": lag,
         "dropped_events": dropped,
         "outcome": profile["outcome"],

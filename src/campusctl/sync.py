@@ -37,7 +37,7 @@ def run_sync(
     profile: Any = None,
     course_snapshot: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], CampusError | list[CampusError] | None]:
-    """Validate all requested modes, then collect in one guarded session."""
+    """Validate all requested modes, then collect in one browser session."""
     selected = tuple(domain for domain in DOMAINS if domain in domains)
     if len(selected) != len(set(domains)) or not selected:
         raise CampusError("unsupported-domain", "Unknown sync domain.", "Use a supported --only subset.", "user-action")

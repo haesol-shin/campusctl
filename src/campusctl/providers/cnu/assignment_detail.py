@@ -1,4 +1,4 @@
-"""Read one selected assignment detail from an already guarded CNU browser page."""
+"""Read one selected assignment detail from an authenticated CNU browser page."""
 
 from __future__ import annotations
 
@@ -78,14 +78,14 @@ EXTRACT_ASSIGNMENT_DETAIL_JS = r"""() => {
 }"""
 
 
-def _failed(message: str = "The selected assignment detail could not be verified.") -> CampusError:
+def _failed(message: str = "Assignment detail response could not be verified.") -> CampusError:
     return CampusError("fetch-failed", message, status="error")
 
 
 def _wrong_task() -> CampusError:
     return CampusError(
         "entity-unknown",
-        "The opened assignment does not match the selected task.",
+        "Assignment detail selection: the opened task does not match the selected assignment.",
         "Sync assignments again and select the current full ID.",
         "user-action",
     )
@@ -159,10 +159,9 @@ def _detail_parts(raw: Any, *, task_id: str, source_url: str) -> tuple[str | Res
 
 
 async def capture_assignment_detail(page: Any, config: dict[str, Any], selected_row: dict[str, Any]) -> DetailSnapshot:
-    """Open the selected catalog task via ordinary UI and bind both detail responses before any byte transfer.
+    """Open the selected catalog task via the course task menu and bind both detail responses.
 
-    The caller authenticates once, installs the assignments.fetch interceptor, and keeps
-    the session/guard active across this adapter and the package builder.
+    The caller authenticates once and retains the session through package building.
     """
     task_id = selected_row.get("task_id")
     course = selected_row.get("course")
@@ -209,47 +208,34 @@ async def capture_assignment_detail(page: Any, config: dict[str, Any], selected_
 
         return match
 
-    async def block_automatic_images(route: Any) -> None:
-        # The package builder classifies and transfers images only after detail identity is bound.
-        if route.request.resource_type == "image":
-            await route.abort()
-        else:
-            await route.fallback()
-
-    await bounded(
-        page.route("**/*", block_automatic_images), PROTOCOL_TIMEOUT_SECONDS, "preventing unbound image requests"
-    )
-    try:
-        async with (
-            page.expect_response(matches(_DETAIL_PATHS[0]), timeout=SECTION_RESPONSE_TIMEOUT_MS) as detail_info,
-            page.expect_response(matches(_DETAIL_PATHS[1]), timeout=SECTION_RESPONSE_TIMEOUT_MS) as std_info,
+    async with (
+        page.expect_response(matches(_DETAIL_PATHS[0]), timeout=SECTION_RESPONSE_TIMEOUT_MS) as detail_info,
+        page.expect_response(matches(_DETAIL_PATHS[1]), timeout=SECTION_RESPONSE_TIMEOUT_MS) as std_info,
+    ):
+        await bounded(selected.click(), PROTOCOL_TIMEOUT_SECONDS, "opening the selected CNU task")
+    for info in (detail_info, std_info):
+        response = await bounded(info.value, PROTOCOL_TIMEOUT_SECONDS, "waiting for CNU task detail")
+        if (
+            response.status != 200
+            or await bounded(response.finished(), PROTOCOL_TIMEOUT_SECONDS, "finishing CNU task detail") is not None
         ):
-            await bounded(selected.click(), PROTOCOL_TIMEOUT_SECONDS, "opening the selected CNU task")
-        for info in (detail_info, std_info):
-            response = await bounded(info.value, PROTOCOL_TIMEOUT_SECONDS, "waiting for CNU task detail")
-            if (
-                response.status != 200
-                or await bounded(response.finished(), PROTOCOL_TIMEOUT_SECONDS, "finishing CNU task detail") is not None
-            ):
-                raise _failed()
-            identity = _response_identity(
-                await bounded(response.json(), PROTOCOL_TIMEOUT_SECONDS, "verifying CNU task detail identity"),
-                course_id,
-            )
-            if identity != task_id:
-                raise _wrong_task()
-        source_url = page.url
-        source = urlsplit(source_url)
-        if f"{source.scheme}://{source.netloc}" != _ORIGIN or source.path != "/std/taskView":
             raise _failed()
-        await bounded(
-            page.wait_for_selector(_DETAIL_TITLE, state="visible"),
-            PROTOCOL_TIMEOUT_SECONDS,
-            "waiting for selected CNU task content",
+        identity = _response_identity(
+            await bounded(response.json(), PROTOCOL_TIMEOUT_SECONDS, "verifying CNU task detail identity"),
+            course_id,
         )
-        raw = await bounded(
-            page.evaluate(EXTRACT_ASSIGNMENT_DETAIL_JS), PROTOCOL_TIMEOUT_SECONDS, "reading selected CNU task brief"
-        )
-        return DetailSnapshot(source_url, task_id, _detail_parts(raw, task_id=task_id, source_url=source_url))
-    finally:
-        await page.unroute("**/*", block_automatic_images)
+        if identity != task_id:
+            raise _wrong_task()
+    source_url = page.url
+    source = urlsplit(source_url)
+    if f"{source.scheme}://{source.netloc}" != _ORIGIN or source.path != "/std/taskView":
+        raise _failed()
+    await bounded(
+        page.wait_for_selector(_DETAIL_TITLE, state="visible"),
+        PROTOCOL_TIMEOUT_SECONDS,
+        "waiting for selected CNU task content",
+    )
+    raw = await bounded(
+        page.evaluate(EXTRACT_ASSIGNMENT_DETAIL_JS), PROTOCOL_TIMEOUT_SECONDS, "reading selected CNU task brief"
+    )
+    return DetailSnapshot(source_url, task_id, _detail_parts(raw, task_id=task_id, source_url=source_url))

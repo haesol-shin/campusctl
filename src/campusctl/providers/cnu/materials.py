@@ -1,4 +1,4 @@
-"""Guarded, metadata-only enumeration of official course archive attachments."""
+"""Metadata-only enumeration of official course archive attachments."""
 
 from __future__ import annotations
 
@@ -177,11 +177,8 @@ def _target_row(
     }
 
 
-async def _step(awaitable: Any, guard: Any, description: str) -> Any:
-    try:
-        return await bounded(awaitable, PROTOCOL_TIMEOUT_SECONDS, description)
-    finally:
-        guard.raise_if_denied()
+async def _step(awaitable: Any, description: str) -> Any:
+    return await bounded(awaitable, PROTOCOL_TIMEOUT_SECONDS, description)
 
 
 class _RequestWindow:
@@ -252,18 +249,12 @@ class _RequestWindow:
             and urlsplit(request.url).path == path
         ]
 
-    async def idle(self, guard: Any) -> None:
+    async def idle(self) -> None:
         await _step(
             self.page.wait_for_load_state("networkidle", timeout=SECTION_RESPONSE_TIMEOUT_MS),
-            guard,
             "waiting for archive requests",
         )
-        try:
-            await bounded(
-                self.settled.wait(), SECTION_RESPONSE_TIMEOUT_MS / 1000, "waiting for archive request completion"
-            )
-        finally:
-            guard.raise_if_denied()
+        await bounded(self.settled.wait(), SECTION_RESPONSE_TIMEOUT_MS / 1000, "waiting for archive request completion")
         if self.pending:
             raise ValueError("archive requests remain pending")
 
@@ -304,12 +295,12 @@ def _attachment_names(body: Any) -> dict[str, str]:
 _ARCHIVE_LIST = "/api/v1/archive/list"
 
 
-async def _archive_navigation(page: Any, guard: Any, action: Callable[[], Any], *, document: bool = True) -> None:
+async def _archive_navigation(page: Any, action: Callable[[], Any], *, document: bool = True) -> None:
     """Accept one list request originating after this archive navigation only."""
     activity = _RequestWindow(page)
     activity.start()
     try:
-        await activity.idle(guard)
+        await activity.idle()
         before = len(activity.requests)
 
         def selected(response: Any) -> bool:
@@ -327,11 +318,11 @@ async def _archive_navigation(page: Any, guard: Any, action: Callable[[], Any], 
             selected, timeout=SECTION_RESPONSE_TIMEOUT_MS if document else _WAIT_MS
         ) as pending:
             with profile_span("document-commit" if document else "archive-page", domain="materials"):
-                await _step(action(), guard, "opening archive list")
-        response = await _step(pending.value, guard, "waiting for archive list response")
+                await _step(action(), "opening archive list")
+        response = await _step(pending.value, "waiting for archive list response")
         with profile_span("response-completion", domain="materials"):
-            await _step(response.finished(), guard, "finishing archive list response")
-        await activity.idle(guard)
+            await _step(response.finished(), "finishing archive list response")
+        await activity.idle()
         records = activity.matches(_ARCHIVE_LIST, "POST", after=before)
         if (
             len(records) != 1
@@ -341,19 +332,19 @@ async def _archive_navigation(page: Any, guard: Any, action: Callable[[], Any], 
             or response.status != 200
         ):
             raise ValueError("archive list was not bound to this navigation")
-        payload = await _step(response.json(), guard, "parsing archive list response")
+        payload = await _step(response.json(), "parsing archive list response")
         if not isinstance(payload, (dict, list)):
             raise ValueError("archive list response was not JSON records")
     finally:
         activity.close()
 
 
-async def arm_materials_capture(page: Any, section_guard: Any) -> _RequestWindow:
+async def arm_materials_capture(page: Any) -> _RequestWindow:
     """Observe the first archive list request before the section document commits."""
     capture = _RequestWindow(page)
     capture.start()
     try:
-        await capture.idle(section_guard)
+        await capture.idle()
     except BaseException:
         capture.close()
         raise
@@ -362,7 +353,6 @@ async def arm_materials_capture(page: Any, section_guard: Any) -> _RequestWindow
 
 async def open_materials_section(
     page: Any,
-    section_guard: Any,
     action: Callable[[], Any],
     *,
     capture: _RequestWindow | None = None,
@@ -371,9 +361,9 @@ async def open_materials_section(
 
     async def navigate() -> None:
         if capture is None:
-            await _archive_navigation(page, section_guard, action)
+            await _archive_navigation(page, action)
         else:
-            await _step(action(), section_guard, "opening archive section")
+            await _step(action(), "opening archive section")
 
     try:
         await navigate()
@@ -386,17 +376,15 @@ async def open_materials_section(
 async def collect_materials_rows(
     page: Any,
     course: Mapping[str, Any],
-    section_guard: Any,
     *,
     capture: _RequestWindow | None = None,
 ) -> list[dict[str, Any]]:
     """Collect the complete archive from its validated, committed section document."""
     try:
-        section_guard.raise_if_denied()
         if urlsplit(page.main_frame.url).path != "/std/archive":
             raise _failure("course-sync-failed", course)
         if capture is not None:
-            await capture.idle(section_guard)
+            await capture.idle()
             records = capture.matches(_ARCHIVE_LIST, "POST")
             if (
                 len(capture.commits) != 1
@@ -409,13 +397,12 @@ async def collect_materials_rows(
             if response is None or response.status != 200:
                 raise _failure("course-sync-failed", course)
             with profile_span("response-completion", domain="materials"):
-                await _step(response.finished(), section_guard, "finishing archive list response")
-            payload = await _step(response.json(), section_guard, "parsing archive list response")
+                await _step(response.finished(), "finishing archive list response")
+            payload = await _step(response.json(), "parsing archive list response")
             if not isinstance(payload, (dict, list)):
                 raise _failure("course-sync-failed", course)
         with profile_span("extract", domain="materials"):
-            rows = await enumerate_archive(page, course, section_guard)
-        section_guard.raise_if_denied()
+            rows = await enumerate_archive(page, course)
         return rows
     finally:
         if capture is not None:
@@ -424,12 +411,11 @@ async def collect_materials_rows(
 
 async def _archive_state(
     page: Any,
-    guard: Any,
     expected_page: int,
     expected_total: int | None = None,
     expected_course_id: str | None = None,
 ) -> dict:
-    state = await _step(page.evaluate(_ARCHIVE_STATE_JS), guard, "observing archive table")
+    state = await _step(page.evaluate(_ARCHIVE_STATE_JS), "observing archive table")
     if (
         not isinstance(state, dict)
         or state.get("completed") is not True
@@ -450,12 +436,12 @@ async def _archive_state(
     return state
 
 
-async def _select_page(page: Any, guard: Any, number: int) -> None:
-    await _archive_navigation(page, guard, lambda: page.evaluate(_PAGE_JS, number), document=False)
+async def _select_page(page: Any, number: int) -> None:
+    await _archive_navigation(page, lambda: page.evaluate(_PAGE_JS, number), document=False)
 
 
-async def _post_names(page: Any, guard: Any, activity: _RequestWindow, after: int) -> dict[str, str]:
-    await activity.idle(guard)
+async def _post_names(page: Any, activity: _RequestWindow, after: int) -> dict[str, str]:
+    await activity.idle()
     if urlsplit(page.main_frame.url).path != "/std/archive":
         raise ValueError("attachment request not in the selected archive")
     requests = activity.matches(_ATTACH_LIST, "GET", after=after)
@@ -467,23 +453,23 @@ async def _post_names(page: Any, guard: Any, activity: _RequestWindow, after: in
     if response is None or response.status != 200:
         raise ValueError("attachment list did not complete")
     with profile_span("attachment-list", domain="materials"):
-        body = await _step(response.json(), guard, "reading attachment list metadata")
+        body = await _step(response.json(), "reading attachment list metadata")
     if isinstance(body, dict) and isinstance(body.get("header"), dict) and body["header"].get("code") != 200:
         raise ValueError("attachment list response failed")
     return _attachment_names(body)
 
 
-async def _restore_archive_document(page: Any, guard: Any) -> None:
+async def _restore_archive_document(page: Any) -> None:
     """Restore the archive menu and validate its list response."""
-    await _archive_navigation(page, guard, lambda: page.click(_ARCHIVE_MENU))
+    await _archive_navigation(page, lambda: page.click(_ARCHIVE_MENU))
 
 
-async def enumerate_archive(page: Any, course: Mapping[str, Any], guard: Any) -> list[dict[str, Any]]:
+async def enumerate_archive(page: Any, course: Mapping[str, Any]) -> list[dict[str, Any]]:
     """Enumerate every completed archive page and restore its exact post context."""
     with profile_span("dom-ready", domain="materials"):
-        await _step(page.wait_for_selector("#table_list", timeout=_WAIT_MS), guard, "waiting for archive table")
+        await _step(page.wait_for_selector("#table_list", timeout=_WAIT_MS), "waiting for archive table")
     with profile_span("archive-page", domain="materials"):
-        first = await _archive_state(page, guard, 1, expected_course_id=course["course_id"])
+        first = await _archive_state(page, 1, expected_course_id=course["course_id"])
     total = first["total_count"]
     pages = (total + first["page_size"] - 1) // first["page_size"]
     if pages > 100:
@@ -495,8 +481,8 @@ async def enumerate_archive(page: Any, course: Mapping[str, Any], guard: Any) ->
     for page_number in range(1, max(1, pages) + 1):
         with profile_span("archive-page", domain="materials"):
             if page_number > 1:
-                await _select_page(page, guard, page_number)
-            state = await _archive_state(page, guard, page_number, total, expected_course_id=course["course_id"])
+                await _select_page(page, page_number)
+            state = await _archive_state(page, page_number, total, expected_course_id=course["course_id"])
         posts = state["posts"]
         counted += state["row_count"]
         for post in posts:
@@ -512,18 +498,16 @@ async def enumerate_archive(page: Any, course: Mapping[str, Any], guard: Any) ->
             activity = _RequestWindow(page)
             activity.start()
             try:
-                await activity.idle(guard)
+                await activity.idle()
                 baseline = len(activity.requests)
                 with profile_span("modal", domain="materials"):
-                    await _step(page.evaluate(_CLICK_ICON_JS, post_id), guard, "opening archive file icon")
+                    await _step(page.evaluate(_CLICK_ICON_JS, post_id), "opening archive file icon")
                 try:
                     with profile_span("attachment-list", domain="materials"):
-                        names = await _post_names(page, guard, activity, baseline)
+                        names = await _post_names(page, activity, baseline)
                     try:
                         with profile_span("modal", domain="materials"):
-                            await _step(
-                                page.wait_for_selector(_MODAL, timeout=_WAIT_MS), guard, "waiting for file modal"
-                            )
+                            await _step(page.wait_for_selector(_MODAL, timeout=_WAIT_MS), "waiting for file modal")
                     except CampusError as error:
                         if error.code != "browser-timeout":
                             raise
@@ -532,13 +516,11 @@ async def enumerate_archive(page: Any, course: Mapping[str, Any], guard: Any) ->
                         with profile_span("modal", domain="materials"):
                             targets = await _step(
                                 page.evaluate(_TARGETS_JS, {"modalOnly": True, "boardItemId": post_id}),
-                                guard,
                                 "reading modal file controls",
                             )
                     if not targets:
                         targets = await _step(
                             page.evaluate(_TARGETS_JS, {"modalOnly": False, "boardItemId": post_id}),
-                            guard,
                             "reading inline file controls",
                         )
                     if not isinstance(targets, list) or not targets:
@@ -560,14 +542,13 @@ async def enumerate_archive(page: Any, course: Mapping[str, Any], guard: Any) ->
                         results.append(row)
                 finally:
                     with profile_span("modal", domain="materials"):
-                        await _step(page.evaluate(_CLOSE_MODAL_JS), guard, "closing archive modal")
+                        await _step(page.evaluate(_CLOSE_MODAL_JS), "closing archive modal")
                     with profile_span("archive-restore", domain="materials"):
-                        await _restore_archive_document(page, guard)
+                        await _restore_archive_document(page)
                         if page_number > 1:
-                            await _select_page(page, guard, page_number)
+                            await _select_page(page, page_number)
                         restored = await _archive_state(
                             page,
-                            guard,
                             page_number,
                             total,
                             expected_course_id=course["course_id"],
@@ -587,9 +568,8 @@ async def sync_materials(
     course_id: str | None = None,
     *,
     headless: bool = False,
-    reviewed_policy: Mapping[str, Any],
 ) -> tuple[dict[str, Any], list[CampusError]]:
-    """Collect materials through the shared guarded course traversal."""
+    """Collect materials through the shared course traversal."""
     from .sync_all import sync_one
 
-    return await sync_one(config, root, "materials", course_id, headless=headless, reviewed_policy=reviewed_policy)
+    return await sync_one(config, root, "materials", course_id, headless=headless)

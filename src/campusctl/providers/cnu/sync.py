@@ -22,17 +22,6 @@ def _is_timeout(error: Exception) -> bool:
     return isinstance(error, TimeoutError) or type(error).__name__ == "TimeoutError"
 
 
-def _course_failure(course: dict[str, Any]) -> CampusError:
-    course_id = str(course.get("course_id", ""))
-    label = str(course.get("label", ""))
-    return CampusError(
-        "course-sync-failed",
-        f"Could not sync course '{label}' ({course_id}).",
-        "Check the course in the LMS, then retry the sync.",
-        "error",
-    )
-
-
 def _mark_enrollment_unknown(root: Path) -> None:
     target = catalog_path(root)
     if not target.exists():
@@ -75,11 +64,9 @@ def _merge_health(
 
 
 async def collect_lectures_rows(
-    page: Any, course: dict[str, Any], section_guard: Any, *, ordinal: int | None = None
+    page: Any, course: dict[str, Any], *, ordinal: int | None = None
 ) -> list[dict[str, Any]]:
     """Read LV rows on the committed course section without selecting again."""
-    if section_guard is not None:
-        section_guard.raise_if_denied()
     if urlsplit(page.main_frame.url).path != "/std/course":
         raise ValueError("Lecture section document did not commit")
     page_course_id = await _wait_for_topbar_course_id(page)
@@ -104,15 +91,13 @@ async def collect_lectures_rows(
                 PROTOCOL_TIMEOUT_SECONDS,
                 "extracting CNU lecture rows",
             )
-    if section_guard is not None:
-        section_guard.raise_if_denied()
     return parse_learning_rows(raw_rows, course)
 
 
 async def sync_lectures(
     config: dict[str, Any], root: Path, course_id: str | None = None, *, headless: bool = False
 ) -> tuple[dict[str, Any], list[CampusError]]:
-    """Publish lecture rows via the shared guarded course traversal."""
+    """Publish lecture rows via the shared course traversal."""
     from .sync_all import sync_one
 
     return await sync_one(config, root, "lectures", course_id, headless=headless)

@@ -1,4 +1,4 @@
-"""Cached notices and the reviewed notice-sync command surface."""
+"""Cached notices and their sync command surface."""
 
 from __future__ import annotations
 
@@ -12,39 +12,6 @@ from campusctl.domain_catalog import domain_catalog_path, read_domain_catalog
 from campusctl.envelope import CampusError, UsageError
 from campusctl.paths import data_dir
 
-_ORIGIN = "https://dcs-learning.cnu.ac.kr"
-_OPERATION = "notices.sync"
-_FETCH_OPERATION = "notices.fetch"
-_GET_PATHS = (
-    "/std/myLecture",
-    "/std/lecture",
-    "/std/notice",
-    "/std/todo",
-    "/properties/messages.properties",
-    "/properties/messages_ko.properties",
-)
-_POST_PATHS = (
-    "/api/v1/board/std/notice/list",
-    "/api/v1/week/getStdTodoList",
-    "/api/v1/course/getStdMyCourseList",
-    "/api/v1/term/getYearTermList",
-    "/api/v1/board/std/qna/list",
-    "/api/v1/boardM/getBoardItemList",
-    "/api/v1/common/checkEnableUrl",
-    "/api/v1/course/addSessionCourseInfo",
-    "/api/v1/board/courseNotice/list",
-    "/api/v1/week/getStdWeekList",
-    "/api/v1/week/getStdEtcList",
-    "/api/v1/survey/getApplyPopList",
-    "/api/v1/board/popup/noticeList",
-    "/api/v1/board/notice/list/top",
-    "/api/v1/board/notice/list",
-    "/api/v1/user/getUserInfo",
-    "/api/v1/user/getMenuList",
-    "/api/v1/alarm/getAlarmListByDate",
-    "/api/v1/course/get",
-    "/api/v1/course/getCeShortcuts",
-)
 _PUBLIC_ROW_KEYS = frozenset(
     {
         "entity_id",
@@ -64,304 +31,41 @@ _PUBLIC_ROW_KEYS = frozenset(
 )
 
 
-CAPABILITY: dict[str, Any] = {
-    "commands": ["list"],
-    "policy": {
-        "approved": True,
-        "read_only_evidence": "docs/specs/20-notices/design.md#request-and-course-binding",
-        "origins": [_ORIGIN],
-        "routes": [
-            {
-                "origin": _ORIGIN,
-                "path": path,
-                "operation": _OPERATION,
-                "methods": ["GET"],
-                **({"query": {"_": "cachebuster"}} if path.startswith("/properties/") else {}),
-            }
-            for path in _GET_PATHS
-        ]
-        + [{"origin": _ORIGIN, "path": path, "operation": _OPERATION, "methods": ["POST"]} for path in _POST_PATHS]
-        + [
-            {
-                "origin": _ORIGIN,
-                "path": "/api/v1/week/getStdActivityStatus",
-                "operation": _OPERATION,
-                "methods": ["POST"],
-                "logging_token_reviewed": True,
-                "resource_type": "xhr",
-            }
-        ],
-        "allowed_media": [],
-        "max_bytes": None,
-        "suppress": [
-            {
-                "name": "panopto-script",
-                "origin": _ORIGIN,
-                "path_template": "/js/common/panopto-{hash}.js",
-                "operation": _OPERATION,
-                "methods": ["GET"],
-                "reason": "media-integration",
-            },
-            {
-                "name": "panopto-saml-script",
-                "origin": _ORIGIN,
-                "path_template": "/js/common/panoptoSaml-{hash}.js",
-                "operation": _OPERATION,
-                "methods": ["GET"],
-                "reason": "media-integration",
-            },
-            {
-                "name": "panopto-sso-popup",
-                "origin": "https://cnu.ap.panopto.com",
-                "path_template": "/Panopto/Pages/Auth/Login.aspx",
-                "operation": _OPERATION,
-                "methods": ["POST"],
-                "reason": "panopto-sso-popup",
-            },
-            {
-                "name": "course-roster-image",
-                "origin": _ORIGIN,
-                "path_template": "/upload/dunetadmin/college/{hash}.png",
-                "operation": _OPERATION,
-                "methods": ["GET"],
-                "reason": "course-roster-image",
-            },
-            {
-                "name": "favicon-icon",
-                "origin": _ORIGIN,
-                "path_template": "/assets/images/favicon-{hash}.ico",
-                "operation": _OPERATION,
-                "methods": ["GET"],
-                "reason": "favicon",
-            },
-            {
-                "name": "external-telemetry",
-                "origin": "http://0.0.0.0:3000",
-                "path_template": "/v1/events",
-                "operation": _OPERATION,
-                "methods": ["POST"],
-                "reason": "telemetry",
-            },
-            {
-                "name": "external-telemetry-localhost",
-                "origin": "http://localhost:3000",
-                "path_template": "/v1/events",
-                "operation": _OPERATION,
-                "methods": ["POST"],
-                "reason": "telemetry",
-            },
-            {
-                "name": "panopto-disconnection-log",
-                "origin": _ORIGIN,
-                "path_template": "/api/v1/panopto/addInternetDisconnectionLog",
-                "operation": _OPERATION,
-                "methods": ["POST"],
-                "reason": "logging",
-            },
-            {
-                "name": "panopto-connectivity-check",
-                "origin": _ORIGIN,
-                "path_template": "/api/v1/panopto/checkInternetConnection",
-                "operation": _OPERATION,
-                "methods": ["GET"],
-                "reason": "logging",
-            },
-        ],
-        "static_asset_origins": [_ORIGIN],
-        "static_resource_types": ["script", "stylesheet", "font", "image"],
-        "selected_file_routes": [],
-    },
-}
+CAPABILITY: dict[str, Any] = {"commands": ["list"]}
 
-# Owner-held sanitized evidence (2026-09-27) approved the notice-sync pins
-# for lecture traversal, plus the bound /std/lecture -> /std/course document.
-# Keep a separate operation policy; never activate a union of section policies.
-LECTURES_SYNC_POLICY: dict[str, Any] = {
-    **CAPABILITY["policy"],
-    "read_only_evidence": "owner-held sanitized evidence (2026-09-27)",
-    "routes": [{**route, "operation": "lectures.sync"} for route in CAPABILITY["policy"]["routes"]]
-    + [{"origin": _ORIGIN, "path": "/std/course", "operation": "lectures.sync", "methods": ["GET"]}],
-    "suppress": [{**item, "operation": "lectures.sync"} for item in CAPABILITY["policy"]["suppress"]],
-}
-FETCH_POLICY: dict[str, Any] = {
-    "approved": True,
-    "read_only_evidence": "2026-09-25 sanitized LMS report §§1.6,2,3.1 and owner LMS pins decision",
-    "origins": [_ORIGIN],
-    "routes": [
-        {"origin": _ORIGIN, "path": "/std/myLecture", "operation": _FETCH_OPERATION, "methods": ["GET"]},
-        {"origin": _ORIGIN, "path": "/std/lecture", "operation": _FETCH_OPERATION, "methods": ["GET"]},
-        {
-            "origin": _ORIGIN,
-            "path": "/api/v1/week/getStdActivityStatus",
-            "operation": _FETCH_OPERATION,
-            "methods": ["POST"],
-            "logging_token_reviewed": True,
-            "resource_type": "xhr",
-        },
-        {"origin": _ORIGIN, "path": "/std/notice", "operation": _FETCH_OPERATION, "methods": ["GET"]},
-        {
-            "origin": _ORIGIN,
-            "path": "/std/noticeDetail",
-            "operation": _FETCH_OPERATION,
-            "methods": ["GET"],
-            "query": {"no": "board-item-id", "curPage": "page"},
-        },
-        {
-            "origin": _ORIGIN,
-            "path": "/properties/messages.properties",
-            "operation": _FETCH_OPERATION,
-            "methods": ["GET"],
-            "query": {"_": "cachebuster"},
-        },
-        {
-            "origin": _ORIGIN,
-            "path": "/properties/messages_ko.properties",
-            "operation": _FETCH_OPERATION,
-            "methods": ["GET"],
-            "query": {"_": "cachebuster"},
-        },
-        {
-            "origin": _ORIGIN,
-            "path": "/api/v1/course/addSessionCourseInfo",
-            "operation": _FETCH_OPERATION,
-            "methods": ["POST"],
-        },
-        {"origin": _ORIGIN, "path": "/api/v1/user/getUserInfo", "operation": _FETCH_OPERATION, "methods": ["POST"]},
-        {"origin": _ORIGIN, "path": "/api/v1/user/getMenuList", "operation": _FETCH_OPERATION, "methods": ["POST"]},
-        {
-            "origin": _ORIGIN,
-            "path": "/api/v1/alarm/getAlarmListByDate",
-            "operation": _FETCH_OPERATION,
-            "methods": ["POST"],
-        },
-        {
-            "origin": _ORIGIN,
-            "path": "/api/v1/course/getCeShortcuts",
-            "operation": _FETCH_OPERATION,
-            "methods": ["POST"],
-        },
-        {
-            "origin": _ORIGIN,
-            "path": "/api/v1/common/checkEnableUrl",
-            "operation": _FETCH_OPERATION,
-            "methods": ["POST"],
-        },
-        {
-            "origin": _ORIGIN,
-            "path": "/api/v1/boardM/getBoardItemList",
-            "operation": _FETCH_OPERATION,
-            "methods": ["POST"],
-        },
-        {"origin": _ORIGIN, "path": "/api/v1/term/getYearTermList", "operation": _FETCH_OPERATION, "methods": ["POST"]},
-        {
-            "origin": _ORIGIN,
-            "path": "/api/v1/course/getStdMyCourseList",
-            "operation": _FETCH_OPERATION,
-            "methods": ["POST"],
-        },
-        {"origin": _ORIGIN, "path": "/api/v1/course/get", "operation": _FETCH_OPERATION, "methods": ["POST"]},
-        {
-            "origin": _ORIGIN,
-            "path": "/api/v1/board/courseNotice/list",
-            "operation": _FETCH_OPERATION,
-            "methods": ["POST"],
-        },
-        {"origin": _ORIGIN, "path": "/api/v1/week/getStdWeekList", "operation": _FETCH_OPERATION, "methods": ["POST"]},
-        {"origin": _ORIGIN, "path": "/api/v1/week/getStdEtcList", "operation": _FETCH_OPERATION, "methods": ["POST"]},
-        {
-            "origin": _ORIGIN,
-            "path": "/api/v1/survey/getApplyPopList",
-            "operation": _FETCH_OPERATION,
-            "methods": ["POST"],
-        },
-        {
-            "origin": _ORIGIN,
-            "path": "/api/v1/board/popup/noticeList",
-            "operation": _FETCH_OPERATION,
-            "methods": ["POST"],
-        },
-        {"origin": _ORIGIN, "path": "/api/v1/board/notice/list", "operation": _FETCH_OPERATION, "methods": ["POST"]},
-        {
-            "origin": _ORIGIN,
-            "path": "/api/v1/board/notice/list/top",
-            "operation": _FETCH_OPERATION,
-            "methods": ["POST"],
-        },
-        {"origin": _ORIGIN, "path": "/api/v1/board/notice/info", "operation": _FETCH_OPERATION, "methods": ["POST"]},
-        {"origin": _ORIGIN, "path": "/api/v1/board/cmt/list", "operation": _FETCH_OPERATION, "methods": ["POST"]},
-    ],
-    "suppress": [
-        {
-            "name": "panopto-script",
-            "origin": _ORIGIN,
-            "path_template": "/js/common/panopto-{hash}.js",
-            "operation": _FETCH_OPERATION,
-            "methods": ["GET"],
-            "reason": "media-integration",
-        },
-        {
-            "name": "course-roster-image",
-            "origin": _ORIGIN,
-            "path_template": "/upload/dunetadmin/college/{hash}.png",
-            "operation": _FETCH_OPERATION,
-            "methods": ["GET"],
-            "reason": "course-roster-image",
-        },
-        {
-            "name": "favicon-icon",
-            "origin": _ORIGIN,
-            "path_template": "/assets/images/favicon-{hash}.ico",
-            "operation": _FETCH_OPERATION,
-            "methods": ["GET"],
-            "reason": "favicon",
-        },
-        {
-            "name": "external-telemetry",
-            "origin": "http://0.0.0.0:3000",
-            "path_template": "/v1/events",
-            "operation": _FETCH_OPERATION,
-            "methods": ["POST"],
-            "reason": "telemetry",
-        },
-        {
-            "name": "external-telemetry-localhost",
-            "origin": "http://localhost:3000",
-            "path_template": "/v1/events",
-            "operation": _FETCH_OPERATION,
-            "methods": ["POST"],
-            "reason": "telemetry",
-        },
-        {
-            "name": "panopto-sso-popup",
-            "origin": "https://cnu.ap.panopto.com",
-            "path_template": "/Panopto/Pages/Auth/Login.aspx",
-            "operation": _FETCH_OPERATION,
-            "methods": ["POST"],
-            "reason": "panopto-sso-popup",
-        },
-        {
-            "name": "panopto-disconnection-log",
-            "origin": _ORIGIN,
-            "path_template": "/api/v1/panopto/addInternetDisconnectionLog",
-            "operation": _FETCH_OPERATION,
-            "methods": ["POST"],
-            "reason": "logging",
-        },
-        {
-            "name": "panopto-connectivity-check",
-            "origin": _ORIGIN,
-            "path_template": "/api/v1/panopto/checkInternetConnection",
-            "operation": _FETCH_OPERATION,
-            "methods": ["GET"],
-            "reason": "logging",
-        },
-    ],
-    "static_asset_origins": [_ORIGIN],
-    "static_resource_types": ["script", "stylesheet", "font", "image"],
-    "selected_file_routes": [],
-    "allowed_media": [],
-    "max_bytes": 200_000_000,
-}
+_DETAIL_TIMEOUT_STEPS = frozenset(
+    {
+        "finishing notice response",
+        "reading notice response",
+        "opening notice course roster",
+        "opening selected notice course",
+        "waiting for notice menu",
+        "opening notice board",
+        "settling notice board",
+        "reading board links",
+        "opening selected notice",
+        "settling notice detail",
+        "reading notice detail",
+    }
+)
+
+
+def _fetch_error(step: str, error: Exception) -> CampusError:
+    code = error.code if isinstance(error, CampusError) else "fetch-failed"
+    status = error.status if isinstance(error, CampusError) else "error"
+    if step == "detail capture" and isinstance(error, CampusError) and code == "browser-timeout":
+        detail_step = error.message.removeprefix("Timed out while ").removesuffix(".")
+        if error.message == f"Timed out while {detail_step}." and detail_step in _DETAIL_TIMEOUT_STEPS:
+            label = "opening course notice board" if detail_step == "opening notice board" else detail_step
+            return CampusError(code, f"Notices fetch: {label} timed out.", "Check the browser and retry.", status)
+    remediation = {
+        "catalog load": "Sync notices again and retry.",
+        "configuration load": "Check campusctl configuration and retry.",
+        "authentication": "Sign in and retry.",
+        "detail capture": "Sync notices again and select the current full ID.",
+        "package creation": "Retry the fetch and inspect unsupported resources.",
+    }.get(step, "Check the browser session and retry.")
+    return CampusError(code, f"Notices fetch: {step} failed.", remediation, status)
 
 
 def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -392,22 +96,25 @@ def dispatch(args: argparse.Namespace) -> tuple[dict[str, Any], CampusError | li
     if command == "fetch":
         entity_id = getattr(args, "entity_id", None)
         if not isinstance(entity_id, str) or not entity_id.strip():
-            raise UsageError("an entity ID is required")
+            raise UsageError("Notices fetch selection: an entity ID is required")
         root = data_dir()
         cat_path = domain_catalog_path("notices", root)
         if not cat_path.exists():
             raise CampusError(
                 "catalog-missing",
-                "Notice catalog is missing.",
+                "Notices fetch catalog lookup: catalog is missing.",
                 "Run 'campusctl sync --only notices' to create it.",
                 "user-action",
             )
-        catalog = read_domain_catalog("notices", cat_path)
+        try:
+            catalog = read_domain_catalog("notices", cat_path)
+        except Exception as exc:
+            raise _fetch_error("catalog load", exc) from exc
         matching = [r for r in catalog.get("notices", []) if r.get("entity_id") == entity_id]
         if len(matching) != 1:
             raise CampusError(
                 "entity-unknown",
-                "The selected notice ID is not in the catalog.",
+                "Notices fetch selection: selected ID is not in the catalog.",
                 "Select one full ID from 'campusctl notices list'.",
                 "user-action",
             )
@@ -418,7 +125,7 @@ def dispatch(args: argparse.Namespace) -> tuple[dict[str, Any], CampusError | li
             if p.exists() or p.is_symlink():
                 raise CampusError(
                     "output-path-conflict",
-                    "Selected output path already exists.",
+                    "Notices fetch output selection: output path already exists.",
                     "Choose a nonexistent destination path with --out.",
                     "user-action",
                 )
@@ -427,13 +134,25 @@ def dispatch(args: argparse.Namespace) -> tuple[dict[str, Any], CampusError | li
         from campusctl.browser_options import preflight_browser_mode
         from campusctl.config import load_config
 
-        config = load_config()
+        try:
+            config = load_config()
+        except Exception as exc:
+            raise _fetch_error("configuration load", exc) from exc
         headless_override = getattr(args, "headless_override", None)
-        mode = preflight_browser_mode(config, "notices.fetch", override=headless_override)
+        try:
+            mode = preflight_browser_mode(config, "notices.fetch", override=headless_override)
+        except CampusError as exc:
+            raise CampusError(
+                exc.code, f"Notices fetch browser preflight: {exc.message}", exc.remediation, exc.status
+            ) from exc
         pkg = asyncio.run(_fetch_notice(config, root, row, out=out_path, headless=mode))
         errors = (
-            [CampusError("resource-omitted", "Some resources were omitted by reviewed policy.", status="user-action")]
-            if pkg.get("completeness") == "policy-filtered"
+            [
+                CampusError(
+                    "resource-omitted", "Notices fetch packaging: some resources are unsupported.", status="user-action"
+                )
+            ]
+            if pkg.get("completeness") == "partial"
             else None
         )
         return {"source_package": pkg}, errors
@@ -451,41 +170,40 @@ async def _fetch_notice(
     from campusctl.browser import open_session, settle_sso_popups
     from campusctl.providers.cnu.login import ensure_logged_in
     from campusctl.providers.cnu.notice_detail import capture_notice_detail
-    from campusctl.providers.cnu.request_policy import RequestPolicy
-    from campusctl.providers.cnu.ui_policy import UiRequestDiagnostics, UiRequestPolicy, install_ui_request_interceptor
     from campusctl.source_package import build_source_package
 
-    ui_policy = UiRequestPolicy.from_reviewed_config(FETCH_POLICY)
-    if not ui_policy.approved:
-        raise CampusError("policy-blocked", "The reviewed notice fetch policy is unavailable.", None, "error")
-    diagnostics = UiRequestDiagnostics()
-    request_policy = RequestPolicy(ui_policy, "notice", diagnostics)
-
-    async with open_session(config, data_dir=root, headless=headless, operation="notices.fetch") as session:
-        page = session.page
-        await ensure_logged_in(page, config)
-        await settle_sso_popups(session, domain="notices")
-        interceptor = await install_ui_request_interceptor(
-            session.context,
-            ui_policy,
-            operation="notices.fetch",
-            diagnostics=diagnostics,
-        )
-        snapshot = await capture_notice_detail(page, row, interceptor=interceptor)
-        interceptor.raise_if_denied()
-        result = await build_source_package(
-            page,
-            snapshot,
-            entity_id=row["entity_id"],
-            kind="notice",
-            course_id=row["course"]["id"],
-            course_label=row["course"]["label"],
-            root=root,
-            policy=request_policy,
-            out=out,
-            interceptor=interceptor,
-        )
-        return result
+    try:
+        async with open_session(config, data_dir=root, headless=headless, operation="notices.fetch") as session:
+            page = session.page
+            try:
+                await ensure_logged_in(page, config)
+            except Exception as exc:
+                raise _fetch_error("authentication", exc) from exc
+            try:
+                await settle_sso_popups(session, domain="notices")
+            except Exception as exc:
+                raise _fetch_error("SSO settlement", exc) from exc
+            try:
+                snapshot = await capture_notice_detail(page, row)
+            except Exception as exc:
+                raise _fetch_error("detail capture", exc) from exc
+            try:
+                return await build_source_package(
+                    page,
+                    snapshot,
+                    entity_id=row["entity_id"],
+                    kind="notice",
+                    course_id=row["course"]["id"],
+                    course_label=row["course"]["label"],
+                    root=root,
+                    out=out,
+                )
+            except Exception as exc:
+                raise _fetch_error("package creation", exc) from exc
+    except Exception as exc:
+        if isinstance(exc, CampusError) and exc.message.startswith("Notices fetch:"):
+            raise
+        raise _fetch_error("browser session", exc) from exc
 
 
 async def sync(
@@ -493,7 +211,7 @@ async def sync(
 ) -> tuple[dict[str, Any], list[CampusError]]:
     from campusctl.providers.cnu.notices import sync_notices
 
-    return await sync_notices(config, root, course_id, headless=headless, reviewed_policy=CAPABILITY["policy"])
+    return await sync_notices(config, root, course_id, headless=headless)
 
 
 def _wrap(message: str, width: int, *, indent: str = "") -> list[str]:

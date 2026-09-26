@@ -8,10 +8,8 @@ import pytest
 
 from campusctl import cli
 from campusctl.commands import assignments
-from campusctl.providers.cnu.ui_policy import UiRequestDenied, UiRequestPolicy, guard_ui_request
 
 TIMESTAMP = "2026-09-25T10:00:00Z"
-LMS = "https://dcs-learning.cnu.ac.kr"
 
 
 def _row(course_id: str, task_id: str, *, submitted: bool, due: str | None) -> dict[str, Any]:
@@ -61,13 +59,7 @@ def _invoke(args: list[str], capsys: pytest.CaptureFixture[str]) -> tuple[int, d
     return code, json.loads(output.out)
 
 
-def _guard(policy: UiRequestPolicy, path: str, method: str = "GET", resource_type: str = "document") -> str:
-    return guard_ui_request(policy, LMS + path, method, {}, operation="assignments.sync", resource_type=resource_type)
-
-
-def test_cached_list_modes_and_policy_gate(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_cached_list_modes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     rows = _catalog(tmp_path)
     monkeypatch.setenv("CAMPUSCTL_DATA_DIR", str(tmp_path))
     code, response = _invoke(["assignments", "list", "--json"], capsys)
@@ -78,33 +70,6 @@ def test_cached_list_modes_and_policy_gate(
     assert cache["stale"] is True
     assert cache["failed_courses"][0]["course_id"] == "course-beta"
     assert assignments.CAPABILITY["commands"] == ["list"]
-    policy = UiRequestPolicy.from_reviewed_config(assignments.CAPABILITY["policy"])
-    assert policy.approved
-    assert _guard(policy, "/std/myLecture") == "allow"
-    assert _guard(policy, "/std/task") == "allow"
-    assert _guard(policy, "/api/v1/task/stdList", "POST", "xhr") == "allow"
-    for path in ("/properties/messages.properties", "/properties/messages_ko.properties"):
-        assert _guard(policy, path + "?_=123456789", resource_type="xhr") == "allow"
-        assert _guard(policy, path, resource_type="xhr") == "allow"
-        for bad_query in ("?_=abc", "?_=1&_=2", "?_=1&other=2"):
-            with pytest.raises(UiRequestDenied):
-                _guard(policy, path + bad_query, resource_type="xhr")
-    for path in ("/js/common/panopto-abc_123.js", "/api/v1/panopto/checkInternetConnection"):
-        assert _guard(policy, path, resource_type="script" if path.endswith(".js") else "xhr") == "suppress"
-    assert _guard(policy, "/api/v1/panopto/addInternetDisconnectionLog", "POST", "xhr") == "suppress"
-    assert _guard(policy, "/js/common/site.js", resource_type="script") == "allow"
-    for path in ("/api/v1/task/stdList?other=1", "/api/v1/task/detail", "/video/lecture.mp4"):
-        with pytest.raises(UiRequestDenied):
-            _guard(policy, path, "POST", "xhr")
-    with pytest.raises(UiRequestDenied):
-        guard_ui_request(
-            policy,
-            LMS + "/std/task",
-            "GET",
-            {"rAnGe": "bytes=0-1"},
-            operation="assignments.sync",
-            resource_type="document",
-        )
 
 
 def test_narrow_list_full_ids_and_stale_warning(

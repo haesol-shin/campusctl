@@ -1,4 +1,4 @@
-"""Selected attachment response checks; request URL binding belongs to ui_policy."""
+"""Selected attachment response metadata and incremental content validation."""
 
 from __future__ import annotations
 
@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from campusctl.envelope import CampusError
-from campusctl.providers.cnu.ui_policy import UiRequestDiagnostics, UiRequestPolicy
 
 MAX_ATTACHMENT_BYTES = 200_000_000
 ALLOWED_EXTENSIONS = frozenset(
@@ -67,9 +66,7 @@ _REQUIRED_ZIP_ENTRY = {
 
 @dataclass(frozen=True, slots=True)
 class RequestPolicy:
-    ui_policy: UiRequestPolicy
     filename: str
-    diagnostics: UiRequestDiagnostics | None = None
 
     @property
     def extension(self) -> str:
@@ -86,21 +83,12 @@ def _too_large() -> CampusError:
 
 def guard_response(
     policy: RequestPolicy,
-    url: str,
     media_type: str | None,
     content_disposition: str | None,
-    *,
-    operation: str,
-    selected_file_id: str | None = None,
 ) -> None:
-    """Check selected response metadata without trusting its proposed filename or URL basename."""
+    """Check selected response metadata without trusting its proposed filename."""
     if (
-        not policy.ui_policy.approved
-        or operation not in {"materials.download", "assignments.fetch", "notices.fetch"}
-        or not selected_file_id
-        or not isinstance(url, str)
-        or not url
-        or not isinstance(policy.filename, str)
+        not isinstance(policy.filename, str)
         or policy.extension not in ALLOWED_EXTENSIONS
         or any(sep in policy.filename for sep in ("/", "\\"))
     ):

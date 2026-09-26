@@ -152,11 +152,7 @@ class SelectedLink:
 
     async def click(self) -> None:
         self.page.actions.append(self.selector)
-        assert self.page.image_handler is not None
-        image_request = SimpleNamespace(request=SimpleNamespace(resource_type="image"))
-        image_request.abort = self.page.abort_image
-        image_request.fallback = self.page.fallback_image
-        await self.page.image_handler(image_request)
+        self.page.image_requests += 1
         for path in adapter._DETAIL_PATHS:
             native = self.page.std_id if path.endswith("/stdDetail") and self.page.std_id else self.page.observed_id
             if self.page.missing_report and path.endswith("/detail"):
@@ -186,24 +182,8 @@ class Page:
         self.url = "https://dcs-learning.cnu.ac.kr/std/myLecture"
         self.actions: list[str] = []
         self.waiters: list[Expectation] = []
-        self.image_handler: Any = None
-        self.blocked_images = 0
-        self.image_bytes = 0
+        self.image_requests = 0
         self.extracted = False
-
-    async def abort_image(self) -> None:
-        self.blocked_images += 1
-
-    async def fallback_image(self) -> None:
-        self.image_bytes += 1
-
-    async def route(self, pattern: str, handler: Any) -> None:
-        assert pattern == "**/*"
-        self.image_handler = handler
-
-    async def unroute(self, pattern: str, handler: Any) -> None:
-        assert pattern == "**/*" and self.image_handler is handler
-        self.image_handler = None
 
     async def wait_for_load_state(self, state: str) -> None:
         assert state == "networkidle"
@@ -267,8 +247,7 @@ def test_selected_assignment_detail_capture_readonly(monkeypatch: pytest.MonkeyP
     assert brief.upload_controls == ["uploadFile", "fileUploadModal"]
     assert len(page.actions) == 3
     assert all("uploadFile" not in action and "modal" not in action.lower() for action in page.actions)
-    assert page.blocked_images == 1 and page.image_bytes == 0
-    assert page.image_handler is None
+    assert page.image_requests == 1
     assert page.extracted
 
 
@@ -277,11 +256,12 @@ def test_wrong_selected_task_fails_before_transfer(monkeypatch: pytest.MonkeyPat
     with pytest.raises(CampusError) as failure:
         asyncio.run(_capture(monkeypatch, page))
     assert failure.value.code == "entity-unknown"
+    assert "Assignment detail selection" in failure.value.message
+    assert "TB_L_REPORT101" not in failure.value.message
     assert page.actions == ["course-a:task", "task", 'a[data-act="detail"][data-id="TB_L_REPORT101"]']
     assert not any(action.startswith("download") for action in page.actions)
     assert page.fixture.badge == "미완료"
-    assert page.blocked_images == 1 and page.image_bytes == 0
-    assert page.image_handler is None
+    assert page.image_requests == 1
     assert not page.extracted
 
 
@@ -301,7 +281,7 @@ def test_assignment_response_identity_rejects_before_extraction(
         asyncio.run(_capture(monkeypatch, page))
     assert failure.value.code == "entity-unknown"
     assert not page.extracted
-    assert page.image_handler is None
+    assert page.image_requests == 1
 
 
 def test_assignment_detail_extracts_media_omission_references(

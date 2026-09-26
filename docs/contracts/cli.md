@@ -45,6 +45,10 @@ This is a v0.1 → v0.2 output-mode change: v0.1 emitted JSON by default, while 
 
 Press Ctrl-C to interrupt the active playback queue. The command exits without a JSON response; completed catalog updates remain, and player, browser-session, and lock cleanup is attempted before exit.
 
+### LMS collection
+
+Sync and selected-detail fetch use one browser session and follow the LMS menus to open course sections. They do not filter page requests. Each operational sync/fetch error names its domain and failing step in the human message and JSON `errors[].message`; a failed course retains its previous catalog rows. Selected attachment transfers still verify the clicked file identity, response type/signature, and size before publishing bytes.
+
 ## Command results
 
 In JSON mode, successful configuration creation has status `ok` and returns `{"config_path":"<config-path>","created":true,"next":["campusctl auth set"]}` in `result`. JSON mode does not prompt or install the browser during `config init`; the explicit `auth set` password prompt is the exception and can still prompt with terminal stdin, while keeping its response in JSON. In interactive human mode, the `Next:` command or configuration guidance reflects the current password and browser state as described above. Existing-file recovery exits 0 only if the password is saved; otherwise it returns `config-exists`, exit 2, without rewriting the file.
