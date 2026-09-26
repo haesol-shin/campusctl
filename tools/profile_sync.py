@@ -47,8 +47,11 @@ def _fixture_main(argv: list[str]) -> int:
     if not _fixture([sys.executable, str(Path(__file__).resolve()), *argv]):
         return 2
     marker = Path(argv[1])
+    root = Path(os.environ["CAMPUSCTL_DATA_DIR"])
+    catalog = root / "catalog" / "notices.json"
     if argv[0] == "--fixture-setup":
         marker.write_text(argv[2], encoding="ascii")
+        catalog.unlink(missing_ok=True)
         return 0
     if not marker.is_file() or marker.read_text(encoding="ascii") != argv[2]:
         return 3
@@ -56,8 +59,38 @@ def _fixture_main(argv: list[str]) -> int:
     if argv[3] == "failed":
         print(json.dumps({"status": "partial", "result": {}, "errors": [{"code": "fixture-failure"}]}))
         return 4
-    rows = [{"entity_id": "synthetic.invalid", "value": 1 if argv[3] != "mismatch" else 2}]
-    print(json.dumps({"status": "ok", "result": {"records": rows}, "errors": []}))
+    catalog.parent.mkdir(parents=True, exist_ok=True)
+    catalog.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "generated_at": str(time.time_ns()),
+                "enrollment_state": "known",
+                "courses": [{"course_id": "course.invalid"}],
+                "failed_courses": [],
+                "notices": [
+                    {
+                        "entity_id": "item.invalid",
+                        "course": {"id": "course.invalid"},
+                        "value": 1 if argv[3] != "mismatch" else 2,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    print(
+        json.dumps(
+            {
+                "status": "ok",
+                "result": {
+                    "notices": 1,
+                    "catalog": {"generated_at": str(time.time_ns()), "generation_id": str(time.time_ns())},
+                },
+                "errors": [],
+            }
+        )
+    )
     return 0
 
 
@@ -143,14 +176,20 @@ def _safe_profile(profile: object) -> dict | None:
     }
 
 
-def _run(argv: list[str]) -> dict:
+def _run(argv: list[str], *, data_root: Path | None = None, domains: tuple[str, ...] = ()) -> dict:
     metrics = {
         key: {"cpu_seconds": None, "rss_peak_bytes": None, "pss_peak_bytes": None}
         for key in ("python", "driver", "chromium")
     }
     started = time.perf_counter_ns()
     with tempfile.TemporaryFile() as stdout_file, tempfile.TemporaryFile() as stderr_file:
-        proc = subprocess.Popen(argv, stdout=stdout_file, stderr=stderr_file, start_new_session=os.name != "nt")
+        proc = subprocess.Popen(
+            argv,
+            stdout=stdout_file,
+            stderr=stderr_file,
+            start_new_session=os.name != "nt",
+            env={**os.environ, **({"CAMPUSCTL_DATA_DIR": str(data_root)} if data_root is not None else {})},
+        )
         cpu_start: dict[int, int] = {}
         cpu_last: dict[int, tuple[str, int]] = {}
         while proc.poll() is None:
@@ -204,6 +243,10 @@ def _run(argv: list[str]) -> dict:
     complete = proc.returncode == 0 and result is not None
     if profile is not None:
         complete = complete and profile["outcome"] == "ok" and profile["dropped_events"] == 0
+    catalogs = None
+    if complete and data_root is not None and domains:
+        catalogs = _catalogs(data_root, domains)
+        complete = catalogs is not None
     return {
         "exit_code": proc.returncode,
         "complete": complete,
@@ -211,13 +254,37 @@ def _run(argv: list[str]) -> dict:
         "event_loop_lag_ns": profile["event_loop_lag_ns"] if profile else None,
         "profile": profile,
         "processes": metrics,
-        "_result": result,
+        "_result": (result, catalogs),
     }
+
+
+def _catalogs(root: Path, domains: tuple[str, ...]) -> dict | None:
+    """Load authoritative published catalogs in the selected arm's isolated data root."""
+    from campusctl.catalog import read_catalog
+    from campusctl.domain_catalog import read_domain_catalog
+
+    catalogs = {}
+    for domain in domains:
+        path = root / "catalog" / f"{domain}.json"
+        try:
+            catalog = read_catalog(path) if domain == "lectures" else read_domain_catalog(domain, path)
+        except Exception:
+            return None
+        catalogs[domain] = {
+            key: value for key, value in catalog.items() if key not in {"generated_at", "generation_id"}
+        }
+    return catalogs
 
 
 def _normalize(value):
     if isinstance(value, dict):
-        return {key: _normalize(item) for key, item in sorted(value.items())}
+        return {
+            key: _normalize(item)
+            for key, item in sorted(value.items())
+            if key not in {"generated_at", "generation_id", "as_of", "refreshed_at", "synced_at"}
+        }
+    if isinstance(value, tuple):
+        return tuple(_normalize(item) for item in value)
     if isinstance(value, list):
         return sorted((_normalize(item) for item in value), key=lambda item: json.dumps(item, sort_keys=True))
     return value
@@ -241,8 +308,11 @@ def _record_counts(value) -> Counter:
 
 
 def _comparison(left, right) -> dict:
-    normalized_left, normalized_right = _normalize(left), _normalize(right)
-    a, b = _record_counts(normalized_left), _record_counts(normalized_right)
+    left_result, left_catalogs = left
+    right_result, right_catalogs = right
+    normalized_left = _normalize((left_result, left_catalogs))
+    normalized_right = _normalize((right_result, right_catalogs))
+    a, b = _record_counts(_normalize(left_catalogs)), _record_counts(_normalize(right_catalogs))
     return {
         "equivalent": normalized_left == normalized_right,
         "baseline_only_records": sum((a - b).values()),
@@ -271,9 +341,16 @@ def compare(
     population: str,
     baseline_setup: list[str],
     candidate_setup: list[str],
+    baseline_data_dir: Path,
+    candidate_data_dir: Path,
+    domains: tuple[str, ...],
 ) -> dict:
     if trials < 5 or population not in {"cold", "warm"} or not baseline_setup or not candidate_setup:
         raise ValueError("five trials, a population, and per-arm setup commands are required")
+    if not domains or any(domain not in {"lectures", "assignments", "notices", "materials"} for domain in domains):
+        raise ValueError("at least one known catalog domain required")
+    if baseline_data_dir.resolve() == candidate_data_dir.resolve():
+        raise ValueError("baseline and candidate require isolated data directories")
     output.mkdir(mode=0o700, parents=True, exist_ok=True)
     if os.name != "nt":
         output.chmod(0o700)
@@ -284,8 +361,9 @@ def compare(
         order = ("baseline", "candidate") if index % 2 == 0 else ("candidate", "baseline")
         for arm in order:
             setup = baseline_setup if arm == "baseline" else candidate_setup
-            # Setup failures prevent execution, not just a misleading cold/warm label.
-            setup_run = _run(setup)
+            root = baseline_data_dir if arm == "baseline" else candidate_data_dir
+            root.mkdir(mode=0o700, parents=True, exist_ok=True)
+            setup_run = _run(setup, data_root=root)
             if setup_run["exit_code"] != 0:
                 row = {
                     "exit_code": setup_run["exit_code"],
@@ -297,7 +375,7 @@ def compare(
                     "_result": None,
                 }
             else:
-                row = _run(baseline if arm == "baseline" else candidate)
+                row = _run(baseline if arm == "baseline" else candidate, data_root=root, domains=domains)
             row["trial"] = index + 1
             arms[arm].append(row)
             pair[arm] = row
@@ -353,6 +431,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--candidate-command-json", required=True, type=_argv)
     parser.add_argument("--baseline-setup-command-json", required=True, type=_argv)
     parser.add_argument("--candidate-setup-command-json", required=True, type=_argv)
+    parser.add_argument("--baseline-data-dir", required=True, type=Path)
+    parser.add_argument("--candidate-data-dir", required=True, type=Path)
+    parser.add_argument("--domains", required=True, help="Comma-separated requested catalog domains")
     parser.add_argument("--trials", type=int, default=5)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--population", choices=("cold", "warm"), required=True)
@@ -370,15 +451,21 @@ def main(argv: list[str] | None = None) -> int:
     )
     if not args.allow_live and not all(_fixture(command) for command in commands):
         parser.error("arbitrary scripts require --allow-live and separate owner authorization")
-    report = compare(
-        args.baseline_command_json,
-        args.candidate_command_json,
-        trials=args.trials,
-        output=args.output,
-        population=args.population,
-        baseline_setup=args.baseline_setup_command_json,
-        candidate_setup=args.candidate_setup_command_json,
-    )
+    try:
+        report = compare(
+            args.baseline_command_json,
+            args.candidate_command_json,
+            trials=args.trials,
+            output=args.output,
+            population=args.population,
+            baseline_setup=args.baseline_setup_command_json,
+            candidate_setup=args.candidate_setup_command_json,
+            baseline_data_dir=args.baseline_data_dir,
+            candidate_data_dir=args.candidate_data_dir,
+            domains=tuple(args.domains.split(",")),
+        )
+    except ValueError as error:
+        parser.error(str(error))
     print(
         json.dumps(
             {

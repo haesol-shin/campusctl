@@ -33,6 +33,12 @@ def command(marker, output, *, population="cold", candidate="fast", baseline="sl
         json.dumps(setup(marker, population)),
         "--candidate-setup-command-json",
         json.dumps(setup(marker, population)),
+        "--baseline-data-dir",
+        str(output.parent / (population + "-baseline")),
+        "--candidate-data-dir",
+        str(output.parent / (population + "-candidate")),
+        "--domains",
+        "notices",
         "--trials",
         "5",
         "--population",
@@ -71,19 +77,22 @@ def test_mismatch_prevents_gain_and_only_reports_safe_counts(tmp_path):
         population="cold",
         baseline_setup=setup(tmp_path / "marker", "cold"),
         candidate_setup=setup(tmp_path / "marker", "cold"),
+        baseline_data_dir=tmp_path / "baseline-data",
+        candidate_data_dir=tmp_path / "candidate-data",
+        domains=("notices",),
     )
     summary = report["populations"]["cold"]["summary"]
     assert summary["baseline"]["completed"] == summary["candidate"]["completed"] == 5
     assert summary["improvement_fraction"] is None
     assert summary["mismatched_pairs"] == 5
     assert summary["baseline_only_records"] == summary["candidate_only_records"] == 5
-    assert "synthetic.invalid" not in (tmp_path / "private" / "profile-results.json").read_text()
+    assert "item.invalid" not in (tmp_path / "private" / "profile-results.json").read_text()
 
 
 def test_failed_candidate_never_scores_even_with_five_successful_pairs(tmp_path, monkeypatch):
     calls = 0
 
-    def run(_argv):
+    def run(_argv, **_kwargs):
         nonlocal calls
         calls += 1
         if calls % 2:
@@ -94,7 +103,7 @@ def test_failed_candidate_never_scores_even_with_five_successful_pairs(tmp_path,
             "exit_code": 4 if candidate_failed else 0,
             "complete": not candidate_failed,
             "wall_ns": 1 if calls % 4 == 0 else 10,
-            "_result": None if candidate_failed else {"records": []},
+            "_result": None if candidate_failed else ({"notices": 1}, {"notices": {"notices": []}}),
         }
 
     monkeypatch.setattr(module, "_run", run)
@@ -106,6 +115,9 @@ def test_failed_candidate_never_scores_even_with_five_successful_pairs(tmp_path,
         population="warm",
         baseline_setup=["setup"],
         candidate_setup=["setup"],
+        baseline_data_dir=tmp_path / "baseline-data",
+        candidate_data_dir=tmp_path / "candidate-data",
+        domains=("notices",),
     )
     summary = report["populations"]["warm"]["summary"]
     assert summary["candidate"]["completed"] == 5
@@ -139,8 +151,8 @@ def test_profile_metrics_are_validated_before_persistence(tmp_path, monkeypatch)
     assert module._safe_profile({**valid, "spans": [{**valid["spans"][0], "domain": "secret.invalid"}]}) is None
     original = module._run
 
-    def run(argv):
-        row = original(argv)
+    def run(argv, **kwargs):
+        row = original(argv, **kwargs)
         if "--fixture-process" in argv:
             row["profile"] = module._safe_profile(valid)
         return row
@@ -154,8 +166,23 @@ def test_profile_metrics_are_validated_before_persistence(tmp_path, monkeypatch)
         population="cold",
         baseline_setup=setup(tmp_path / "marker", "cold"),
         candidate_setup=setup(tmp_path / "marker", "cold"),
+        baseline_data_dir=tmp_path / "baseline-data",
+        candidate_data_dir=tmp_path / "candidate-data",
+        domains=("notices",),
     )
     assert report["populations"]["cold"]["trials"]["baseline"][0]["profile"]["counts"]["course_selections"] == 7
+
+
+def test_catalog_records_not_counts_and_generation_timestamps_not_identity(tmp_path):
+    baseline = {"notices": 1, "catalog": {"generated_at": "2026-01-01", "generation_id": "one"}}
+    candidate = {"notices": 1, "catalog": {"generated_at": "2026-02-01", "generation_id": "two"}}
+    row = {"entity_id": "item.invalid", "course": {"id": "course.invalid"}, "read": False}
+    first = {"notices": {"notices": [row], "courses": [], "failed_courses": [], "generated_at": "first"}}
+    second = {"notices": {"notices": [row], "courses": [], "failed_courses": [], "generated_at": "second"}}
+    assert module._comparison((baseline, first), (candidate, second))["equivalent"] is True
+    different = {"notices": {"notices": [{**row, "read": True}], "courses": [], "failed_courses": []}}
+    mismatch = module._comparison((baseline, first), (candidate, different))
+    assert mismatch == {"equivalent": False, "baseline_only_records": 1, "candidate_only_records": 1}
 
 
 @pytest.mark.parametrize("change", ["nonfixture", "missing_setup", "few_trials"])
