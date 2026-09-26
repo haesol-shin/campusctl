@@ -8,6 +8,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 from datetime import UTC, datetime
 from itertools import islice
@@ -225,24 +226,56 @@ async def _collect(page: Any, operation: str, step: str, elapsed_s: float) -> di
     return record
 
 
+def _write_record(record: dict[str, Any], operation: str, root: Path) -> Path:
+    directory = root / "diagnostics"
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if os.name != "nt":
+        directory.chmod(0o700)
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+    name = _SAFE_OPERATION.sub("-", operation.lower())
+    target = directory / f"roster-{stamp}-{name}.json"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    fd = os.open(target, flags, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as output:
+        json.dump(record, output, separators=(",", ":"), sort_keys=True)
+        output.write("\n")
+    for old in sorted(directory.glob("roster-*.json"), reverse=True)[20:]:
+        old.unlink()
+    return target
+
+
+def _write_in_daemon_thread(record: dict[str, Any], operation: str, root: Path) -> asyncio.Future[Path]:
+    """Run the write on a daemon thread so neither the loop nor interpreter exit waits on a stalled disk."""
+    loop = asyncio.get_running_loop()
+    future: asyncio.Future[Path] = loop.create_future()
+
+    def settle(result: Path | None, error: BaseException | None) -> None:
+        if future.done():
+            return
+        if error is not None:
+            future.set_exception(error)
+        else:
+            future.set_result(result)
+
+    def work() -> None:
+        try:
+            result = _write_record(record, operation, root)
+        except BaseException as error:  # noqa: BLE001 - reported through the future
+            with contextlib.suppress(RuntimeError):
+                loop.call_soon_threadsafe(settle, None, error)
+            return
+        with contextlib.suppress(RuntimeError):
+            loop.call_soon_threadsafe(settle, result, None)
+
+    threading.Thread(target=work, name="roster-diagnostic-write", daemon=True).start()
+    return future
+
+
 async def capture_roster_failure(page: Any, *, operation: str, step: str, elapsed_s: float, root: Path) -> Path | None:
-    """Write one private JSON snapshot, at most three seconds of effort; never raise."""
+    """Write one private JSON snapshot within about three seconds; never raise or block the caller longer."""
     try:
         record = await asyncio.wait_for(_collect(page, operation, step, elapsed_s), timeout=2.5)
-        directory = root / "diagnostics"
-        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-        if os.name != "nt":
-            directory.chmod(0o700)
-        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
-        name = _SAFE_OPERATION.sub("-", operation.lower())
-        target = directory / f"roster-{stamp}-{name}.json"
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-        fd = os.open(target, flags, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as output:
-            json.dump(record, output, separators=(",", ":"), sort_keys=True)
-            output.write("\n")
-        for old in sorted(directory.glob("roster-*.json"), reverse=True)[20:]:
-            old.unlink()
+        target = await asyncio.wait_for(_write_in_daemon_thread(record, operation, root), timeout=1.0)
         print(f"Roster diagnostic saved to {target}", file=sys.stderr)
         return target
     except Exception:

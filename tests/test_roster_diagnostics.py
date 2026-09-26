@@ -122,3 +122,34 @@ def test_retention_and_closed_page(tmp_path: Path, capsys: pytest.CaptureFixture
         "host_class": "other",
         "path": "/:id/:id/:id",
     }
+
+
+def test_stalled_disk_write_returns_promptly(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import threading
+    import time
+
+    import campusctl.providers.cnu.roster_diagnostics as diagnostics
+
+    release = threading.Event()
+
+    def stalled(*args: object) -> Path:
+        release.wait(10)
+        raise OSError("disk stalled")
+
+    monkeypatch.setattr(diagnostics, "_write_record", stalled)
+
+    class ClosedPage:
+        url = "about:blank"
+
+        async def evaluate(self, script: str) -> None:
+            raise RuntimeError("page closed")
+
+    started = time.monotonic()
+    try:
+        result = asyncio.run(
+            capture_roster_failure(ClosedPage(), operation="notices.sync", step="wait", elapsed_s=1, root=tmp_path)
+        )
+    finally:
+        release.set()
+    assert result is None
+    assert time.monotonic() - started < 3
