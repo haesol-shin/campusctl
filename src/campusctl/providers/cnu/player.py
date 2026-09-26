@@ -122,13 +122,15 @@ class _PlaybackFailure(Exception):
         self.message = message
 
 
-def _not_started(entity_id: str) -> dict[str, Any]:
+def _not_started(entity_id: str, replay: bool = False) -> dict[str, Any]:
     return {
         "entity_id": entity_id,
         "outcome": "not-started",
         "elapsed_seconds": 0.0,
         "watch_time": None,
         "provider_state": None,
+        "replay_requested": replay,
+        "player_opened": False,
     }
 
 
@@ -139,7 +141,9 @@ def _row_parts(entity_id: str) -> tuple[str, str] | None:
     return parts[1], parts[2]
 
 
-def validate_requested_lectures(entity_ids: list[str], lectures: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def validate_requested_lectures(
+    entity_ids: list[str], lectures: list[dict[str, Any]], *, replay: bool = False
+) -> list[dict[str, Any]]:
     """Validate the complete request before any browser session can be opened."""
     by_id: dict[str, dict[str, Any]] = {}
     for lecture in lectures:
@@ -190,7 +194,7 @@ def validate_requested_lectures(entity_ids: list[str], lectures: list[dict[str, 
                 "Only CNU video and YouTube lectures can be played.",
                 "Use 'campusctl lectures list' to inspect the lecture media type.",
             )
-        if lecture.get("completion") in {"complete", "recorded"}:
+        if lecture.get("completion") in {"complete", "recorded"} and not replay:
             raise CampusError(
                 "lecture-complete",
                 "A requested lecture is already complete or fully watched in the local catalog.",
@@ -491,6 +495,7 @@ def _youtube_plays_at_one(status: dict[str, Any]) -> bool:
 async def _play_youtube_video(
     frame: Any,
     *,
+    replay: bool = False,
     on_started: Callable[[], None] | None = None,
     on_position: Callable[[float, float], None] | None = None,
 ) -> tuple[float, str]:
@@ -567,7 +572,7 @@ async def _play_youtube_video(
         ):
             on_position(current_time, duration)
             last_position_event_at = now
-        if status.get("ended") or (duration > 0 and current_time >= duration - 1.0):
+        if status.get("ended") or (not replay and duration > 0 and current_time >= duration - 1.0):
             await asyncio.sleep(YOUTUBE_AFTER_END_SECONDS)
             return elapsed, _watch_time(elapsed)
         if status.get("paused"):
@@ -633,6 +638,8 @@ async def _play_visible_lecture(
     speed: float,
     *,
     media: str = "video",
+    replay: bool = False,
+    on_opened: Callable[[], None] | None = None,
     on_started: Callable[[], None] | None = None,
     on_position: Callable[[float, float], None] | None = None,
 ) -> tuple[float, str]:
@@ -660,6 +667,8 @@ async def _play_visible_lecture(
             16.0,
             "waiting for the lecture preview",
         )
+        if on_opened is not None:
+            on_opened()
         if media == "youtube":
             frame = await _youtube_frame(page)
 
@@ -669,7 +678,9 @@ async def _play_visible_lecture(
                 if on_started is not None:
                     on_started()
 
-            return await _play_youtube_video(frame, on_started=on_youtube_started, on_position=on_position)
+            return await _play_youtube_video(
+                frame, replay=replay, on_started=on_youtube_started, on_position=on_position
+            )
         frame = await _player_frame(page)
         status = await _read_video_state(frame)
 
@@ -691,12 +702,15 @@ async def _play_visible_lecture(
             if not await _wait_for_speed(frame, speed):
                 raise _PlaybackFailure(code="playback-speed-unavailable")
             status = await _read_video_state(frame)
+        already_ended = replay and bool(status.get("ended"))
 
-        if status.get("paused"):
+        if status.get("paused") or (replay and status.get("ended")):
             play_button = await _visible_locator(frame, PLAY_BUTTON_SELECTOR, "finding a visible Panopto play button")
             if play_button is None:
                 raise _PlaybackFailure()
             await bounded(play_button.click(timeout=7000), PROTOCOL_TIMEOUT_SECONDS, "starting the Panopto video")
+            if already_ended and (await _read_video_state(frame)).get("ended"):
+                raise _PlaybackFailure(message="The official player did not restart playback.")
 
         started_at = time.monotonic()
         if on_started is not None:
@@ -727,7 +741,7 @@ async def _play_visible_lecture(
             ):
                 on_position(current_time, duration)
                 last_position_event_at = now
-            if status.get("ended") or (duration > 0 and max(current_time, played_until) >= duration):
+            if status.get("ended") or (not replay and duration > 0 and max(current_time, played_until) >= duration):
                 return elapsed, _watch_time(elapsed)
             if status.get("paused"):
                 play_button = await _visible_locator(
@@ -782,6 +796,8 @@ def _mark_catalog_completion(entity_id: str, row: dict[str, Any], completion: st
     catalog = read_catalog(path)
     for lecture in catalog["lectures"]:
         if isinstance(lecture, dict) and lecture.get("entity_id") == entity_id:
+            if lecture.get("completion") == "complete" and completion == "recorded":
+                return
             lecture["completion"] = completion
             lecture["provider_state"] = row.get("state")
             if "progress_text" in row:
@@ -803,6 +819,9 @@ def _completed_item(
     state: str | None,
     elapsed: float = 0.0,
     watch_time: str | None = None,
+    *,
+    replay: bool = False,
+    opened: bool = False,
 ) -> dict[str, Any]:
     return {
         "entity_id": entity_id,
@@ -810,6 +829,8 @@ def _completed_item(
         "elapsed_seconds": round(elapsed, 1),
         "watch_time": watch_time,
         "provider_state": state,
+        "replay_requested": replay,
+        "player_opened": opened,
     }
 
 
@@ -849,6 +870,7 @@ async def play_lectures(
     lectures: list[dict[str, Any]],
     *,
     speed: float | None = None,
+    replay: bool = False,
     progress: Callable[[dict[str, Any]], None] | None = None,
 ) -> tuple[dict[str, Any], CampusError | list[CampusError] | None]:
     """Play selected lecture records serially and report provider-confirmed state."""
@@ -866,12 +888,24 @@ async def play_lectures(
         _emit({"type": "finished", "entity_id": entity_id, "outcome": outcome})
 
     def _not_started_from(start: int) -> list[dict[str, Any]]:
-        remaining = [_not_started(item["entity_id"]) for item in lectures[start:]]
+        remaining = [_not_started(item["entity_id"], replay) for item in lectures[start:]]
         for item in remaining:
             _finished(item["entity_id"], item["outcome"])
         return remaining
 
     selected_speed = float(config.get("playback", {}).get("default_speed", 1.0) if speed is None else speed)
+    if (
+        replay
+        and any(lecture.get("media") == "youtube" for lecture in lectures)
+        and not math.isclose(selected_speed, 1.0)
+    ):
+        return {"items": _not_started_from(0)}, [
+            _partial_error(
+                "playback-speed-unavailable",
+                "YouTube lectures support only 1.0 playback speed.",
+                "Use 1.0 speed for YouTube or retry at a speed supported by the selected player.",
+            )
+        ]
     try:
         await ensure_logged_in(page, config, target_url=MY_LECTURE_URL, expected_selector=COURSE_LINK_SELECTOR)
     except CampusError as error:
@@ -887,7 +921,7 @@ async def play_lectures(
         entity_id = lecture["entity_id"]
         parts = _row_parts(entity_id)
         if parts is None:
-            result = {**_not_started(entity_id), "outcome": "failed", "reason_code": "playback-failed"}
+            result = {**_not_started(entity_id, replay), "outcome": "failed", "reason_code": "playback-failed"}
             results.append(result)
             _finished(entity_id, result["outcome"])
             results.extend(_not_started_from(index + 1))
@@ -900,6 +934,12 @@ async def play_lectures(
             ]
         course_id, row_id = parts
         state: str | None = None
+        opened = False
+
+        def mark_opened() -> None:
+            nonlocal opened
+            opened = True
+
         try:
             if index:
                 await ensure_logged_in(page, config, target_url=MY_LECTURE_URL, expected_selector=COURSE_LINK_SELECTOR)
@@ -908,13 +948,15 @@ async def play_lectures(
             if row is None or row.get("moduletype") != "LV":
                 raise _PlaybackFailure()
             state = row.get("state") if isinstance(row.get("state"), str) else None
-            if state == "F":
+            if state == "F" and not replay:
                 result = {
                     "entity_id": entity_id,
                     "outcome": "already-complete",
                     "elapsed_seconds": 0.0,
                     "watch_time": None,
                     "provider_state": state,
+                    "replay_requested": replay,
+                    "player_opened": False,
                 }
                 try:
                     _mark_catalog_completion(entity_id, row, "complete")
@@ -926,13 +968,15 @@ async def play_lectures(
                 results.append(result)
                 _finished(entity_id, result["outcome"])
                 continue
-            if row.get("attendance_counted") is False and progress_is_full(row.get("progress_text")):
+            if not replay and row.get("attendance_counted") is False and progress_is_full(row.get("progress_text")):
                 result = {
                     "entity_id": entity_id,
                     "outcome": "recorded",
                     "elapsed_seconds": 0.0,
                     "watch_time": None,
                     "provider_state": state,
+                    "replay_requested": replay,
+                    "player_opened": False,
                 }
                 try:
                     _mark_catalog_completion(entity_id, row, "recorded")
@@ -953,6 +997,8 @@ async def play_lectures(
                 row_id,
                 selected_speed,
                 media=lecture.get("media", "video"),
+                replay=replay,
+                on_opened=mark_opened,
                 on_started=lambda index=index, entity_id=entity_id, title=lecture_title: _emit(
                     {
                         "type": "started",
@@ -989,6 +1035,8 @@ async def play_lectures(
                         "elapsed_seconds": round(elapsed, 1),
                         "watch_time": watch_time,
                         "provider_state": state,
+                        "replay_requested": replay,
+                        "player_opened": opened,
                     }
                     try:
                         _mark_catalog_completion(entity_id, provider_row, "recorded")
@@ -1006,6 +1054,8 @@ async def play_lectures(
                     "elapsed_seconds": round(elapsed, 1),
                     "watch_time": watch_time,
                     "provider_state": state,
+                    "replay_requested": replay,
+                    "player_opened": opened,
                 }
                 results.append(result)
                 _finished(entity_id, result["outcome"])
@@ -1017,7 +1067,7 @@ async def play_lectures(
                         "Check the lecture status in the LMS before trying again.",
                     )
                 ]
-            result = _completed_item(entity_id, state, elapsed, watch_time)
+            result = _completed_item(entity_id, state, elapsed, watch_time, replay=replay, opened=opened)
             try:
                 _mark_catalog_completion(entity_id, provider_row or {"state": state}, "complete")
             except CampusError as error:
@@ -1029,10 +1079,11 @@ async def play_lectures(
             _finished(entity_id, result["outcome"])
         except CampusError:
             result = {
-                **_not_started(entity_id),
+                **_not_started(entity_id, replay),
                 "outcome": "failed",
                 "reason_code": "playback-failed",
                 "provider_state": state,
+                "player_opened": opened,
             }
             results.append(result)
             _finished(entity_id, result["outcome"])
@@ -1053,6 +1104,8 @@ async def play_lectures(
                 "elapsed_seconds": round(elapsed, 1),
                 "watch_time": _watch_time(elapsed) if elapsed else None,
                 "provider_state": state,
+                "replay_requested": replay,
+                "player_opened": opened,
             }
             results.append(result)
             _finished(entity_id, result["outcome"])
@@ -1069,10 +1122,11 @@ async def play_lectures(
             return {"items": results}, [_partial_error(code, message, remediation)]
         except Exception:
             result = {
-                **_not_started(entity_id),
+                **_not_started(entity_id, replay),
                 "outcome": "failed",
                 "reason_code": "playback-failed",
                 "provider_state": state,
+                "player_opened": opened,
             }
             results.append(result)
             _finished(entity_id, result["outcome"])
