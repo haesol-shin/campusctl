@@ -50,7 +50,10 @@ def _blocked() -> CampusError:
 
 
 def _selected_url(
-    payload: Any, target: OfficialAttachmentTarget, policy: RequestPolicy
+    payload: Any,
+    target: OfficialAttachmentTarget,
+    policy: RequestPolicy,
+    operation: str = "materials.download",
 ) -> tuple[str, SelectedFileRequest]:
     if not isinstance(payload, dict):
         raise _blocked()
@@ -88,6 +91,7 @@ def _selected_url(
                         selected_file_id=target.file_id,
                         resolved_url=value,
                         source="fileDownload-response",
+                        operation=operation,
                     )
                 except UiRequestDenied:
                     return
@@ -104,7 +108,11 @@ def _selected_url(
         raise _blocked()
     url = urls[0]
     selected = bind_selected_file_request(
-        policy.ui_policy, selected_file_id=target.file_id, resolved_url=url, source="fileDownload-response"
+        policy.ui_policy,
+        selected_file_id=target.file_id,
+        resolved_url=url,
+        source="fileDownload-response",
+        operation=operation,
     )
     if target.parent_kind in {"archive", "notice"}:
         for entry in policy.ui_policy.selected_file_routes:
@@ -123,6 +131,8 @@ async def fetch_official_attachment(
     *,
     max_bytes: int,
     interceptor: UiRequestInterceptor | None = None,
+    operation: str = "materials.download",
+    metadata_path: str = "/api/v1/archive/fileDownload",
 ) -> FetchedAttachment:
     """Fetch the URL returned by this selected official control's UI action.
 
@@ -160,7 +170,7 @@ async def fetch_official_attachment(
     listening = False
     click_started = False
     result: FetchedAttachment | None = None
-    metadata_url = "https://dcs-learning.cnu.ac.kr/api/v1/archive/fileDownload"
+    metadata_url = f"https://dcs-learning.cnu.ac.kr{metadata_path}"
     parent_url: str | None = None
     selected_result: list[tuple[str, SelectedFileRequest]] = []
     metadata_failures: list[CampusError] = []
@@ -175,7 +185,7 @@ async def fetch_official_attachment(
             request.url,
             request.method,
             metadata_headers,
-            operation="materials.download",
+            operation=operation,
             resource_type="fetch",
             redirected_from=previous.url if previous is not None else None,
         )
@@ -190,7 +200,7 @@ async def fetch_official_attachment(
             or metadata_response.status != 200
         ):
             raise _blocked()
-        return _selected_url(await metadata_response.json(), target, policy)
+        return _selected_url(await metadata_response.json(), target, policy, operation=operation)
 
     async def capture_metadata(request: Any, metadata_response: Any) -> None:
         nonlocal bound_url
@@ -257,7 +267,7 @@ async def fetch_official_attachment(
         page.on("request", capture)
         listening = True
         if interceptor is not None:
-            interceptor.capture_response("/api/v1/archive/fileDownload", capture_metadata)
+            interceptor.capture_response(metadata_path, capture_metadata)
         await page.route("**/*", suppress_duplicate)
         route_installed = True
         async with page.expect_response(
@@ -289,7 +299,7 @@ async def fetch_official_attachment(
             url,
             "GET",
             headers,
-            operation="materials.download",
+            operation=operation,
             resource_type="fetch",
             selected_file=selected,
             selected_file_id=target.file_id,
@@ -307,7 +317,7 @@ async def fetch_official_attachment(
             url,
             media_type,
             response_headers.get("content-disposition"),
-            operation="materials.download",
+            operation=operation,
             selected_file_id=target.file_id,
         )
         body = await response.body()

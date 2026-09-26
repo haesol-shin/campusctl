@@ -14,6 +14,7 @@ from campusctl.paths import data_dir
 
 _ORIGIN = "https://dcs-learning.cnu.ac.kr"
 _OPERATION = "notices.sync"
+_FETCH_OPERATION = "notices.fetch"
 _GET_PATHS = (
     "/std/myLecture",
     "/std/lecture",
@@ -144,6 +145,145 @@ CAPABILITY: dict[str, Any] = {
         "selected_file_routes": [],
     },
 }
+FETCH_POLICY: dict[str, Any] = {
+    "approved": True,
+    "read_only_evidence": "2026-09-25 sanitized LMS report §§1.6,2,3.1 and owner LMS pins decision",
+    "origins": [_ORIGIN],
+    "routes": [
+        {"origin": _ORIGIN, "path": "/std/myLecture", "operation": _FETCH_OPERATION, "methods": ["GET"]},
+        {"origin": _ORIGIN, "path": "/std/lecture", "operation": _FETCH_OPERATION, "methods": ["GET"]},
+        {"origin": _ORIGIN, "path": "/std/notice", "operation": _FETCH_OPERATION, "methods": ["GET"]},
+        {
+            "origin": _ORIGIN,
+            "path": "/std/noticeDetail",
+            "operation": _FETCH_OPERATION,
+            "methods": ["GET"],
+            "query": {"no": "board-item-id", "curPage": "page"},
+        },
+        {
+            "origin": _ORIGIN,
+            "path": "/properties/messages.properties",
+            "operation": _FETCH_OPERATION,
+            "methods": ["GET"],
+            "query": {"_": "cachebuster"},
+        },
+        {
+            "origin": _ORIGIN,
+            "path": "/properties/messages_ko.properties",
+            "operation": _FETCH_OPERATION,
+            "methods": ["GET"],
+            "query": {"_": "cachebuster"},
+        },
+        {
+            "origin": _ORIGIN,
+            "path": "/api/v1/course/addSessionCourseInfo",
+            "operation": _FETCH_OPERATION,
+            "methods": ["POST"],
+        },
+        {"origin": _ORIGIN, "path": "/api/v1/user/getUserInfo", "operation": _FETCH_OPERATION, "methods": ["POST"]},
+        {"origin": _ORIGIN, "path": "/api/v1/user/getMenuList", "operation": _FETCH_OPERATION, "methods": ["POST"]},
+        {
+            "origin": _ORIGIN,
+            "path": "/api/v1/alarm/getAlarmListByDate",
+            "operation": _FETCH_OPERATION,
+            "methods": ["POST"],
+        },
+        {
+            "origin": _ORIGIN,
+            "path": "/api/v1/course/getCeShortcuts",
+            "operation": _FETCH_OPERATION,
+            "methods": ["POST"],
+        },
+        {
+            "origin": _ORIGIN,
+            "path": "/api/v1/common/checkEnableUrl",
+            "operation": _FETCH_OPERATION,
+            "methods": ["POST"],
+        },
+        {
+            "origin": _ORIGIN,
+            "path": "/api/v1/boardM/getBoardItemList",
+            "operation": _FETCH_OPERATION,
+            "methods": ["POST"],
+        },
+        {"origin": _ORIGIN, "path": "/api/v1/term/getYearTermList", "operation": _FETCH_OPERATION, "methods": ["POST"]},
+        {
+            "origin": _ORIGIN,
+            "path": "/api/v1/course/getStdMyCourseList",
+            "operation": _FETCH_OPERATION,
+            "methods": ["POST"],
+        },
+        {"origin": _ORIGIN, "path": "/api/v1/course/get", "operation": _FETCH_OPERATION, "methods": ["POST"]},
+        {
+            "origin": _ORIGIN,
+            "path": "/api/v1/board/courseNotice/list",
+            "operation": _FETCH_OPERATION,
+            "methods": ["POST"],
+        },
+        {"origin": _ORIGIN, "path": "/api/v1/week/getStdWeekList", "operation": _FETCH_OPERATION, "methods": ["POST"]},
+        {"origin": _ORIGIN, "path": "/api/v1/week/getStdEtcList", "operation": _FETCH_OPERATION, "methods": ["POST"]},
+        {
+            "origin": _ORIGIN,
+            "path": "/api/v1/week/getStdActivityStatus",
+            "operation": _FETCH_OPERATION,
+            "methods": ["POST"],
+            "logging_token_reviewed": True,
+            "resource_type": "xhr",
+        },
+        {
+            "origin": _ORIGIN,
+            "path": "/api/v1/survey/getApplyPopList",
+            "operation": _FETCH_OPERATION,
+            "methods": ["POST"],
+        },
+        {
+            "origin": _ORIGIN,
+            "path": "/api/v1/board/popup/noticeList",
+            "operation": _FETCH_OPERATION,
+            "methods": ["POST"],
+        },
+        {"origin": _ORIGIN, "path": "/api/v1/board/notice/list", "operation": _FETCH_OPERATION, "methods": ["POST"]},
+        {
+            "origin": _ORIGIN,
+            "path": "/api/v1/board/notice/list/top",
+            "operation": _FETCH_OPERATION,
+            "methods": ["POST"],
+        },
+        {"origin": _ORIGIN, "path": "/api/v1/board/notice/info", "operation": _FETCH_OPERATION, "methods": ["POST"]},
+        {"origin": _ORIGIN, "path": "/api/v1/board/cmt/list", "operation": _FETCH_OPERATION, "methods": ["POST"]},
+    ],
+    "suppress": [
+        {
+            "name": "panopto-script",
+            "origin": _ORIGIN,
+            "path_template": "/js/common/panopto-{hash}.js",
+            "operation": _FETCH_OPERATION,
+            "methods": ["GET"],
+            "reason": "media-integration",
+        },
+        {
+            "name": "panopto-disconnection-log",
+            "origin": _ORIGIN,
+            "path_template": "/api/v1/panopto/addInternetDisconnectionLog",
+            "operation": _FETCH_OPERATION,
+            "methods": ["POST"],
+            "reason": "logging",
+        },
+        {
+            "name": "panopto-connectivity-check",
+            "origin": _ORIGIN,
+            "path_template": "/api/v1/panopto/checkInternetConnection",
+            "operation": _FETCH_OPERATION,
+            "methods": ["GET"],
+            "reason": "logging",
+        },
+    ],
+    "static_asset_origins": [_ORIGIN],
+    "static_resource_types": ["script", "stylesheet", "font", "image"],
+    "selected_file_routes": [],
+    "allowed_media": [],
+    "max_bytes": 200_000_000,
+}
 
 
 def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -161,16 +301,109 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
 
 def dispatch(args: argparse.Namespace) -> tuple[dict[str, Any], CampusError | list[CampusError] | None]:
     """Read cache without configuration, network, browser, or session lock."""
-    if args.notices_command != "list":
-        raise UsageError("A notices command is required.")
-    catalog = read_domain_catalog("notices", domain_catalog_path("notices", data_dir()))
-    rows = catalog["notices"]
-    if args.course is not None:
-        rows = [row for row in rows if row["course"]["id"] == args.course]
-    return {
-        "cache": {**cache_metadata(catalog, now=datetime.now(UTC), domain="notices"), "path_present": True},
-        "notices": rows,
-    }, None
+    command = getattr(args, "notices_command", None)
+    if command == "list":
+        catalog = read_domain_catalog("notices", domain_catalog_path("notices", data_dir()))
+        rows = catalog["notices"]
+        if args.course is not None:
+            rows = [row for row in rows if row["course"]["id"] == args.course]
+        return {
+            "cache": {**cache_metadata(catalog, now=datetime.now(UTC), domain="notices"), "path_present": True},
+            "notices": rows,
+        }, None
+    if command == "fetch":
+        entity_id = getattr(args, "entity_id", None)
+        if not isinstance(entity_id, str) or not entity_id.strip():
+            raise UsageError("an entity ID is required")
+        root = data_dir()
+        cat_path = domain_catalog_path("notices", root)
+        if not cat_path.exists():
+            raise CampusError(
+                "catalog-missing",
+                "Notice catalog is missing.",
+                "Run 'campusctl sync --only notices' to create it.",
+                "user-action",
+            )
+        catalog = read_domain_catalog("notices", cat_path)
+        matching = [r for r in catalog.get("notices", []) if r.get("entity_id") == entity_id]
+        if len(matching) != 1:
+            raise CampusError(
+                "entity-unknown",
+                "The selected notice ID is not in the catalog.",
+                "Select one full ID from 'campusctl notices list'.",
+                "user-action",
+            )
+        row = matching[0]
+        out_path = getattr(args, "out", None)
+        if out_path is not None:
+            p = Path(out_path)
+            if p.exists() or p.is_symlink():
+                raise CampusError(
+                    "output-path-conflict",
+                    "Selected output path already exists.",
+                    "Choose a nonexistent destination path with --out.",
+                    "user-action",
+                )
+        import asyncio
+
+        from campusctl.browser_options import preflight_browser_mode
+        from campusctl.config import load_config
+
+        config = load_config()
+        headless_override = getattr(args, "headless_override", None)
+        mode = preflight_browser_mode(config, "notices.fetch", override=headless_override)
+        pkg = asyncio.run(_fetch_notice(config, root, row, out=out_path, headless=mode))
+        errors = (
+            [CampusError("resource-omitted", "Some resources were omitted by reviewed policy.", status="user-action")]
+            if pkg.get("completeness") == "policy-filtered"
+            else None
+        )
+        return {"source_package": pkg}, errors
+    raise UsageError("A notices command is required.")
+
+
+async def _fetch_notice(
+    config: dict[str, Any],
+    root: Path,
+    row: dict[str, Any],
+    *,
+    out: Path | None = None,
+    headless: bool = False,
+) -> dict[str, Any]:
+    from campusctl.browser import open_session
+    from campusctl.providers.cnu.login import ensure_logged_in
+    from campusctl.providers.cnu.notice_detail import capture_notice_detail
+    from campusctl.providers.cnu.request_policy import RequestPolicy
+    from campusctl.providers.cnu.ui_policy import UiRequestDiagnostics, UiRequestPolicy, install_ui_request_interceptor
+    from campusctl.source_package import build_source_package
+
+    ui_policy = UiRequestPolicy.from_reviewed_config(FETCH_POLICY)
+    diagnostics = UiRequestDiagnostics()
+    request_policy = RequestPolicy(ui_policy, "notice", diagnostics)
+
+    async with open_session(config, data_dir=root, headless=headless, operation="notices.fetch") as session:
+        page = session.page
+        await ensure_logged_in(page, config)
+        interceptor = install_ui_request_interceptor(
+            page,
+            ui_policy,
+            operation="notices.fetch",
+            diagnostics=diagnostics,
+        )
+        snapshot = await capture_notice_detail(page, row, interceptor=interceptor)
+        result = await build_source_package(
+            page,
+            snapshot,
+            entity_id=row["entity_id"],
+            kind="notice",
+            course_id=row["course"]["id"],
+            course_label=row["course"]["label"],
+            root=root,
+            policy=request_policy,
+            out=out,
+            interceptor=interceptor,
+        )
+        return result
 
 
 async def sync(
@@ -218,6 +451,21 @@ def _warnings(state: object, failed: object, width: int) -> list[str]:
 
 def render(command: str, result: dict[str, Any], width: int) -> list[str]:
     """Render domain summaries and lists, keeping selectable IDs untruncated."""
+    if command == "notices.fetch":
+        pkg = result.get("source_package")
+        if not pkg:
+            return []
+        lines = [
+            f"Notice source: {pkg['entity_id']}",
+            f"Package: {pkg['path']}",
+            f"Content: {pkg['content_path']}",
+            f"Completeness: {pkg['completeness']}",
+        ]
+        for omitted in pkg.get("omitted_resources", []):
+            reason = omitted.get("reason", "omitted")
+            name = omitted.get("original_name") or omitted.get("resource_id", "resource")
+            lines.append(f"Omitted: {reason} — {name}")
+        return lines
     if command == "sync.notices":
         if not any(key in result for key in ("courses", "notices", "failed_courses", "catalog")):
             return []

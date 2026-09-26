@@ -96,7 +96,7 @@ def guard_response(
     """Check selected response metadata without trusting its proposed filename or URL basename."""
     if (
         not policy.ui_policy.approved
-        or operation != "materials.download"
+        or operation not in {"materials.download", "assignments.fetch", "notices.fetch"}
         or not selected_file_id
         or not isinstance(url, str)
         or not url

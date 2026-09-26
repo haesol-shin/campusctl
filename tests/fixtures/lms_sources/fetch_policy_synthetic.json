@@ -1,0 +1,134 @@
+{
+  "fixture_kind": "synthetic-policy-expectations-not-live-evidence",
+  "provenance": "Owner-held sanitized policy decision (2026-09-25, lines 8–35, 41–72); docs/specs/40-fetch/design.md exact fetch-operation data pins",
+  "learning_origin": "https://dcs-learning.cnu.ac.kr.invalid",
+  "operations": {
+    "assignments.fetch": {
+      "selected_identity": {
+        "entity_id": "cnu_assignment:course-synthetic-001:task-synthetic-001",
+        "native_id": "task-synthetic-001",
+        "official_file_parent_kind": "assignment",
+        "official_file_parent_id": "task-synthetic-001",
+        "official_file_id": "file-synthetic-001"
+      },
+      "routes": [
+        {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/std/myLecture","operation":"assignments.fetch","methods":["GET"]},
+        {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/std/lecture","operation":"assignments.fetch","methods":["GET"]},
+        {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/std/task","operation":"assignments.fetch","methods":["GET"]},
+        {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/std/taskView","operation":"assignments.fetch","methods":["GET"],"query":{"curPage":"page"}},
+        {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/properties/messages.properties","operation":"assignments.fetch","methods":["GET"],"query":{"_":"cachebuster"}},
+        {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/properties/messages_ko.properties","operation":"assignments.fetch","methods":["GET"],"query":{"_":"cachebuster"}},
+        {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/api/v1/course/addSessionCourseInfo","operation":"assignments.fetch","methods":["POST"]},
+        {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/api/v1/user/getUserInfo","operation":"assignments.fetch","methods":["POST"]},
+        {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/api/v1/user/getMenuList","operation":"assignments.fetch","methods":["POST"]},
+        {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/api/v1/alarm/getAlarmListByDate","operation":"assignments.fetch","methods":["POST"]},
+        {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/api/v1/course/getCeShortcuts","operation":"assignments.fetch","methods":["POST"]},
+        {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/api/v1/common/checkEnableUrl","operation":"assignments.fetch","methods":["POST"]},
+        {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/api/v1/boardM/getBoardItemList","operation":"assignments.fetch","methods":["POST"]},
+        {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/api/v1/term/getYearTermList","operation":"assignments.fetch","methods":["POST"]},
+        {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/api/v1/course/getStdMyCourseList","operation":"assignments.fetch","methods":["POST"]},
+        {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/api/v1/course/get","operation":"assignments.fetch","methods":["POST"]},
+        {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/api/v1/board/courseNotice/list","operation":"assignments.fetch","methods":["POST"]},
+        {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/api/v1/week/getStdWeekList","operation":"assignments.fetch","methods":["POST"]},
+        {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/api/v1/week/getStdEtcList","operation":"assignments.fetch","methods":["POST"]},
+        {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/api/v1/week/getStdActivityStatus","operation":"assignments.fetch","methods":["POST"]},
+        {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/api/v1/survey/getApplyPopList","operation":"assignments.fetch","methods":["POST"]},
+        {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/api/v1/board/popup/noticeList","operation":"assignments.fetch","methods":["POST"]},
+        {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/api/v1/task/stdList","operation":"assignments.fetch","methods":["POST"]},
+        {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/api/v1/task/detail","operation":"assignments.fetch","methods":["POST"]},
+        {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/api/v1/task/stdDetail","operation":"assignments.fetch","methods":["POST"]}
+      ]
+    },
+    "notices.fetch": {
+      "selected_identity": {
+        "entity_id": "cnu_notice:course-synthetic-001:2026-01-02 03%3A04:7",
+        "native_board_item_id": "TB_L_BOARDITEM101",
+        "official_file_parent_kind": "notice",
+        "official_file_parent_id": "TB_L_BOARDITEM101",
+        "official_file_id": "file-synthetic-002"
+      },
+      "routes": [
+        {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/std/myLecture","operation":"notices.fetch","methods":["GET"]},
+        {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/std/lecture","operation":"notices.fetch","methods":["GET"]},
+        {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/std/notice","operation":"notices.fetch","methods":["GET"]},
+        {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/std/noticeDetail","operation":"notices.fetch","methods":["GET"],"query":{"no":"board-item-id","curPage":"page"}},
+        {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/properties/messages.properties","operation":"notices.fetch","methods":["GET"],"query":{"_":"cachebuster"}},
+        {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/properties/messages_ko.properties","operation":"notices.fetch","methods":["GET"],"query":{"_":"cachebuster"}},
+        {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/api/v1/course/addSessionCourseInfo","operation":"notices.fetch","methods":["POST"]},
+        {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/api/v1/user/getUserInfo","operation":"notices.fetch","methods":["POST"]},
+        {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/api/v1/user/getMenuList","operation":"notices.fetch","methods":["POST"]},
+        {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/api/v1/alarm/getAlarmListByDate","operation":"notices.fetch","methods":["POST"]},
+        {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/api/v1/course/getCeShortcuts","operation":"notices.fetch","methods":["POST"]},
+        {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/api/v1/common/checkEnableUrl","operation":"notices.fetch","methods":["POST"]},
+        {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/api/v1/boardM/getBoardItemList","operation":"notices.fetch","methods":["POST"]},
+        {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/api/v1/term/getYearTermList","operation":"notices.fetch","methods":["POST"]},
+        {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/api/v1/course/getStdMyCourseList","operation":"notices.fetch","methods":["POST"]},
+        {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/api/v1/course/get","operation":"notices.fetch","methods":["POST"]},
+        {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/api/v1/board/courseNotice/list","operation":"notices.fetch","methods":["POST"]},
+        {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/api/v1/week/getStdWeekList","operation":"notices.fetch","methods":["POST"]},
+        {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/api/v1/week/getStdEtcList","operation":"notices.fetch","methods":["POST"]},
+        {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/api/v1/week/getStdActivityStatus","operation":"notices.fetch","methods":["POST"]},
+        {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/api/v1/survey/getApplyPopList","operation":"notices.fetch","methods":["POST"]},
+        {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/api/v1/board/popup/noticeList","operation":"notices.fetch","methods":["POST"]},
+        {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/api/v1/board/notice/list","operation":"notices.fetch","methods":["POST"]},
+        {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/api/v1/board/notice/list/top","operation":"notices.fetch","methods":["POST"]},
+        {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/api/v1/board/notice/info","operation":"notices.fetch","methods":["POST"]},
+        {"origin":"https://dcs-learning.cnu.ac.kr.invalid","path":"/api/v1/board/cmt/list","operation":"notices.fetch","methods":["POST"]}
+      ]
+    }
+  },
+  "review_gate": {
+    "getStdActivityStatus": "Both fetch tables describe an observed POST XHR, but operation-scoped logging-token exemption requires separate owner review before enabling fetch; existing review covers assignments.sync, materials.sync, materials.download and notices.sync only.",
+    "notice_attachment_initiation": "Unobserved: no notice fetch fileDownload data route or selected notice file URL template is approved by this fixture.",
+    "notice_read_yn": "Unknown until separate owner-authorized /std/todo before/after observation; either outcome is accepted when recorded.",
+    "headless": "Unverified; keep unpublished."
+  },
+  "query_kinds": {
+    "page": "ASCII digits or literal undefined",
+    "board-item-id": "TB_L_BOARDITEM followed by one or more ASCII digits; match the selected native ID independently",
+    "cachebuster": "one to twenty ASCII digits",
+    "unknown_or_repeated_keys": "deny"
+  },
+  "suppression": {
+    "per_operation": ["assignments.fetch", "notices.fetch"],
+    "network_disposition": "abort-without-operation-failure",
+    "entries": [
+      {"name":"panopto-script","origin":"https://dcs-learning.cnu.ac.kr.invalid","methods":["GET"],"path_template":"/js/common/panopto-{hash}.js","reason":"media-integration"},
+      {"name":"panopto-disconnection-log","origin":"https://dcs-learning.cnu.ac.kr.invalid","methods":["POST"],"path_template":"/api/v1/panopto/addInternetDisconnectionLog","reason":"logging"},
+      {"name":"panopto-connectivity-check","origin":"https://dcs-learning.cnu.ac.kr.invalid","methods":["GET"],"path_template":"/api/v1/panopto/checkInternetConnection","reason":"logging"}
+    ],
+    "panoptoSaml_script": "not suppressed; apply ordinary same-origin static script guard",
+    "all_other_unlisted_requests": "deny-policy-blocked"
+  },
+  "static_assets": {
+    "origins": ["https://dcs-learning.cnu.ac.kr.invalid"],
+    "method": "GET",
+    "resource_types": ["script", "stylesheet", "font", "image"],
+    "not_exempt": ["xhr", "fetch", "document", "media", "video", "audio", "stream", "redirect", "range"],
+    "other_origin_static_exemption": false
+  },
+  "selected_official_file": {
+    "required_before_bytes": ["selected detail identity matches selected catalog row", "official control file ID is the selected attachment-native ID", "official control parent kind and parent ID match the selected native detail ID", "bind_selected_file_request with independently supplied selected_file_id and source official-control or fileDownload-response"],
+    "candidate_url": "observed official URL only; otherwise null, never synthesize a route",
+    "query_or_signed_url": "deny",
+    "sibling_file_same_template": "deny",
+    "redirect": "deny",
+    "range_request": "deny",
+    "persisted_source_reference": "origin and normalized path only; omit query and fragment"
+  },
+  "attachments": {
+    "allowed_extensions_case_insensitive": ["pdf", "ppt", "pptx", "doc", "docx", "xls", "xlsx", "hwp", "hwpx", "txt", "md", "png", "jpg", "zip", "ipynb", "py", "c", "cpp", "java", "js", "sql"],
+    "max_bytes": 200000000,
+    "observed_mime_signature_pairs": [
+      {"extension":"pdf","mime":"application/x-pdf","signature_ascii":"%PDF-"},
+      {"extension":"pptx","mime":"application/vnd.openxmlformats-officedocument.presentationml.presentation","signature_hex":"504b0304"},
+      {"extension":"zip","mime":"application/zip","signature_hex":"504b0304"}
+    ],
+    "other_types": "require known per-extension signature matching; MIME alone does not establish approval",
+    "zip_handling": "store only; never extract",
+    "video_and_streams": "always block",
+    "content_disposition": "not observed; do not treat as a filename source",
+    "filename_source": "official control display text or getAttachFileList name; remove trailing 바로보기 before sanitizing"
+  },
+  "publication": "fixture-only; commands and capabilities remain unpublished until independent read_yn and notice attachment release gates"
+}
