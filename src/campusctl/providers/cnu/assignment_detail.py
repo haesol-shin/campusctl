@@ -91,31 +91,20 @@ def _wrong_task() -> CampusError:
     )
 
 
-def _response_identity(payload: Any) -> str:
-    """Require a native task identity in each independent detail response."""
-    pending = [payload]
-    found: set[str] = set()
-    while pending:
-        value = pending.pop()
-        if isinstance(value, dict):
-            header = value.get("header")
-            if isinstance(header, dict) and str(header.get("code")) not in {"200", "0"}:
-                raise _failed()
-            for key, item in value.items():
-                normalized = key.casefold().replace("_", "") if isinstance(key, str) else ""
-                if normalized in {"taskid", "reportid"} or (
-                    normalized == "id" and isinstance(item, str) and _TASK_ID.fullmatch(item)
-                ):
-                    if not isinstance(item, str) or not _TASK_ID.fullmatch(item):
-                        raise _wrong_task()
-                    found.add(item)
-                elif isinstance(item, (dict, list)):
-                    pending.append(item)
-        elif isinstance(value, list):
-            pending.extend(item for item in value if isinstance(item, (dict, list)))
-    if len(found) != 1:
+def _response_identity(payload: Any, course_id: str) -> str:
+    """Bind one reviewed detail response to its native task and selected course."""
+    if not isinstance(payload, dict):
         raise _wrong_task()
-    return found.pop()
+    header = payload.get("header")
+    if not isinstance(header, dict) or str(header.get("code")) not in {"200", "0"}:
+        raise _failed()
+    body = payload.get("body")
+    if not isinstance(body, dict):
+        raise _wrong_task()
+    report_no = body.get("report_no")
+    if not isinstance(report_no, str) or not _TASK_ID.fullmatch(report_no) or body.get("course_id") != course_id:
+        raise _wrong_task()
+    return report_no
 
 
 def _markdown_text(value: str) -> str:
@@ -244,7 +233,8 @@ async def capture_assignment_detail(page: Any, config: dict[str, Any], selected_
             ):
                 raise _failed()
             identity = _response_identity(
-                await bounded(response.json(), PROTOCOL_TIMEOUT_SECONDS, "verifying CNU task detail identity")
+                await bounded(response.json(), PROTOCOL_TIMEOUT_SECONDS, "verifying CNU task detail identity"),
+                course_id,
             )
             if identity != task_id:
                 raise _wrong_task()

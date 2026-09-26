@@ -8,12 +8,11 @@ from urllib.parse import parse_qs, urlsplit
 
 from campusctl.browser import PROTOCOL_TIMEOUT_SECONDS, bounded
 from campusctl.envelope import CampusError
-from campusctl.identity import notice_entity_id
 from campusctl.source_package import DetailSnapshot, ResourceReference
 
 from .course_context import _css_string
 from .login import MY_LECTURE_URL
-from .notices import _board_item
+from .notices import _board_item, parse_board_rows
 
 _ORIGIN = "https://dcs-learning.cnu.ac.kr"
 _NATIVE_ID = re.compile(r"TB_L_BOARDITEM[0-9]+\Z")
@@ -181,7 +180,17 @@ async def capture_notice_detail(page: Any, selected_row: dict[str, Any], *, inte
     if (
         not isinstance(course, dict)
         or not isinstance(course.get("id"), str)
+        or not course["id"].strip()
+        or not isinstance(course.get("label"), str)
+        or not course["label"].strip()
         or not isinstance(selected_row.get("entity_id"), str)
+        or not selected_row["entity_id"].strip()
+        or not isinstance(selected_row.get("legacy_key"), str)
+        or not selected_row["legacy_key"].strip()
+        or not isinstance(selected_row.get("title"), str)
+        or not selected_row["title"].strip()
+        or not isinstance(selected_row.get("date"), str)
+        or not selected_row["date"].strip()
     ):
         raise _failed("Selected notice identity is incomplete.")
     course_id = course["id"]
@@ -220,16 +229,23 @@ async def capture_notice_detail(page: Any, selected_row: dict[str, Any], *, inte
         await bounded(page.wait_for_load_state("networkidle"), PROTOCOL_TIMEOUT_SECONDS, "settling notice board")
         interceptor.raise_if_denied()
         rows = [*_items(await response_payload(_LIST_PATHS[0])), *_items(await response_payload(_LIST_PATHS[1]))]
-        selected: list[tuple[str, dict[str, Any]]] = []
+        board: list[dict[str, Any]] = []
         for item in rows:
             try:
                 parsed = _board_item(item, course_id)
             except ValueError as exc:
                 raise _failed("Notice board item metadata invalid.") from exc
-            if parsed is None:
-                continue
-            if notice_entity_id(course_id, parsed["date"], parsed["number"]) == selected_row["entity_id"]:
-                selected.append((parsed["native_id"], parsed))
+            if parsed is not None:
+                board.append(parsed)
+        try:
+            resolved = parse_board_rows(board, {"course_id": course_id, "label": course["label"]}, [selected_row])
+        except ValueError as exc:
+            raise _failed("Notice board identity is invalid.") from exc
+        selected = [
+            (raw["native_id"], raw)
+            for raw, bound in zip(board, resolved, strict=True)
+            if bound["entity_id"] == selected_row["entity_id"]
+        ]
         if len(selected) != 1:
             raise _failed("Selected notice no longer matches one board row.")
         native, matched_item = selected[0]
