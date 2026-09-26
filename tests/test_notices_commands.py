@@ -12,9 +12,25 @@ from campusctl.domain_catalog import write_domain_catalog
 
 STAMP = "2026-09-25T03:04:05Z"
 FULL_ID = "cnu_notice:course-a:2026-09-01 12%3A00:12345678901234567890"
+PUBLIC_ROW_KEYS = {
+    "entity_id",
+    "legacy_key",
+    "course",
+    "kind",
+    "title",
+    "date",
+    "status",
+    "is_unread",
+    "posted_date",
+    "author_role",
+    "author",
+    "view_count",
+    "has_attachments",
+}
 ROWS = [
     {
         "entity_id": FULL_ID,
+        "native_id": "TB_L_BOARDITEM7001",
         "legacy_key": "Example Course_2026-09-01 12:00_12345678901234567890",
         "course": {"id": "course-a", "label": "Example Course"},
         "kind": "notice",
@@ -30,6 +46,7 @@ ROWS = [
     },
     {
         "entity_id": "cnu_notice:course-b:2026-09-02 12%3A00:2",
+        "native_id": "TB_L_BOARDITEM7002",
         "legacy_key": "Other Course_2026-09-02 12:00_2",
         "course": {"id": "course-b", "label": "Other Course"},
         "kind": "notice",
@@ -91,6 +108,7 @@ def test_discovered_notice_capability_and_human_cli(
     assert "Assignment information" in output.out
     assert FULL_ID in output.out
     assert "Other Course" not in output.out
+    assert "TB_L_BOARDITEM7001" not in output.out
 
 
 def test_cached_notice_list_envelope(
@@ -109,7 +127,11 @@ def test_cached_notice_list_envelope(
     assert payload["schema_version"] == 1
     assert payload["status"] == "ok" and payload["errors"] == []
     result = payload["result"]
-    assert result["notices"] == [ROWS[0]]
+    assert set(result["notices"][0]) == PUBLIC_ROW_KEYS
+    assert result["notices"][0]["entity_id"] == FULL_ID
+    code, payload = _invoke(["notices", "list", "--json"], capsys)
+    assert code == 0
+    assert all(set(row) == PUBLIC_ROW_KEYS for row in payload["result"]["notices"])
     assert result["cache"]["generated_at"] == STAMP
     assert result["cache"]["stale"] is True
     assert result["cache"]["failed_courses"][0]["course_id"] == "course-b"
