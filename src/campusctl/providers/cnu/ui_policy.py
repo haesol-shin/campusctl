@@ -758,6 +758,8 @@ class UiRequestInterceptor:
         self._selection_requested = False
         self._selection_document_requested = False
         self._roster_document_requested = False
+        self._selection_completed = False
+        self._selection_course_id: str | None = None
 
     @property
     def epoch(self) -> OperationEpoch:
@@ -842,6 +844,8 @@ class UiRequestInterceptor:
         self._selection = None
         self._selection_requested = False
         self._selection_document_requested = False
+        self._selection_completed = False
+        self._selection_course_id = None
         self._quarantined = False
         return self._epoch
 
@@ -853,6 +857,8 @@ class UiRequestInterceptor:
             or self._epoch.course_id is not None
             or not isinstance(selection, CourseSelection)
             or (self._require_selection and not self._selection_requested)
+            or (self._require_selection and not self._selection_completed)
+            or (self._require_selection and selection.course_id != self._selection_course_id)
             or (self._require_selection and not self._selection_document_requested)
             or (self._require_selection and selection.epoch != self._epoch.selection_epoch)
             or (
@@ -983,13 +989,14 @@ class UiRequestInterceptor:
                 raise UiRequestDenied("route")
             return  # Existing single-operation interceptors do not switch epochs.
         origin, path, query, _ = _request_parts(request.url)
-        if (
-            _suppression_reason(
-                epoch.policy, origin, path, query, request.method.upper(), epoch.operation, request.resource_type
-            )
-            == "panopto-sso-popup"
+        reason = _suppression_reason(
+            epoch.policy, origin, path, query, request.method.upper(), epoch.operation, request.resource_type
+        )
+        if reason is not None and (
+            reason == "panopto-sso-popup"
+            or (epoch.phase in {"roster-entry", "roster", "selection"} and reason in {"logging", "telemetry"})
         ):
-            return  # The existing popup-frame/opener check runs before suppression.
+            return  # Exact reviewed suppressions still pass through guard_ui_request.
         try:
             frame = request.frame
         except Exception:
@@ -1030,6 +1037,7 @@ class UiRequestInterceptor:
                     origin != _request_parts(epoch.document_url)[0]
                     or path != epoch.navigation_path
                     or not self._selection_requested
+                    or not self._selection_completed
                     or self._selection_document_requested
                 ):
                     raise UiRequestDenied("route")
@@ -1201,6 +1209,45 @@ class UiRequestInterceptor:
                 reasons["duplicate-download"] = reasons.get("duplicate-download", 0) + 1
                 if recorder is not None:
                     recorder.request("attachment", "suppressed")
+        elif (
+            self._require_selection
+            and epoch.phase == "selection"
+            and request.method.upper() == "POST"
+            and urlsplit(request.url).path == "/api/v1/course/addSessionCourseInfo"
+        ):
+            try:
+                response = await route.fetch(max_redirects=0)
+                if response.status != 200 or await response.finished() is not None:
+                    raise UiRequestDenied("route")
+                payload = await response.json()
+                header = payload.get("header") if isinstance(payload, dict) else None
+                body = payload.get("body") if isinstance(payload, dict) else None
+                data = body.get("data") if isinstance(body, dict) else None
+                course_id = data.get("course_id") if isinstance(data, dict) else None
+                if (
+                    not isinstance(header, dict)
+                    or header.get("code") != 200
+                    or not isinstance(body, dict)
+                    or body.get("result") != "Y"
+                    or not isinstance(course_id, str)
+                    or not course_id
+                    or epoch is not self._epoch
+                    or self._quarantined
+                ):
+                    raise UiRequestDenied("route")
+                if capture is not None and capture[0] == "/api/v1/course/addSessionCourseInfo":
+                    await capture[1](request, response)
+                self._selection_course_id = course_id
+                self._selection_completed = True
+                await route.fulfill(response=response)
+                if recorder is not None:
+                    recorder.request(category, "allowed")
+            except Exception:
+                if self._denial is None:
+                    self._denial = UiRequestDenied("route")
+                if recorder is not None:
+                    recorder.request(category, "blocked")
+                await route.abort()
         elif capture is not None and urlsplit(request.url).path == capture[0] and request.method.upper() == "POST":
             if recorder is not None:
                 recorder.request(category, "allowed")

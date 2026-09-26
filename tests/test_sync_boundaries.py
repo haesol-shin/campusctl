@@ -43,7 +43,22 @@ def policy(origin: str, operation: str) -> UiRequestPolicy:
                 "operation": operation,
                 "methods": ["POST"],
                 "reason": "panopto-sso-popup",
+            },
+        ]
+        + [
+            {
+                "name": name,
+                "origin": route_origin,
+                "path_template": path,
+                "operation": operation,
+                "methods": [method],
+                "reason": reason,
             }
+            for name, route_origin, path, method, reason in (
+                ("panopto-disconnection-log", origin, "/api/v1/panopto/addInternetDisconnectionLog", "POST", "logging"),
+                ("panopto-connectivity-check", origin, "/api/v1/panopto/checkInternetConnection", "GET", "logging"),
+                ("external-telemetry", "http://0.0.0.0:3000", "/v1/events", "POST", "telemetry"),
+            )
         ],
         "allowed_media": [],
         "max_bytes": None,
@@ -114,6 +129,9 @@ class Request:
         self.redirected_from: Any = None
         self.wait: asyncio.Event | None = None
         self.entered: asyncio.Event | None = None
+        self.course_id = "synthetic-course-1"
+        self.response_release: asyncio.Event | None = None
+        self.response_entered: asyncio.Event | None = None
 
     async def all_headers(self) -> dict[str, str]:
         if self.entered is not None:
@@ -139,6 +157,30 @@ class Route:
         await reader.read()
         writer.close()
         await writer.wait_closed()
+
+    async def fetch(self, *, max_redirects: int) -> Any:
+        assert max_redirects == 0
+        await self.continue_()
+        if self.request.response_entered is not None:
+            self.request.response_entered.set()
+        if self.request.response_release is not None:
+            await self.request.response_release.wait()
+        course_id = self.request.course_id
+
+        class Response:
+            status = 200
+
+            async def finished(self) -> None:
+                return None
+
+            async def json(self) -> dict[str, Any]:
+                return {"header": {"code": 200}, "body": {"result": "Y", "data": {"course_id": course_id}}}
+
+        return Response()
+
+    async def fulfill(self, *, response: Any) -> None:
+        assert response.status == 200
+        self.action = "continue"
 
 
 class Target:
@@ -312,11 +354,12 @@ def test_guarded_roster_two_courses_and_late_requests_before_local_server() -> N
         roster_url = origin + "/std/myLecture"
         frame = SimpleNamespace(url=origin + "/post-login")
         target = Target()
+        diagnostics = UiRequestDiagnostics()
         guard = await install_ui_request_interceptor(
             target,
             policy(origin, "assignments.sync"),
             operation="assignments.sync",
-            diagnostics=UiRequestDiagnostics(),
+            diagnostics=diagnostics,
             require_selection=True,
         )
 
@@ -326,15 +369,29 @@ def test_guarded_roster_two_courses_and_late_requests_before_local_server() -> N
             assert route.action is not None
             return route.action
 
+        async def suppressed() -> None:
+            before = arrivals
+            for request in (
+                Request(origin + "/api/v1/panopto/addInternetDisconnectionLog", frame, frame.url),
+                Request(origin + "/api/v1/panopto/checkInternetConnection", frame, frame.url, method="GET"),
+                Request("http://0.0.0.0:3000/v1/events", frame, frame.url, resource_type="fetch"),
+            ):
+                assert await send(request) == "abort"
+                guard.raise_if_denied()
+            assert arrivals == before
+
         try:
             guard.arm_roster(frame=frame, document_url=frame.url)
+            await suppressed()
             assert (
                 await send(Request(roster_url, frame, frame.url, method="GET", resource_type="document")) == "continue"
             )
             frame.url = roster_url
             assert await send(Request(origin + "/api/v1/week/getStdWeekList", frame, roster_url)) == "continue"
             guard.bind_roster(frame=frame, document_url=roster_url)
+            await suppressed()
             guard.arm_selection(frame=frame, document_url=roster_url)
+            await suppressed()
             assert await send(Request(origin + "/api/v1/course/addSessionCourseInfo", frame, roster_url)) == "continue"
             with pytest.raises(UiRequestDenied):
                 guard.bind_selection(selection(), frame=frame, document_url=origin + "/std/lecture")
@@ -348,6 +405,7 @@ def test_guarded_roster_two_courses_and_late_requests_before_local_server() -> N
                 == "continue"
             )
             assert await send(Request(origin + "/api/v1/week/getStdWeekList", frame, frame.url)) == "continue"
+            assert diagnostics.suppressed_reasons == {"logging": 6, "telemetry": 3}
             first = selection()
             guard.bind_selection(first, frame=frame, document_url=frame.url)
             guard.raise_if_denied()
@@ -419,7 +477,9 @@ def test_guarded_roster_two_courses_and_late_requests_before_local_server() -> N
             guard.quarantine()
             second_epoch = guard.arm_selection(frame=frame, document_url=roster_url)
             assert second_epoch.selection_epoch == first.epoch + 1
-            assert await send(Request(origin + "/api/v1/course/addSessionCourseInfo", frame, roster_url)) == "continue"
+            second_request = Request(origin + "/api/v1/course/addSessionCourseInfo", frame, roster_url)
+            second_request.course_id = "synthetic-course-2"
+            assert await send(second_request) == "continue"
             assert (
                 await send(Request(origin + "/std/lecture", frame, roster_url, method="GET", resource_type="document"))
                 == "continue"
@@ -449,6 +509,51 @@ def test_guarded_roster_two_courses_and_late_requests_before_local_server() -> N
             with pytest.raises(UiRequestDenied):
                 guard.raise_if_denied()
             assert target.installs == 1
+
+            pending_target = Target()
+            pending_guard = await install_ui_request_interceptor(
+                pending_target,
+                policy(origin, "assignments.sync"),
+                operation="assignments.sync",
+                diagnostics=UiRequestDiagnostics(),
+                require_selection=True,
+            )
+            try:
+                frame.url = origin + "/post-login"
+                pending_guard.arm_roster(frame=frame, document_url=frame.url)
+
+                async def pending_send(request: Request) -> str:
+                    route = Route(request, server.sockets[0].getsockname()[1])
+                    await pending_target.handler(route)
+                    assert route.action is not None
+                    return route.action
+
+                assert (
+                    await pending_send(Request(roster_url, frame, frame.url, method="GET", resource_type="document"))
+                    == "continue"
+                )
+                frame.url = roster_url
+                pending_guard.bind_roster(frame=frame, document_url=roster_url)
+                pending_guard.arm_selection(frame=frame, document_url=roster_url)
+                pending_response = Request(origin + "/api/v1/course/addSessionCourseInfo", frame, roster_url)
+                pending_response.response_entered = asyncio.Event()
+                pending_response.response_release = asyncio.Event()
+                selection_task = asyncio.create_task(pending_send(pending_response))
+                await pending_response.response_entered.wait()
+                before_document = arrivals
+                assert (
+                    await pending_send(
+                        Request(origin + "/std/lecture", frame, roster_url, method="GET", resource_type="document")
+                    )
+                    == "abort"
+                )
+                assert arrivals == before_document
+                pending_response.response_release.set()
+                await selection_task
+                with pytest.raises(UiRequestDenied):
+                    pending_guard.raise_if_denied()
+            finally:
+                await pending_guard.close()
         finally:
             await guard.close()
             server.close()
