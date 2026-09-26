@@ -732,6 +732,7 @@ class UiRequestInterceptor:
         self._quarantined = False
         self._require_selection = require_selection
         self._selection: CourseSelection | None = None
+        self._selection_requested = False
 
     @property
     def epoch(self) -> OperationEpoch:
@@ -744,6 +745,38 @@ class UiRequestInterceptor:
         self._selected_file = None
         self._selected_file_id = None
 
+    def arm_selection(self, *, frame: Any, document_url: str, settled: bool = True) -> OperationEpoch:
+        """Open only the roster-to-course-entry selection window under the same route."""
+        self.raise_if_denied()
+        origin, path, _, fragment = _request_parts(document_url)
+        if (
+            not self._require_selection
+            or not settled
+            or frame is None
+            or path != "/std/myLecture"
+            or fragment
+            or origin not in self._epoch.policy.origins
+            or getattr(frame, "url", None) != document_url
+            or (self._selection is None and (self._epoch.frame is not None or self._quarantined))
+            or (self._selection is not None and not self._quarantined)
+        ):
+            raise UiRequestDenied("route")
+        old = self._epoch
+        selection_epoch = 1 if self._selection is None else old.selection_epoch + 1
+        self._epoch = OperationEpoch(
+            old.number if self._selection is None else old.number + 1,
+            old.operation,
+            old.policy,
+            selection_epoch=selection_epoch,
+            frame=frame,
+            document_url=document_url,
+            navigation_path="/std/lecture",
+        )
+        self._selection = None
+        self._selection_requested = False
+        self._quarantined = False
+        return self._epoch
+
     def bind_selection(self, selection: Any, *, frame: Any, document_url: str) -> None:
         """Arm the first committed course-entry document of the installed route."""
         self.raise_if_denied()
@@ -751,7 +784,17 @@ class UiRequestInterceptor:
             self._quarantined
             or self._epoch.course_id is not None
             or not isinstance(selection, CourseSelection)
-            or not isinstance(selection.course_id, str)
+            or (self._require_selection and not self._selection_requested)
+            or (self._require_selection and selection.epoch != self._epoch.selection_epoch)
+            or (
+                self._require_selection
+                and (
+                    frame is not self._epoch.frame
+                    or _request_parts(document_url)[1] != self._epoch.navigation_path
+                    or _request_parts(document_url)[0] != _request_parts(self._epoch.document_url)[0]
+                    or getattr(frame, "url", None) != document_url
+                )
+            )
             or not selection.course_id
             or selection.epoch < 1
             or frame is None
@@ -794,6 +837,7 @@ class UiRequestInterceptor:
             or not _is_exact_path(navigation_path)
             or _request_parts(document_url)[1] is None
             or frame is None
+            or getattr(frame, "url", None) != document_url
         ):
             raise UiRequestDenied("route")
         next_epoch = OperationEpoch(
@@ -822,6 +866,7 @@ class UiRequestInterceptor:
             or selection is not self._selection
             or selection.course_id != epoch.course_id
             or _request_parts(document_url)[1] != epoch.navigation_path
+            or getattr(frame, "url", None) != document_url
         ):
             raise UiRequestDenied("route")
         self._epoch = OperationEpoch(
@@ -845,7 +890,19 @@ class UiRequestInterceptor:
             raise UiRequestDenied("route")
         origin, path, _, _ = _request_parts(request.url)
         referer = next((value for key, value in headers.items() if key.casefold() == "referer"), None)
-        if request.resource_type == "document":
+        if epoch.course_id is None:
+            if not self._require_selection or referer != epoch.document_url:
+                raise UiRequestDenied("route")
+            if request.resource_type == "document":
+                if path != epoch.navigation_path or origin != _request_parts(epoch.document_url)[0]:
+                    raise UiRequestDenied("route")
+            elif request.method == "POST" and path == "/api/v1/course/addSessionCourseInfo":
+                if self._selection_requested:
+                    raise UiRequestDenied("route")
+                self._selection_requested = True
+            else:
+                raise UiRequestDenied("route")
+        elif request.resource_type == "document":
             if path != epoch.navigation_path or origin != _request_parts(epoch.document_url)[0]:
                 raise UiRequestDenied("route")
             if referer is not None and referer != epoch.document_url:

@@ -23,7 +23,14 @@ def policy(origin: str, operation: str) -> UiRequestPolicy:
         "origins": [origin],
         "routes": [
             {"origin": origin, "path": path, "operation": operation, "methods": [method]}
-            for path, method in (("/std/course", "GET"), ("/std/task", "GET"), ("/api/v1/task/stdList", "POST"))
+            for path, method in (
+                ("/std/myLecture", "GET"),
+                ("/std/lecture", "GET"),
+                ("/api/v1/course/addSessionCourseInfo", "POST"),
+                ("/std/course", "GET"),
+                ("/std/task", "GET"),
+                ("/api/v1/task/stdList", "POST"),
+            )
         ],
         "allowed_media": [],
         "max_bytes": None,
@@ -152,7 +159,7 @@ def test_epoch_transition_aborts_old_and_bad_requests_before_local_server() -> N
         port = server.sockets[0].getsockname()[1]
         origin = f"http://127.0.0.1:{port}"
         target = Target()
-        frame = object()
+        frame = SimpleNamespace(url=origin + "/std/course")
         old_url = origin + "/std/course"
         new_url = origin + "/std/task"
         guard = await install_ui_request_interceptor(
@@ -160,7 +167,7 @@ def test_epoch_transition_aborts_old_and_bad_requests_before_local_server() -> N
             policy(origin, "assignments.sync"),
             operation="assignments.sync",
             diagnostics=UiRequestDiagnostics(),
-            require_selection=True,
+            require_selection=False,
         )
         selected = selection()
         guard.bind_selection(selected, frame=frame, document_url=old_url)
@@ -200,6 +207,7 @@ def test_epoch_transition_aborts_old_and_bad_requests_before_local_server() -> N
                 settled=True,
             )
             assert await send(Request(new_url, frame, old_url, method="GET", resource_type="document")) == "continue"
+            frame.url = new_url
             guard.bind_document(frame=frame, document_url=new_url, selection=selected)
             assert await send(Request(origin + "/api/v1/task/stdList", frame, new_url)) == "continue"
             assert arrivals == 3
@@ -230,7 +238,7 @@ def test_bound_request_denials_are_run_wide(fault: str) -> None:
             policy(origin, "assignments.sync"),
             operation="assignments.sync",
             diagnostics=UiRequestDiagnostics(),
-            require_selection=True,
+            require_selection=fault == "precommit",
         )
         if fault != "precommit":
             guard.bind_selection(selection(), frame=frame, document_url=origin + "/std/course")
@@ -252,5 +260,68 @@ def test_bound_request_denials_are_run_wide(fault: str) -> None:
                 guard.raise_if_denied()
         finally:
             await guard.close()
+
+    asyncio.run(scenario())
+
+
+def test_preselection_window_and_duplicate_are_bound_before_local_server() -> None:
+    async def scenario() -> None:
+        arrivals = 0
+
+        async def receive(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            nonlocal arrivals
+            arrivals += 1
+            await reader.read(4096)
+            writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+            await writer.drain()
+            writer.close()
+
+        server = await asyncio.start_server(receive, "127.0.0.1", 0)
+        origin = f"http://127.0.0.1:{server.sockets[0].getsockname()[1]}"
+        roster_url = origin + "/std/myLecture"
+        frame = SimpleNamespace(url=roster_url)
+        target = Target()
+        guard = await install_ui_request_interceptor(
+            target,
+            policy(origin, "assignments.sync"),
+            operation="assignments.sync",
+            diagnostics=UiRequestDiagnostics(),
+            require_selection=True,
+        )
+
+        async def send(request: Request) -> str:
+            route = Route(request, server.sockets[0].getsockname()[1])
+            await target.handler(route)
+            assert route.action is not None
+            return route.action
+
+        try:
+            with pytest.raises(UiRequestDenied):
+                guard.bind_selection(selection(), frame=frame, document_url=origin + "/std/lecture")
+            guard.arm_selection(frame=frame, document_url=roster_url)
+            assert await send(Request(origin + "/api/v1/course/addSessionCourseInfo", frame, roster_url)) == "continue"
+            assert (
+                await send(Request(origin + "/std/lecture", frame, roster_url, method="GET", resource_type="document"))
+                == "continue"
+            )
+            frame.url = origin + "/std/lecture"
+            first = selection()
+            guard.bind_selection(first, frame=frame, document_url=origin + "/std/lecture")
+            assert guard.epoch.selection_epoch == first.epoch
+            guard.quarantine()
+            frame.url = roster_url
+            second_epoch = guard.arm_selection(frame=frame, document_url=roster_url)
+            assert second_epoch.selection_epoch == first.epoch + 1
+            with pytest.raises(UiRequestDenied):
+                guard.bind_selection(first, frame=frame, document_url=origin + "/std/lecture")
+            assert await send(Request(origin + "/api/v1/course/addSessionCourseInfo", frame, roster_url)) == "continue"
+            assert await send(Request(origin + "/api/v1/course/addSessionCourseInfo", frame, roster_url)) == "abort"
+            assert arrivals == 3
+            with pytest.raises(UiRequestDenied):
+                guard.raise_if_denied()
+        finally:
+            await guard.close()
+            server.close()
+            await server.wait_closed()
 
     asyncio.run(scenario())
