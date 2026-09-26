@@ -152,6 +152,14 @@ FETCH_POLICY: dict[str, Any] = {
     "routes": [
         {"origin": _ORIGIN, "path": "/std/myLecture", "operation": _FETCH_OPERATION, "methods": ["GET"]},
         {"origin": _ORIGIN, "path": "/std/lecture", "operation": _FETCH_OPERATION, "methods": ["GET"]},
+        {
+            "origin": _ORIGIN,
+            "path": "/api/v1/week/getStdActivityStatus",
+            "operation": _FETCH_OPERATION,
+            "methods": ["POST"],
+            "logging_token_reviewed": True,
+            "resource_type": "xhr",
+        },
         {"origin": _ORIGIN, "path": "/std/notice", "operation": _FETCH_OPERATION, "methods": ["GET"]},
         {
             "origin": _ORIGIN,
