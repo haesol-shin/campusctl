@@ -54,6 +54,11 @@ def _render(command: str, result: dict[str, Any], *, width: int = 80, errors: li
     return stream.getvalue()
 
 
+def test_explicit_lecture_sync_has_visible_human_summary() -> None:
+    output = _render("sync.lectures", {"courses": 2, "lectures": 3, "incomplete": 1})
+    assert "Synced 2 courses, 3 lectures, 1 unfinished." in output
+
+
 def test_lectures_list_renders_korean_titles_and_local_due_dates_at_wide_width() -> None:
     first = _lecture(due_date="2026-10-05T23:59:42")
     second = _lecture(

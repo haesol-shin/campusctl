@@ -110,7 +110,7 @@ def test_usage_error_is_enveloped_without_echoing_invalid_argument(capsys: pytes
 def test_unknown_exception_reports_only_class_name(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setattr(cli, "doctor_result", lambda: (_ for _ in ()).throw(RuntimeError(SENTINEL)))
+    monkeypatch.setattr(cli, "doctor_result", lambda override=None: (_ for _ in ()).throw(RuntimeError(SENTINEL)))
     assert cli.main(["doctor", "--json"]) == 1
     output = capsys.readouterr()
     envelope = json.loads(output.out)
@@ -830,6 +830,34 @@ def test_doctor_does_not_run_command_helper(tmp_path: Path, monkeypatch: pytest.
     assert error is None
     assert result["credentials"] == {"provider": "command", "configured": True}
     assert not helper_marker.exists()
+
+
+def test_doctor_headless_override_reports_support_without_display_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    if os.name == "nt":
+        pytest.skip("display readiness is a POSIX concern")
+    conf = tmp_path / "config"
+    conf.mkdir()
+    data = tmp_path / "data"
+    helper = _helper(tmp_path, "raise SystemExit(0)\n")
+    (conf / "config.toml").write_text(
+        _config_text(credential_provider="command") + f"command = {json.dumps(helper)}\n",
+        encoding="utf-8",
+    )
+    catalog.write_catalog({"schema_version": 1, "courses": [], "lectures": []}, catalog.catalog_path(data))
+    monkeypatch.setenv("CAMPUSCTL_CONFIG_DIR", str(conf))
+    monkeypatch.setenv("CAMPUSCTL_DATA_DIR", str(data))
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    monkeypatch.setattr(cli, "_playwright_diagnostics", lambda path: (True, True))
+    assert cli.main(["--headless", "doctor", "--json"]) == 0
+    response = json.loads(capsys.readouterr().out)
+    assert response["result"]["browser"]["headless"] is True
+    assert response["result"]["browser"]["headless_support"]["materials.download"] is True
+    assert response["result"]["display_available"] is False
+    assert cli.main(["--headed", "doctor", "--json"]) == 2
+    assert json.loads(capsys.readouterr().out)["errors"][0]["code"] == "display-unavailable"
 
 
 def test_doctor_reports_missing_catalog_as_actionable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

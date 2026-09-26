@@ -147,6 +147,11 @@ def _install_fake_sync(
 
     monkeypatch.setenv("CAMPUSCTL_DATA_DIR", str(data_dir))
     monkeypatch.setattr(cli, "load_config", lambda: {})
+    from campusctl import browser
+    from campusctl.providers.cnu import courses as course_module
+
+    monkeypatch.setattr(browser, "open_session", fake_open_session)
+    monkeypatch.setattr(course_module, "discover_courses", fake_discover)
     monkeypatch.setattr(sync_module, "open_session", fake_open_session)
     monkeypatch.setattr(sync_module, "ensure_logged_in", fake_login)
     monkeypatch.setattr(sync_module, "discover_courses", fake_discover)

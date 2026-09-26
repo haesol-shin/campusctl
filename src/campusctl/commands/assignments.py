@@ -111,7 +111,7 @@ def dispatch(args: argparse.Namespace) -> tuple[dict[str, Any], None]:
     if args.course is not None:
         rows = [row for row in rows if row["course"]["id"] == args.course]
     return {
-        "cache": cache_metadata(catalog, now=datetime.now(UTC), domain="assignments"),
+        "cache": {**cache_metadata(catalog, now=datetime.now(UTC), domain="assignments"), "path_present": True},
         "assignments": rows,
     }, None
 

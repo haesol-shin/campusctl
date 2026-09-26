@@ -101,6 +101,7 @@ def test_courses_list_reads_catalog_and_returns_cache_metadata(
     assert [row["course_id"] for row in response["result"]["courses"]] == ["course-a", "course-z"]
     assert response["result"]["cache"]["generated_at"] == GENERATED_AT
     assert response["result"]["cache"]["stale_after_seconds"] == 21600
+    assert response["result"]["cache"]["path_present"] is True
 
 
 def test_lectures_list_filters_completed_and_sorts_course_week_and_sequence(
@@ -114,6 +115,7 @@ def test_lectures_list_filters_completed_and_sorts_course_week_and_sequence(
     assert exit_code == 0
     assert response["result"]["cache"]["generated_at"] == GENERATED_AT
     assert response["result"]["cache"]["stale_after_seconds"] == 21600
+    assert response["result"]["cache"]["path_present"] is True
     assert [lecture["entity_id"] for lecture in response["result"]["lectures"]] == [
         "cnu_lecture:course-z:z-2",
         "cnu_lecture:course-z:z-10",

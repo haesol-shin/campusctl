@@ -382,3 +382,22 @@ def test_printed_material_number_is_bound_to_generation_and_json_cannot_prompt(
     monkeypatch.setattr("builtins.input", lambda *args: pytest.fail("JSON must not prompt"))
     code, output = _cli(["materials", "download", "--json"], capsys)
     assert code == 2 and json.loads(output)["errors"][0]["code"] == "selection-required"
+
+
+def test_material_list_refuses_catalog_rewrite_before_snapshot_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _catalog(tmp_path)
+    monkeypatch.setenv("CAMPUSCTL_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("CAMPUSCTL_OUTPUT", "human")
+    original = cli.render_human
+
+    def rewrite(command: str, envelope: dict, stream: Any) -> None:
+        original(command, envelope, stream)
+        if command == "materials.list":
+            _catalog(tmp_path)
+
+    monkeypatch.setattr(cli, "render_human", rewrite)
+    code, output = _cli(["materials", "list"], capsys)
+    assert code == 2 and "selection-stale" in output
+    assert not (tmp_path / "selection" / "materials-last-list.json").exists()

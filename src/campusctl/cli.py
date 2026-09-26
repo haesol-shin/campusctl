@@ -15,7 +15,7 @@ from types import ModuleType
 from typing import Any
 
 from campusctl import __version__
-from campusctl.browser_options import preflight_browser_mode, resolve_headless
+from campusctl.browser_options import operation_headless_supported, preflight_browser_mode, resolve_headless
 from campusctl.catalog import catalog_path, read_catalog
 from campusctl.catalog_view import (
     DOMAINS,
@@ -175,7 +175,7 @@ def _read_catalog_generated_at(path: Path) -> tuple[bool, str | None, CampusErro
     return True, catalog["generated_at"], None
 
 
-def doctor_result() -> tuple[dict[str, Any], CampusError | None]:
+def doctor_result(override: bool | None = None) -> tuple[dict[str, Any], CampusError | None]:
     cfg_path = config_path()
     data_path = data_dir()
     config_present = cfg_path.is_file()
@@ -213,6 +213,7 @@ def doctor_result() -> tuple[dict[str, Any], CampusError | None]:
 
     browser_config = config.get("browser", {}) if config else {}
     browser_mode = "cdp" if browser_config.get("cdp_endpoint") else "local"
+    effective_headless = resolve_headless(config or {}, override)
     playwright_importable: bool | None = None
     chromium_installed: bool | None = None
     if browser_mode == "local":
@@ -227,7 +228,7 @@ def doctor_result() -> tuple[dict[str, Any], CampusError | None]:
     display_available: bool | None = None
     if sys.platform.startswith("linux"):
         display_available = bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
-        if browser_mode == "local" and not display_available and first_error is None:
+        if browser_mode == "local" and not effective_headless and not display_available and first_error is None:
             first_error = CampusError(
                 "display-unavailable",
                 "No graphical display is available for visible browser playback.",
@@ -248,6 +249,18 @@ def doctor_result() -> tuple[dict[str, Any], CampusError | None]:
         "credentials": {"provider": credential_provider, "configured": credentials_configured},
         "browser": {
             "mode": browser_mode,
+            "headless": effective_headless,
+            "headless_support": {
+                name: operation_headless_supported(name)
+                for name in (
+                    "lectures.sync",
+                    "assignments.sync",
+                    "notices.sync",
+                    "materials.sync",
+                    "materials.download",
+                    "lectures.play",
+                )
+            },
             "playwright_importable": playwright_importable,
             "chromium_installed": chromium_installed,
         },
@@ -357,32 +370,70 @@ def _select_course(
     root: Path,
     *,
     ids_only: bool,
-    allow_live_id: bool = False,
 ) -> tuple[str | None, dict[str, Any] | None]:
     if selector is None:
         return None, None
-    try:
-        roster = course_roster(root)
-    except CampusError as error:
-        if error.code != "catalog-missing":
-            raise
-        if allow_live_id and ids_only and selector.strip():
-            return selector, None
-        if ids_only:
-            code = "course-index-unavailable" if selector.isdecimal() else "course-id-required"
-            raise CampusError(
-                code,
-                "JSON course selection requires an exact full course ID.",
-                "Use a full course ID from 'campusctl courses list --json'.",
-                "user-action",
-            ) from None
-        if selector.isdecimal():
-            read_course_snapshot(root)
-        raise
+    roster = course_roster(root)
     snapshot = None
     if selector.isdecimal() and not ids_only and not any(row["course_id"] == selector for row in roster["courses"]):
         snapshot = read_course_snapshot(root)
     return resolve_course(selector, roster, ids_only=ids_only, printed_roster=snapshot), snapshot
+
+
+def _discover_live_course(
+    selector: str,
+    config: dict[str, Any],
+    root: Path,
+    domain: str,
+    *,
+    ids_only: bool,
+    mode: bool,
+) -> str:
+    import asyncio
+
+    from campusctl.browser import open_session
+    from campusctl.providers.cnu.courses import discover_courses
+
+    async def discover() -> list[dict[str, Any]]:
+        async with open_session(config, data_dir=root, headless=mode, operation=f"{domain}.sync") as session:
+            return await discover_courses(session.page, config)
+
+    selected = resolve_course(selector, asyncio.run(discover()), ids_only=ids_only)
+    assert selected is not None
+    return selected
+
+
+def _network_course(
+    selector: str | None,
+    root: Path,
+    config: dict[str, Any],
+    domain: str,
+    *,
+    ids_only: bool,
+    mode: bool,
+) -> tuple[str | None, dict[str, Any] | None]:
+    if selector is None:
+        return None, None
+    try:
+        return _select_course(selector, root, ids_only=ids_only)
+    except CampusError as error:
+        if error.code not in {"catalog-missing", "course-id-required", "course-index-unavailable", "course-not-found"}:
+            raise
+        try:
+            cached = course_roster(root)
+        except CampusError as roster_error:
+            if roster_error.code != "catalog-missing":
+                raise
+            cached = None
+        if cached is None and not ids_only and selector.isdecimal():
+            read_course_snapshot(root)
+        if cached is not None and ids_only:
+            if selector.isdecimal():
+                raise error
+            fragment = "".join(selector.split()).casefold()
+            if any(fragment in "".join(row["label"].split()).casefold() for row in cached["courses"]):
+                raise error
+        return _discover_live_course(selector, config, root, domain, ids_only=ids_only, mode=mode), None
 
 
 def _refresh(
@@ -403,6 +454,31 @@ def _refresh(
         profile=getattr(args, "_profile", None),
         course_snapshot=snapshot,
     )
+
+
+def _select_status_course(selector: str | None, root: Path, *, ids_only: bool) -> str | None:
+    if selector is None:
+        return None
+    courses: dict[str, dict[str, Any]] = {}
+    for domain in DOMAINS:
+        try:
+            source = catalog_snapshot(domain, root)
+        except CampusError:
+            continue
+        if source is not None:
+            for row in source[0]["courses"]:
+                courses.setdefault(row["course_id"], row)
+    if not courses:
+        raise CampusError(
+            "catalog-missing",
+            "No readable local catalog is available.",
+            "Run 'campusctl sync' to create one.",
+            "user-action",
+        )
+    if selector.isdecimal() and selector not in courses and not ids_only:
+        roster = course_roster(root)
+        return resolve_course(selector, roster, ids_only=False, printed_roster=read_course_snapshot(root))
+    return resolve_course(selector, list(courses.values()), ids_only=ids_only)
 
 
 def _refresh_result(
@@ -494,7 +570,7 @@ def _dispatch(args: argparse.Namespace) -> tuple[Any, CampusError | list[CampusE
             return run_config_init(args.username, interactive=_interactive_config_init(args))
         raise UsageError("a config command is required")
     if args.command == "doctor":
-        return doctor_result()
+        return doctor_result(args.headless_override)
     if args.command == "auth":
         if args.auth_command is None:
             raise UsageError("an auth command is required")
@@ -546,11 +622,20 @@ def _dispatch(args: argparse.Namespace) -> tuple[Any, CampusError | list[CampusE
     ids_only = args._output_mode == "json"
     if args.command == "sync":
         domains = parse_domains(args.only)
-        course_id, snapshot = _select_course(args.course, root, ids_only=ids_only, allow_live_id=True)
         config = load_config()
-        for domain in domains:
-            preflight_browser_mode(config, f"{domain}.sync", override=args.headless_override)
-        result, errors = run_sync(
+        modes = {
+            domain: preflight_browser_mode(config, f"{domain}.sync", override=args.headless_override)
+            for domain in domains
+        }
+        course_id, snapshot = _network_course(
+            args.course,
+            root,
+            config,
+            domains[0],
+            ids_only=ids_only,
+            mode=modes[domains[0]],
+        )
+        return run_sync(
             config,
             root,
             domains,
@@ -559,17 +644,6 @@ def _dispatch(args: argparse.Namespace) -> tuple[Any, CampusError | list[CampusE
             profile=getattr(args, "_profile", None),
             course_snapshot=snapshot,
         )
-        if ids_only and args.course is not None:
-            rejected = errors if isinstance(errors, list) else [errors] if errors else []
-            if rejected and not result and all(error.code == "course-not-found" for error in rejected):
-                code = "course-index-unavailable" if args.course.isdecimal() else "course-id-required"
-                raise CampusError(
-                    code,
-                    "JSON course selection requires an exact full course ID.",
-                    "Use a full course ID from 'campusctl courses list --json'.",
-                    "user-action",
-                )
-        return result, errors
     if args.command == "courses" and args.courses_command == "list":
         refresh = _refresh("lectures", root, None, args) if args.refresh else None
         try:
@@ -578,7 +652,7 @@ def _dispatch(args: argparse.Namespace) -> tuple[Any, CampusError | list[CampusE
             if refresh is None or not refresh[1]:
                 raise
             return {"refresh": _refresh_result(refresh)}, refresh[1]
-        result = {"cache": roster["cache"], "courses": roster["courses"]}
+        result = {"cache": {**roster["cache"], "path_present": True}, "courses": roster["courses"]}
         if refresh is not None:
             result["refresh"] = _refresh_result(refresh)
             if refresh[1]:
@@ -589,14 +663,26 @@ def _dispatch(args: argparse.Namespace) -> tuple[Any, CampusError | list[CampusE
     if args.command == "status":
         from campusctl.status import build_status
 
-        course_id, _ = _select_course(args.course, root, ids_only=ids_only)
+        course_id = _select_status_course(args.course, root, ids_only=ids_only)
         result, status, errors = build_status(root, course_id, now=datetime.now(UTC))
         args._status = status
         args._status_errors = errors
         return result, None
     if args.command in _DOMAIN_MODULES:
         if getattr(args, f"{args.command}_command", None) == "list":
-            args.course, snapshot = _select_course(args.course, root, ids_only=ids_only)
+            if args.refresh:
+                config = load_config()
+                mode = preflight_browser_mode(config, f"{args.command}.sync", override=args.headless_override)
+                args.course, snapshot = _network_course(
+                    args.course,
+                    root,
+                    config,
+                    args.command,
+                    ids_only=ids_only,
+                    mode=mode,
+                )
+            else:
+                args.course, snapshot = _select_course(args.course, root, ids_only=ids_only)
             refresh = _refresh(args.command, root, args.course, args, snapshot) if args.refresh else None
             try:
                 result, error = _DOMAIN_MODULES[args.command].dispatch(args)
@@ -610,7 +696,19 @@ def _dispatch(args: argparse.Namespace) -> tuple[Any, CampusError | list[CampusE
             return result, error
         return _DOMAIN_MODULES[args.command].dispatch(args)
     if args.command == "lectures" and args.lectures_command == "list":
-        course_id, snapshot = _select_course(args.course, root, ids_only=ids_only)
+        if args.refresh:
+            config = load_config()
+            mode = preflight_browser_mode(config, "lectures.sync", override=args.headless_override)
+            course_id, snapshot = _network_course(
+                args.course,
+                root,
+                config,
+                "lectures",
+                ids_only=ids_only,
+                mode=mode,
+            )
+        else:
+            course_id, snapshot = _select_course(args.course, root, ids_only=ids_only)
         refresh = _refresh("lectures", root, course_id, args, snapshot) if args.refresh else None
         try:
             catalog = read_catalog()
@@ -632,7 +730,10 @@ def _dispatch(args: argparse.Namespace) -> tuple[Any, CampusError | list[CampusE
                 _natural_sort_key(lecture.get("sequence")),
             ),
         )
-        result = {"cache": cache_metadata(catalog, now=datetime.now(UTC), domain="lectures"), "lectures": lectures}
+        result = {
+            "cache": {**cache_metadata(catalog, now=datetime.now(UTC), domain="lectures"), "path_present": True},
+            "lectures": lectures,
+        }
         if refresh is not None:
             result["refresh"] = _refresh_result(refresh)
             return result, refresh[1]
@@ -746,11 +847,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             publish_course_snapshot(data_dir(), args._course_roster)
         if code == 0 and output_mode == "human" and command_key == "materials.list":
             sys.stdout.flush()
-            source = catalog_snapshot("materials", data_dir())
-            if source is not None:
-                publish_material_snapshot(
-                    data_dir(), source[1], [row["entity_id"] for row in result["materials"]], course_id=args.course
-                )
+            publish_material_snapshot(
+                data_dir(),
+                args._material_generation,
+                [row["entity_id"] for row in result["materials"]],
+                course_id=args.course,
+            )
         outcome = "ok" if code == 0 else "failed"
         return code
     except KeyboardInterrupt:

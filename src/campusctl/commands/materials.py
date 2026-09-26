@@ -17,7 +17,6 @@ from campusctl.catalog_view import (
     publish_material_snapshot,
     resolve_material_number,
 )
-from campusctl.domain_catalog import domain_catalog_path, read_domain_catalog
 from campusctl.envelope import CampusError, UsageError
 from campusctl.paths import data_dir
 
@@ -176,13 +175,22 @@ def dispatch(args: argparse.Namespace) -> tuple[dict[str, Any], CampusError | No
     if command not in {"list", "download"}:
         raise UsageError("A materials command is required.")
     root = data_dir()
-    catalog = read_domain_catalog("materials", domain_catalog_path("materials", root))
+    snapshot = catalog_snapshot("materials", root)
+    if snapshot is None:
+        raise CampusError(
+            "catalog-missing",
+            "Materials catalog is missing.",
+            "Run 'campusctl sync --only materials' to create it.",
+            "user-action",
+        )
+    catalog = snapshot[0]
     if command == "list":
+        args._material_generation = snapshot[1]
         rows = catalog["materials"]
         if args.course is not None:
             rows = [row for row in rows if row["course"]["id"] == args.course]
         return {
-            "cache": cache_metadata(catalog, now=datetime.now(UTC), domain="materials"),
+            "cache": {**cache_metadata(catalog, now=datetime.now(UTC), domain="materials"), "path_present": True},
             "materials": rows,
         }, None
     selection = None

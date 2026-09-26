@@ -726,7 +726,7 @@ def render_human(
         lines = _lectures(result, terminal_width)
     elif command == "courses.list":
         lines = _courses(result, terminal_width)
-    elif command == "sync":
+    elif command in {"sync", "sync.lectures"}:
         lines = _sync(result, terminal_width)
     elif command == "status":
         lines = _status(result, terminal_width)
