@@ -79,7 +79,7 @@ $ campusctl materials list
 $ campusctl materials download <ENTITY_ID>
 ```
 
-Downloaded files go to your OS Downloads folder under `campusctl/<course label>/`; use `--out DIR` to choose another folder. Assignment, notice, and material sync still need a visible browser. `materials download <ENTITY_ID> --headless` works with a local Chromium profile; CDP browser sessions cannot use `--headless`.
+Downloaded files go to your OS Downloads folder under `campusctl/<course label>/`; use `--out DIR` to choose another folder. Sync and material download can run without a visible browser through the global flag, for example `campusctl --headless sync` or `campusctl --headless materials download <ENTITY_ID>`, with a local Chromium profile; CDP browser sessions and playback cannot use `--headless`.
 
 Add `--json` when scripts or agents need JSON output; terminal output is human-readable by default.
 

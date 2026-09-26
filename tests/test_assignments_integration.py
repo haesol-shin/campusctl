@@ -87,7 +87,9 @@ def test_human_assignment_renderer_has_full_ids(
     output = capsys.readouterr().out
     assert "Old A — Not submitted — Due: —" in output
     assert "cnu_assignment:course-a:TB_L_REPORT1\n" in output
-    monkeypatch.setattr(cli, "load_config", lambda: {"provider": "cnu"})
+    monkeypatch.setattr(
+        cli, "load_config", lambda: {"provider": "cnu", "browser": {"cdp_endpoint": "http://browser.invalid:9222"}}
+    )
     assert cli.main(["--headless", "sync", "--only", "assignments"]) == 2
     assert "Headless" in capsys.readouterr().out
     _install(monkeypatch, tmp_path, {"course-a": {"rows": fixture_rows()}})
@@ -158,6 +160,9 @@ def test_fixture_cli_sync_list_partial_rollback_policy_and_lock(
             code, response = _call(["sync", "--only", "assignments", "--course", "course-a"], capsys)
         assert code == 75 and response["status"] == "busy"
         assert response["errors"][0]["code"] == "session-busy"
+    monkeypatch.setattr(
+        cli, "load_config", lambda: {"provider": "cnu", "browser": {"cdp_endpoint": "http://browser.invalid:9222"}}
+    )
     code, response = _call(["--headless", "sync", "--only", "assignments"], capsys)
     assert code == 2 and response["errors"][0]["code"] == "headless-unavailable"
     assert read_domain_catalog("assignments", domain_catalog_path("assignments", tmp_path)) == previous

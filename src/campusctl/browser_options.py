@@ -8,10 +8,10 @@ from campusctl.envelope import CampusError
 
 # Release integration changes a value only after recording that operation's live gate.
 HEADLESS_SUPPORT: dict[str, bool] = {
-    "lectures.sync": False,
-    "assignments.sync": False,
-    "notices.sync": False,
-    "materials.sync": False,
+    "lectures.sync": True,
+    "assignments.sync": True,
+    "notices.sync": True,
+    "materials.sync": True,
     "materials.download": True,
     "lectures.play": False,
 }
