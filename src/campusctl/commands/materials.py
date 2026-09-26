@@ -21,139 +21,7 @@ from campusctl.catalog_view import (
 from campusctl.envelope import CampusError, UsageError
 from campusctl.paths import data_dir
 
-_LEARNING = "https://dcs-learning.cnu.ac.kr"
-_LCMS = "https://dcs-lcms.cnu.ac.kr"
-_GET = (
-    "/std/myLecture",
-    "/std/lecture",
-    "/std/archive",
-    "/api/v1/archive/getAttachFileList",
-    "/properties/messages.properties",
-    "/properties/messages_ko.properties",
-)
-_POST = (
-    "/api/v1/course/addSessionCourseInfo",
-    "/api/v1/archive/list",
-    "/api/v1/user/getUserInfo",
-    "/api/v1/user/getMenuList",
-    "/api/v1/alarm/getAlarmListByDate",
-    "/api/v1/course/getCeShortcuts",
-    "/api/v1/course/get",
-    "/api/v1/common/checkEnableUrl",
-    "/api/v1/boardM/getBoardItemList",
-    "/api/v1/term/getYearTermList",
-    "/api/v1/course/getStdMyCourseList",
-    "/api/v1/board/courseNotice/list",
-    "/api/v1/week/getStdWeekList",
-    "/api/v1/week/getStdEtcList",
-    "/api/v1/survey/getApplyPopList",
-    "/api/v1/board/popup/noticeList",
-)
-_OPERATIONS = ("materials.sync", "materials.download")
-CAPABILITY: dict[str, Any] = {
-    "commands": ["list", "download"],
-    "policy": {
-        "approved": True,
-        "read_only_evidence": "docs/specs/30-materials/design.md#approved-operations-and-selected-url-binding",
-        "origins": [_LEARNING, _LCMS],
-        "routes": [
-            {
-                "origin": _LEARNING,
-                "path": path,
-                "operation": operation,
-                "methods": [method],
-                **({"query": {"e": "encrypted"}} if path.endswith("/getAttachFileList") else {}),
-                **({"query": {"_": "cachebuster"}} if path.startswith("/properties/") else {}),
-            }
-            for operation in _OPERATIONS
-            for method, paths in (("GET", _GET), ("POST", _POST))
-            for path in paths
-        ]
-        + [
-            {
-                "origin": _LEARNING,
-                "path": "/api/v1/week/getStdActivityStatus",
-                "operation": operation,
-                "methods": ["POST"],
-                "logging_token_reviewed": True,
-                "resource_type": "xhr",
-            }
-            for operation in _OPERATIONS
-        ]
-        + [
-            {
-                "origin": _LEARNING,
-                "path": "/api/v1/archive/fileDownload",
-                "operation": "materials.download",
-                "methods": ["POST"],
-            }
-        ],
-        "selected_file_routes": [
-            {"origin": origin, "path_template": template, "operation": "materials.download", "methods": ["GET"]}
-            for origin, template in (
-                (_LCMS, "/upload/{storage-id}/{encoded-filename}"),
-                (_LEARNING, "/file/{term}/{course}/board/{board-manager}/{board-item}/{stored-filename}"),
-            )
-        ],
-        "allowed_media": [
-            {"mime": "application/x-pdf", "extensions": ["pdf"]},
-            {
-                "mime": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-                "extensions": ["pptx"],
-            },
-            {"mime": "application/zip", "extensions": ["zip"]},
-        ],
-        "max_bytes": 200_000_000,
-        "suppress": [
-            {
-                "name": name,
-                "origin": origin,
-                "path_template": path,
-                "operation": operation,
-                "methods": [method],
-                "reason": reason,
-            }
-            for operation in _OPERATIONS
-            for origin, name, path, method, reason in (
-                (_LEARNING, "panopto-script", "/js/common/panopto-{hash}.js", "GET", "media-integration"),
-                (_LEARNING, "panopto-saml-script", "/js/common/panoptoSaml-{hash}.js", "GET", "media-integration"),
-                (
-                    "https://cnu.ap.panopto.com",
-                    "panopto-sso-popup",
-                    "/Panopto/Pages/Auth/Login.aspx",
-                    "POST",
-                    "panopto-sso-popup",
-                ),
-                (
-                    _LEARNING,
-                    "course-roster-image",
-                    "/upload/dunetadmin/college/{hash}.png",
-                    "GET",
-                    "course-roster-image",
-                ),
-                (_LEARNING, "favicon-icon", "/assets/images/favicon-{hash}.ico", "GET", "favicon"),
-                ("http://0.0.0.0:3000", "external-telemetry", "/v1/events", "POST", "telemetry"),
-                ("http://localhost:3000", "external-telemetry-localhost", "/v1/events", "POST", "telemetry"),
-                (
-                    _LEARNING,
-                    "panopto-disconnection-log",
-                    "/api/v1/panopto/addInternetDisconnectionLog",
-                    "POST",
-                    "logging",
-                ),
-                (
-                    _LEARNING,
-                    "panopto-connectivity-check",
-                    "/api/v1/panopto/checkInternetConnection",
-                    "GET",
-                    "logging",
-                ),
-            )
-        ],
-        "static_asset_origins": [_LEARNING],
-        "static_resource_types": ["script", "stylesheet", "font", "image"],
-    },
-}
+CAPABILITY: dict[str, Any] = {"commands": ["list", "download"]}
 
 
 def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -293,7 +161,7 @@ async def sync(
 ) -> tuple[dict[str, Any], list[CampusError]]:
     from campusctl.providers.cnu.materials import sync_materials
 
-    return await sync_materials(config, root, course_id, headless=headless, reviewed_policy=CAPABILITY["policy"])
+    return await sync_materials(config, root, course_id, headless=headless)
 
 
 def _result(row: dict[str, Any], path: str, size: int, digest: str, outcome: str) -> dict[str, Any]:
@@ -339,12 +207,8 @@ async def _download(
         _step,
         enumerate_archive,
     )
-    from campusctl.providers.cnu.request_policy import RequestPolicy
-    from campusctl.providers.cnu.ui_policy import UiRequestDiagnostics, UiRequestPolicy, install_ui_request_interceptor
+    from campusctl.providers.cnu.request_policy import MAX_ATTACHMENT_BYTES, RequestPolicy
 
-    policy = UiRequestPolicy.from_reviewed_config(CAPABILITY["policy"])
-    if not policy.approved:
-        raise CampusError("policy-blocked", "Materials download policy is not approved.")
     entity_id = row["entity_id"]
     course_id = row["course"]["id"]
     post_id = row["archive_entry"]["board_item_id"]
@@ -357,99 +221,82 @@ async def _download(
             return _result(row, receipt["path"], receipt["size_bytes"], receipt["sha256"], "skipped-existing")
         page = session.page
         await ensure_logged_in(page, config, target_url=MY_LECTURE_URL, expected_selector=COURSE_LINK_SELECTOR)
-        diagnostics = UiRequestDiagnostics()
         await settle_sso_popups(session, domain="materials")
-        guard = await install_ui_request_interceptor(
-            session.context, policy, operation="materials.download", diagnostics=diagnostics
+        await _step(page.goto(MY_LECTURE_URL), "opening course roster")
+        await _step(prepare_course_section(page, config, course_id, "archive"), "selecting archive course")
+        await _archive_navigation(page, lambda: open_course_section(page, "archive"))
+        course = {"course_id": course_id, "label": row["course"]["label"]}
+        current = await enumerate_archive(page, course)
+        if (
+            len(
+                [
+                    item
+                    for item in current
+                    if item["entity_id"] == entity_id
+                    and item["archive_entry"]["board_item_id"] == post_id
+                    and item["file_id"] == file_id
+                    and item["downloadable"] is True
+                ]
+            )
+            != 1
+        ):
+            raise CampusError("entity-unknown", "Selected archive file or parent no longer matches the catalog.")
+        await _archive_navigation(page, lambda: page.click(_ARCHIVE_MENU))
+        state = await _archive_state(page, 1)
+        pages = (state["total_count"] + state["page_size"] - 1) // state["page_size"]
+        selected_page = 1 if any(item["board_item_id"] == post_id for item in state["posts"]) else None
+        if selected_page is None:
+            for number in range(2, pages + 1):
+                await _select_page(page, number)
+                state = await _archive_state(page, number)
+                if any(item["board_item_id"] == post_id for item in state["posts"]):
+                    selected_page = number
+                    break
+        if selected_page is None:
+            raise CampusError("entity-unknown", "Selected archive parent no longer exists.")
+        await _step(page.evaluate(_CLICK_ICON_JS, post_id), "opening selected archive parent")
+        inline_parent = f'#listBody tr:has([data-act="file"][data-boarditem_no={json.dumps(post_id)}])'
+        modal = False
+        try:
+            await _step(page.wait_for_selector(_MODAL, timeout=7000), "waiting for selected file modal")
+            modal = True
+        except CampusError as error:
+            if error.code != "browser-timeout":
+                raise
+        modal_locator = f'#file_download [data-act="downloadFile"][data-id={json.dumps(file_id)}]'
+        modal_matches = (
+            await _step(page.locator(modal_locator).count(), "checking selected modal control") if modal else 0
+        )
+        if modal_matches > 1:
+            raise CampusError("entity-unknown", "Selected archive control is ambiguous.")
+        if modal_matches == 1:
+            locator = modal_locator
+        else:
+            if await _step(page.locator(inline_parent).count(), "checking selected archive row") != 1:
+                raise CampusError("entity-unknown", "Selected archive parent no longer exists.")
+            locator = f'{inline_parent} [data-act="downloadFile"][data-id={json.dumps(file_id)}]'
+            if await _step(page.locator(locator).count(), "checking selected inline control") != 1:
+                raise CampusError("entity-unknown", "Selected archive control no longer exists.")
+        fetched = await _step(
+            fetch_official_attachment(
+                page,
+                OfficialAttachmentTarget(file_id, "archive", post_id, locator, None),
+                RequestPolicy(row["filename"]),
+                output_dir,
+                max_bytes=MAX_ATTACHMENT_BYTES,
+            ),
+            "fetching selected archive attachment",
         )
         try:
-            await _step(page.goto(MY_LECTURE_URL), guard, "opening guarded course roster")
-            await _step(
-                prepare_course_section(page, config, course_id, "archive"), guard, "selecting guarded archive course"
+            published = publish_attachment(
+                fetched.temp_path, output_dir, row["filename"], fetched.sha256, fetched.size_bytes
             )
-            await _archive_navigation(page, guard, lambda: open_course_section(page, "archive"))
-            course = {"course_id": course_id, "label": row["course"]["label"]}
-            current = await enumerate_archive(page, course, guard)
-            if (
-                len(
-                    [
-                        item
-                        for item in current
-                        if item["entity_id"] == entity_id
-                        and item["archive_entry"]["board_item_id"] == post_id
-                        and item["file_id"] == file_id
-                        and item["downloadable"] is True
-                    ]
-                )
-                != 1
-            ):
-                raise CampusError("entity-unknown", "Selected archive file or parent no longer matches the catalog.")
-            await _archive_navigation(page, guard, lambda: page.click(_ARCHIVE_MENU))
-            state = await _archive_state(page, guard, 1)
-            pages = (state["total_count"] + state["page_size"] - 1) // state["page_size"]
-            selected_page = 1 if any(item["board_item_id"] == post_id for item in state["posts"]) else None
-            if selected_page is None:
-                for number in range(2, pages + 1):
-                    await _select_page(page, guard, number)
-                    state = await _archive_state(page, guard, number)
-                    if any(item["board_item_id"] == post_id for item in state["posts"]):
-                        selected_page = number
-                        break
-            if selected_page is None:
-                raise CampusError("entity-unknown", "Selected archive parent no longer exists.")
-            await _step(page.evaluate(_CLICK_ICON_JS, post_id), guard, "opening selected archive parent")
-            inline_parent = f'#listBody tr:has([data-act="file"][data-boarditem_no={json.dumps(post_id)}])'
-            modal = False
-            try:
-                await _step(page.wait_for_selector(_MODAL, timeout=7000), guard, "waiting for selected file modal")
-                modal = True
-            except CampusError as error:
-                if error.code != "browser-timeout":
-                    raise
-            modal_locator = f'#file_download [data-act="downloadFile"][data-id={json.dumps(file_id)}]'
-            modal_matches = (
-                await _step(page.locator(modal_locator).count(), guard, "checking selected modal control")
-                if modal
-                else 0
+            write_receipt(
+                root, entity_id, output_dir, published.path, fetched.size_bytes, fetched.sha256, fetched.media_type
             )
-            if modal_matches > 1:
-                raise CampusError("entity-unknown", "Selected archive control is ambiguous.")
-            if modal_matches == 1:
-                locator = modal_locator
-            else:
-                if await _step(page.locator(inline_parent).count(), guard, "checking selected archive row") != 1:
-                    raise CampusError("entity-unknown", "Selected archive parent no longer exists.")
-                locator = f'{inline_parent} [data-act="downloadFile"][data-id={json.dumps(file_id)}]'
-                if await _step(page.locator(locator).count(), guard, "checking selected inline control") != 1:
-                    raise CampusError("entity-unknown", "Selected archive control no longer exists.")
-            request_policy = RequestPolicy(policy, row["filename"], diagnostics)
-            fetched = await _step(
-                fetch_official_attachment(
-                    page,
-                    OfficialAttachmentTarget(file_id, "archive", post_id, locator, None),
-                    request_policy,
-                    output_dir,
-                    max_bytes=CAPABILITY["policy"]["max_bytes"],
-                    interceptor=guard,
-                ),
-                guard,
-                "fetching selected archive attachment",
-            )
-            try:
-                published = publish_attachment(
-                    fetched.temp_path, output_dir, row["filename"], fetched.sha256, fetched.size_bytes
-                )
-                write_receipt(
-                    root, entity_id, output_dir, published.path, fetched.size_bytes, fetched.sha256, fetched.media_type
-                )
-            finally:
-                fetched.temp_path.unlink(missing_ok=True)
-            return _result(row, str(published.path), fetched.size_bytes, fetched.sha256, published.outcome)
         finally:
-            try:
-                guard.raise_if_denied()
-            finally:
-                await guard.close()
+            fetched.temp_path.unlink(missing_ok=True)
+        return _result(row, str(published.path), fetched.size_bytes, fetched.sha256, published.outcome)
 
 
 def _wrap(message: str, width: int, *, indent: str = "") -> list[str]:

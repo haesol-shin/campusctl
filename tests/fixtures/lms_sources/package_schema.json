@@ -15,7 +15,7 @@
     },
     "retrieved_at": "2026-01-02T03:04:05Z",
     "content_path": "content.md",
-    "completeness": "policy-filtered",
+    "completeness": "partial",
     "resources": [
       {
         "resource_id": "4409d6c33c0e0c5420cceb88573437fd8af1711a5f4f1641977597d4ce0949c9",
@@ -38,17 +38,17 @@
         "resource_id": "9d00c3d71f9ec93ec89408e50b0b39c5b99217dcb0b76e17abce624a1bc1c099",
         "source_ref": {
           "origin": "https://external.example.invalid",
-          "page_path": "/synthetic/image.png",
+          "page_path": "/synthetic/image.webp",
           "provider_native_id": null
         },
-        "original_name": "synthetic-image.png",
-        "media_type": "image/png",
-        "reason": "external-origin"
+        "original_name": "synthetic-image.webp",
+        "media_type": "image/webp",
+        "reason": "unsupported-media-type"
       }
     ]
   },
   "digest_inputs": {
-    "content_md_utf8": "# Synthetic package fixture\n\n[Omitted: external-origin]\n",
+    "content_md_utf8": "# Synthetic package fixture\n\n[Omitted: unsupported-media-type]\n",
     "resources_utf8": {
       "attachments/synthetic-attachment.txt": "synthetic attachment bytes\n"
     }
@@ -65,7 +65,7 @@
   "expected": {
     "included_file_resource_id": "4409d6c33c0e0c5420cceb88573437fd8af1711a5f4f1641977597d4ce0949c9",
     "omitted_inline_resource_id": "9d00c3d71f9ec93ec89408e50b0b39c5b99217dcb0b76e17abce624a1bc1c099",
-    "manifest_sha256_without_retrieved_at": "add4eec8f47d2f21d63c7671453347bc0ce7b6fad055c609c34a683b63040ea3",
-    "package_sha256": "1427be9522c94c13a3988f42f110a5fa3f3b505ced82a6d6e3e95b13e78f0509"
+    "manifest_sha256_without_retrieved_at": "045a562c234f720faed8cccb5cad1e9a079e549f2a07fe508c1fe58ba92df1ce",
+    "package_sha256": "7cde12619feb453c0f7e161eb1bc8aece417d989a30cd17e3f30921394bd9f54"
   }
 }

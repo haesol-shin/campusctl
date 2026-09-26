@@ -1,4 +1,4 @@
-"""Read-only, guarded CNU assignment metadata synchronization."""
+"""Read-only CNU assignment metadata synchronization."""
 
 from __future__ import annotations
 
@@ -215,9 +215,8 @@ class _PageActivity:
         return bool(self.std_after_document) and request is self.std_after_document[0][1]
 
 
-def arm_assignment_capture(page: Any, section_guard: Any) -> _PageActivity:
-    """Observe the committed task document and every candidate list request before navigation."""
-    section_guard.raise_if_denied()
+def arm_assignment_capture(page: Any) -> _PageActivity:
+    """Observe the committed task document and candidate list requests before navigation."""
     activity = _PageActivity(page)
     activity.start()
     return activity
@@ -225,7 +224,6 @@ def arm_assignment_capture(page: Any, section_guard: Any) -> _PageActivity:
 
 async def open_assignment_section(
     page: Any,
-    section_guard: Any,
     action: Callable[[], Any],
     *,
     capture: _PageActivity | None = None,
@@ -242,30 +240,27 @@ async def open_assignment_section(
 async def collect_assignment_rows(
     page: Any,
     course: dict[str, Any],
-    section_guard: Any,
     *,
     capture: _PageActivity,
 ) -> list[dict[str, Any]]:
     """Validate the already-entered task section without selecting or publishing."""
     activity = capture
     try:
-        section_guard.raise_if_denied()
         await bounded(
             asyncio.wait_for(activity.response_seen.wait(), SECTION_RESPONSE_TIMEOUT_MS / 1000),
             SECTION_RESPONSE_TIMEOUT_MS / 1000 + PROTOCOL_TIMEOUT_SECONDS,
             "waiting for the CNU task response",
         )
         response = activity.responses[0]
-        return await _collect_assignment_rows(page, course, activity, response, section_guard)
+        return await _collect_assignment_rows(page, course, activity, response)
     finally:
         activity.close()
 
 
 async def _collect_assignment_rows(
-    page: Any, course: dict[str, Any], activity: _PageActivity, response: Any, section_guard: Any
+    page: Any, course: dict[str, Any], activity: _PageActivity, response: Any
 ) -> list[dict[str, Any]]:
     """Validate first post-commit task XHR, task Referer, DOM, and response count."""
-    section_guard.raise_if_denied()
     if not activity.own_task_response(response):
         raise ValueError("Task response did not follow the committed task document")
     with profile_span("response-completion", domain="assignments"):
@@ -313,7 +308,6 @@ async def _collect_assignment_rows(
         extracted = await bounded(
             page.evaluate(EXTRACT_ASSIGNMENT_ROWS_JS), PROTOCOL_TIMEOUT_SECONDS, "extracting CNU tasks"
         )
-    section_guard.raise_if_denied()
     if (
         not isinstance(extracted, dict)
         or type(extracted.get("row_count")) is not int
@@ -335,24 +329,14 @@ async def _collect_assignment_rows(
     return parse_assignment_rows(raw, course)
 
 
-def _course_failure(course: dict[str, Any], reason: str) -> CampusError:
-    return CampusError(
-        reason,
-        f"Assignment sync could not complete for {course['label']} ({course['course_id']}).",
-        "Retry assignment sync after the LMS task list is available.",
-        "error",
-    )
-
-
 async def sync_assignments(
     config: dict[str, Any],
     root: Path,
     course_id: str | None = None,
     *,
     headless: bool = False,
-    reviewed_policy: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], list[CampusError]]:
-    """Sync assignment rows through the shared guarded course traversal."""
+    """Sync assignment rows through the shared course traversal."""
     from .sync_all import sync_one
 
-    return await sync_one(config, root, "assignments", course_id, headless=headless, reviewed_policy=reviewed_policy)
+    return await sync_one(config, root, "assignments", course_id, headless=headless)

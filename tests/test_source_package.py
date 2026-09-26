@@ -13,8 +13,6 @@ import pytest
 
 from campusctl.envelope import CampusError
 from campusctl.providers.cnu.attachment_transfer import FetchedAttachment, OfficialAttachmentTarget
-from campusctl.providers.cnu.request_policy import RequestPolicy
-from campusctl.providers.cnu.ui_policy import UiRequestPolicy
 from campusctl.source_package import (
     DetailSnapshot,
     ResourceReference,
@@ -58,38 +56,6 @@ class FakePage:
         self.context = SimpleNamespace(request=FakeRequestContext())
 
 
-def make_policy(
-    *, approved: bool = True, origins: tuple[str, ...] = ("https://dcs-learning.cnu.ac.kr",)
-) -> RequestPolicy:
-    raw = {
-        "approved": approved,
-        "read_only_evidence": "owner-held sanitized policy evidence (2026-09-25)",
-        "origins": list(origins),
-        "routes": [
-            {
-                "origin": "https://dcs-learning.cnu.ac.kr",
-                "path": "/upload/diagram.png",
-                "operation": "assignments.fetch",
-                "methods": ["GET"],
-            },
-            {
-                "origin": "https://dcs-learning.cnu.ac.kr",
-                "path": "/api/v1/archive/fileDownload",
-                "operation": "assignments.fetch",
-                "methods": ["POST"],
-            },
-        ],
-        "allowed_media": [],
-        "max_bytes": 200_000_000,
-        "static_asset_origins": ["https://dcs-learning.cnu.ac.kr"],
-        "static_resource_types": ["image", "script", "stylesheet", "font"],
-        "suppress": [],
-        "selected_file_routes": [],
-    }
-    ui = UiRequestPolicy.from_reviewed_config(raw)
-    return RequestPolicy(ui, "assignment")
-
-
 def test_resource_ids_and_query_free_source_refs() -> None:
     fixture = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
     entity_id = fixture["manifest"]["entity_id"]
@@ -129,9 +95,9 @@ def test_resource_ids_and_query_free_source_refs() -> None:
 
     ref_inline = ResourceReference(
         kind="image",
-        source_url="https://external.example.invalid/synthetic/image.png?sig=leak#here",
-        original_name="synthetic-image.png",
-        media_type_hint="image/png",
+        source_url="https://external.example.invalid/synthetic/image.webp?sig=leak#here",
+        original_name="synthetic-image.webp",
+        media_type_hint="image/webp",
         label="synthetic image",
         provider_file_id=None,
         official_target=None,
@@ -141,9 +107,9 @@ def test_resource_ids_and_query_free_source_refs() -> None:
 
     ref_inline_repeat = ResourceReference(
         kind="image",
-        source_url="https://external.example.invalid/synthetic/image.png?sig=leak#here",
-        original_name="synthetic-image.png",
-        media_type_hint="image/png",
+        source_url="https://external.example.invalid/synthetic/image.webp?sig=leak#here",
+        original_name="synthetic-image.webp",
+        media_type_hint="image/webp",
         label="synthetic image",
         provider_file_id=None,
         official_target=None,
@@ -171,7 +137,6 @@ def test_atomic_manifest_digest_collisions_and_reuse(tmp_path: Path) -> None:
         image_url, 200, {"content-type": "image/png", "content-length": str(len(png_bytes))}, png_bytes
     )
 
-    policy = make_policy()
     ref = ResourceReference(
         kind="image",
         source_url=image_url,
@@ -197,7 +162,6 @@ def test_atomic_manifest_digest_collisions_and_reuse(tmp_path: Path) -> None:
             course_id="course-1",
             course_label="Course 1",
             root=root,
-            policy=policy,
         )
     )
     assert Path(result1["path"]).is_dir()
@@ -213,7 +177,6 @@ def test_atomic_manifest_digest_collisions_and_reuse(tmp_path: Path) -> None:
             course_id="course-1",
             course_label="Course 1",
             root=root,
-            policy=policy,
         )
     )
     assert result2["path"] == result1["path"]
@@ -230,7 +193,6 @@ def test_atomic_manifest_digest_collisions_and_reuse(tmp_path: Path) -> None:
             course_id="course-1",
             course_label="Course 1",
             root=root,
-            policy=policy,
             out=explicit_out,
         )
     )
@@ -245,16 +207,19 @@ def test_atomic_manifest_digest_collisions_and_reuse(tmp_path: Path) -> None:
                 course_id="course-1",
                 course_label="Course 1",
                 root=root,
-                policy=policy,
                 out=explicit_out,
             )
         )
     assert exc_info.value.code == "output-path-conflict"
 
 
-def test_guarded_resources_and_policy_partial(tmp_path: Path) -> None:
+def test_external_https_image_and_unsupported_media_are_distinct(tmp_path: Path) -> None:
     page = FakePage()
-    policy = make_policy()
+    image_bytes = b"\x89PNG\r\n\x1a\n" + b"image-content"
+    external_url = "https://external.example.invalid/image.png"
+    page.context.request.responses[external_url] = FakeResponse(
+        external_url, 200, {"content-type": "image/png", "content-length": str(len(image_bytes))}, image_bytes
+    )
 
     ref_external = ResourceReference(
         kind="image",
@@ -290,55 +255,57 @@ def test_guarded_resources_and_policy_partial(tmp_path: Path) -> None:
             course_id="course-1",
             course_label="Course 1",
             root=root,
-            policy=policy,
+            out=tmp_path / "external-package",
         )
     )
 
-    assert result["completeness"] == "policy-filtered"
-    assert len(result["omitted_resources"]) == 2
-    assert result["omitted_resources"][0]["reason"] == "external-origin"
-    assert result["omitted_resources"][1]["reason"] == "unsupported-media-type"
-    assert len(page.context.request.requests) == 0
-
+    assert result["completeness"] == "partial"
+    assert len(result["resources"]) == 1
+    assert len(result["omitted_resources"]) == 1
+    assert result["omitted_resources"][0]["reason"] == "unsupported-media-type"
+    assert [request["url"] for request in page.context.request.requests] == [external_url]
+    assert Path(result["resources"][0]["path"]).read_bytes() == image_bytes
     content_text = Path(result["content_path"]).read_text(encoding="utf-8")
-    assert "[Omitted: external-origin — external image]" in content_text
+    assert "![external image](images/external.png)" in content_text
     assert "[Omitted: unsupported-media-type — video lecture]" in content_text
 
-    corrupt_url = "https://dcs-learning.cnu.ac.kr/upload/diagram.png"
-    page.context.request.responses[corrupt_url] = FakeResponse(
-        corrupt_url, 200, {"content-type": "image/png"}, b"NOT_A_PNG"
-    )
-    ref_corrupt = ResourceReference(
-        kind="image",
-        source_url=corrupt_url,
-        original_name="diagram.png",
-        media_type_hint="image/png",
-        label="corrupt image",
-        provider_file_id=None,
-        official_target=None,
-    )
-    snapshot_corrupt = DetailSnapshot(
-        source_url="https://dcs-learning.cnu.ac.kr/std/taskView",
-        provider_native_id="task-103",
-        parts=(ref_corrupt,),
-    )
-    out_dir = tmp_path / "out_corrupt"
-    with pytest.raises(CampusError) as exc_info:
+
+@pytest.mark.parametrize(
+    ("headers", "body", "error_code"),
+    [
+        ({"content-type": "text/html"}, b"\x89PNG\r\n\x1a\nimage", "unsupported-media-type"),
+        ({"content-type": "image/png"}, b"not a PNG", "unsupported-media-type"),
+        (
+            {"content-type": "image/png", "content-length": "999999999999999"},
+            b"\x89PNG\r\n\x1a\nimage",
+            "file-too-large",
+        ),
+    ],
+)
+def test_external_image_validates_type_signature_and_size(
+    tmp_path: Path, headers: dict[str, str], body: bytes, error_code: str
+) -> None:
+    url = "https://external.example.invalid/image.png"
+    page = FakePage()
+    page.context.request.responses[url] = FakeResponse(url, 200, headers, body)
+    ref = ResourceReference("image", url, "image.png", "image/png", "image", None, None)
+    snapshot = DetailSnapshot("https://lms.example.invalid/std/task", "task-103", (ref,))
+    output = tmp_path / "unpublished"
+    with pytest.raises(CampusError) as failure:
         asyncio.run(
             build_source_package(
                 page,
-                snapshot_corrupt,
+                snapshot,
                 entity_id="cnu_assignment:course-1:task-103",
                 kind="assignment",
                 course_id="course-1",
                 course_label="Course 1",
-                root=root,
-                policy=policy,
-                out=out_dir,
+                root=tmp_path / "data",
+                out=output,
             )
         )
-    assert exc_info.value.code == "unsupported-media-type"
-    assert not out_dir.exists()
+    assert failure.value.code == error_code
+    assert not output.exists()
 
 
 def test_selected_attachment_and_image_original_bytes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -347,7 +314,6 @@ def test_selected_attachment_and_image_original_bytes(tmp_path: Path, monkeypatc
     image_url = "https://dcs-learning.cnu.ac.kr/upload/diagram.png"
     page.context.request.responses[image_url] = FakeResponse(image_url, 200, {"content-type": "image/png"}, png_bytes)
 
-    policy = make_policy()
     root = tmp_path / "data"
 
     wrong_target = OfficialAttachmentTarget(
@@ -381,10 +347,9 @@ def test_selected_attachment_and_image_original_bytes(tmp_path: Path, monkeypatc
                 course_id="course-1",
                 course_label="Course 1",
                 root=root,
-                policy=policy,
             )
         )
-    assert exc_info.value.code == "policy-blocked"
+    assert exc_info.value.code == "fetch-failed"
 
     pdf_bytes = b"%PDF-1.4\nvalid attachment content"
     pdf_sha256 = hashlib.sha256(pdf_bytes).hexdigest()
@@ -398,7 +363,6 @@ def test_selected_attachment_and_image_original_bytes(tmp_path: Path, monkeypatc
     import campusctl.source_package as sp_module
 
     monkeypatch.setattr(sp_module, "fetch_official_attachment", mock_fetch_attachment)
-    monkeypatch.setattr(sp_module, "_approved_attachment_route", lambda policy, kind: "/api/v1/archive/fileDownload")
 
     correct_target = OfficialAttachmentTarget(
         file_id="file-1",
@@ -440,7 +404,6 @@ def test_selected_attachment_and_image_original_bytes(tmp_path: Path, monkeypatc
             course_id="course-1",
             course_label="Course 1",
             root=root,
-            policy=policy,
         )
     )
     assert result_ok["completeness"] == "complete"
@@ -453,9 +416,8 @@ def test_selected_attachment_and_image_original_bytes(tmp_path: Path, monkeypatc
     assert (pkg_dir / "images" / "diagram.png").read_bytes() == png_bytes
 
 
-def test_policy_exclusions_never_request_bytes(tmp_path: Path) -> None:
+def test_unsupported_media_never_requests_bytes(tmp_path: Path) -> None:
     page = FakePage()
-    policy = make_policy()
     root = tmp_path / "data"
 
     ref_video = ResourceReference(
@@ -481,74 +443,14 @@ def test_policy_exclusions_never_request_bytes(tmp_path: Path) -> None:
             course_id="course-1",
             course_label="Course 1",
             root=root,
-            policy=policy,
         )
     )
-    assert result["completeness"] == "policy-filtered"
+    assert result["completeness"] == "partial"
     assert len(page.context.request.requests) == 0
-
-
-def test_allowed_get_vs_range_header() -> None:
-    raw = {
-        "approved": True,
-        "read_only_evidence": "evidence",
-        "origins": ["https://dcs-learning.cnu.ac.kr"],
-        "routes": [
-            {
-                "origin": "https://dcs-learning.cnu.ac.kr",
-                "path": "/std/task",
-                "operation": "assignments.fetch",
-                "methods": ["GET"],
-            },
-        ],
-        "allowed_media": [],
-        "max_bytes": 200_000_000,
-        "static_asset_origins": ["https://dcs-learning.cnu.ac.kr"],
-        "static_resource_types": ["script"],
-        "suppress": [],
-        "selected_file_routes": [],
-    }
-    from campusctl.providers.cnu.ui_policy import UiRequestDenied, guard_ui_request
-
-    ui = UiRequestPolicy.from_reviewed_config(raw)
-    headers_ok: dict[str, str] = {"Accept": "*/*"}
-    guard_ui_request(
-        ui,
-        "https://dcs-learning.cnu.ac.kr/std/task",
-        "GET",
-        headers_ok,
-        operation="assignments.fetch",
-        resource_type="document",
-    )
-
-    headers_range: dict[str, str] = {"range": "bytes=0-100"}
-    with pytest.raises(UiRequestDenied) as exc_info:
-        guard_ui_request(
-            ui,
-            "https://dcs-learning.cnu.ac.kr/std/task",
-            "GET",
-            headers_range,
-            operation="assignments.fetch",
-            resource_type="document",
-        )
-    assert exc_info.value.reason_code == "range"
-
-    headers_range_cap: dict[str, str] = {"Range": "bytes=0-100"}
-    with pytest.raises(UiRequestDenied) as exc_info2:
-        guard_ui_request(
-            ui,
-            "https://dcs-learning.cnu.ac.kr/std/task",
-            "GET",
-            headers_range_cap,
-            operation="assignments.fetch",
-            resource_type="document",
-        )
-    assert exc_info2.value.reason_code == "range"
 
 
 def test_failed_transfer_never_publishes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     page = FakePage()
-    policy = make_policy()
     root = tmp_path / "data"
 
     import campusctl.source_package as sp_module
@@ -557,7 +459,6 @@ def test_failed_transfer_never_publishes(tmp_path: Path, monkeypatch: pytest.Mon
         raise CampusError("download-failed", "Simulated network failure.")
 
     monkeypatch.setattr(sp_module, "fetch_official_attachment", mock_failing_fetch)
-    monkeypatch.setattr(sp_module, "_approved_attachment_route", lambda policy, kind: "/api/v1/archive/fileDownload")
 
     target = OfficialAttachmentTarget(
         file_id="file-1",
@@ -591,7 +492,6 @@ def test_failed_transfer_never_publishes(tmp_path: Path, monkeypatch: pytest.Mon
                 course_id="course-1",
                 course_label="Course 1",
                 root=root,
-                policy=policy,
                 out=destination,
             )
         )
@@ -599,32 +499,3 @@ def test_failed_transfer_never_publishes(tmp_path: Path, monkeypatch: pytest.Mon
     sources_dir = root / "sources"
     if sources_dir.exists():
         assert not any(sources_dir.rglob("package.json"))
-
-
-def test_latched_guard_denial_blocks_publication(tmp_path: Path) -> None:
-    class DeniedGuard:
-        def raise_if_denied(self) -> None:
-            raise CampusError("policy-blocked", "An LMS request was blocked by the reviewed UI policy.")
-
-    snapshot = DetailSnapshot(
-        source_url="https://lms.invalid/std/taskView",
-        provider_native_id="task-101",
-        parts=("Brief title\n",),
-    )
-    root = tmp_path / "data"
-    with pytest.raises(CampusError) as exc_info:
-        asyncio.run(
-            build_source_package(
-                FakePage(),
-                snapshot,
-                entity_id="cnu_assignment:course-1:task-101",
-                kind="assignment",
-                course_id="course-1",
-                course_label="Course 1",
-                root=root,
-                policy=make_policy(),
-                interceptor=DeniedGuard(),
-            )
-        )
-    assert exc_info.value.code == "policy-blocked"
-    assert not any(path.name == "package.json" for path in root.rglob("*"))

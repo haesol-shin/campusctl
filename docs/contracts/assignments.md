@@ -1,6 +1,6 @@
 # Assignment metadata command contract
 
-`campusctl` reads assignment metadata from the CNU LMS using a visible browser session and caches it separately from lectures. It does not open assignment details, download attachments or media, submit work, or access the downstream task ledger. The reviewed request policy is internal to the assignment command module; this public contract does not publish its route pins.
+`campusctl` reads assignment metadata from the CNU LMS using a browser session and caches it separately from lectures. Page requests are not filtered; campusctl verifies the selected course and assignment identities before publishing records. It does not submit work or access the downstream task ledger.
 
 ## Commands
 
@@ -60,10 +60,7 @@ A successful `campusctl assignments list --json` has this shape (synthetic IDs a
 
 Both submitted and unsubmitted rows appear. `entity_id` is a full, selectable opaque identity; use the separate `course.id` and native `task_id` fields when integrating with a downstream adapter, not substrings of the entity ID. `due_date` preserves displayed LMS text after trimming, without timezone conversion; absent due text is `null`. `is_submitted` is Boolean.
 
-Successful sync `result` has `{"courses":2,"assignments":2,"failed_courses":[],"catalog":{"generated_at":"2026-09-25T10:00:00Z","enrollment_state":"known"},"suppressed_count":0,"suppressed_reasons":{}}`. Counts represent successfully refreshed courses and rows, not retained stale rows. Suppression diagnostics count only named reviewed requests aborted before network access and contain safe reason labels, never raw URLs. The nested catalog/cache timestamp marks the last merge, while envelope `generated_at` marks this response.
-
-The `assignments.sync` guard permits exact LMS POST `/api/v1/week/getStdActivityStatus` XHR from `/std/lecture` as a reviewed read-only route, rather than suppressing it; aborting it displays a blocking server-communication modal. This one allowed request does not increment suppression diagnostics. Other unsuppressed logging-token paths remain denied.
-
+Successful sync `result` has `{"courses":2,"assignments":2,"failed_courses":[],"catalog":{"generated_at":"2026-09-25T10:00:00Z","enrollment_state":"known"}}`. Counts represent successfully refreshed courses and rows, not retained stale rows. The nested catalog/cache timestamp marks the last merge, while envelope `generated_at` marks the report.
 
 ## Stale cache and errors
 
@@ -73,11 +70,11 @@ A successful course replaces all its cached rows, including when an empty task l
 | --- | --- |
 | `ok` / 0 | Complete sync or readable cached list |
 | `partial` / 1 | `course-sync-failed`, `item-identity-missing`; failed courses retain old rows |
-| `error` / 1 | `course-discovery-failed`, `policy-blocked`, `catalog-write-failed`; a denied request aborts without publishing a new catalog |
+| `error` / 1 | `course-discovery-failed`, `catalog-write-failed`; unverified course identities do not publish new rows |
 | `user-action` / 2 | `catalog-missing` (run `campusctl sync --only assignments`), `catalog-invalid`, `catalog-schema-unsupported`, `course-not-found`, `headless-unavailable`, invalid usage; login errors such as `login-action-required` require a new user-initiated run |
 | `busy` / 75 | `session-busy`; no empty sync is reported |
 
-Errors contain safe `code`, `message`, and nullable `remediation`. An unreviewed request, media or Range header fails closed under the reviewed internal policy; login expiration does not trigger an automatic retry. No live LMS verification or headless compatibility is claimed here.
+Errors contain safe `code`, `message`, and nullable `remediation`; operational messages name the assignment step that failed without including raw request URLs. Login expiration does not trigger an automatic retry.
 
 ## Human sample
 

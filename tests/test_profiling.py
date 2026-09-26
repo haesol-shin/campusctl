@@ -71,15 +71,11 @@ def test_bounded_and_untrusted_categories_rejected():
     recorder = SpanRecorder(enabled=True, max_events=1, clock=Clock())
     with recorder.span("lock"), recorder.span("auth"):
         pass
-    recorder.request("document", "blocked")
     recorder.count("course_selections")
     with pytest.raises(ValueError), recorder.span("secret.invalid"):
         pass
     with pytest.raises(ValueError), recorder.span("extract", course="private-id"):
         pass
-    with pytest.raises(ValueError):
-        recorder.request("https://secret.invalid", "allowed")
     result = recorder.finish(stderr=io.StringIO())
     assert result["dropped_events"] == 1
-    assert result["counts"]["requests"] == 1
-    assert result["routes"] == {"document:blocked": 1}
+    assert result["counts"]["course_selections"] == 1

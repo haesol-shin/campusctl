@@ -1,4 +1,4 @@
-"""Tests for unpublished notices fetch command, dispatch, render, and policy pins."""
+"""Tests for unpublished notices fetch command, dispatch, and render."""
 
 from __future__ import annotations
 
@@ -51,36 +51,6 @@ def test_notice_fetch_json_and_human(tmp_path: Path, monkeypatch: pytest.MonkeyP
     notices.register(subparsers)
     with pytest.raises(SystemExit):
         parser.parse_args(["notices", "fetch", "cnu_notice:course-1:2026-09-25:1"])
-    # Verify reviewed fetch policy is enabled and free of unapproved logging reads
-    from campusctl.providers.cnu.ui_policy import UiRequestPolicy
-
-    ui_policy = UiRequestPolicy.from_reviewed_config(notices.FETCH_POLICY)
-    assert ui_policy.approved is True
-    from campusctl.providers.cnu.ui_policy import guard_ui_request
-
-    # Owner-approved course-entry read; blocking it leaves the LMS on a modal.
-    assert (
-        guard_ui_request(
-            ui_policy,
-            "https://dcs-learning.cnu.ac.kr/api/v1/week/getStdActivityStatus",
-            "POST",
-            {},
-            operation="notices.fetch",
-            resource_type="xhr",
-        )
-        == "allow"
-    )
-    assert not any(s.name == "panopto-saml-script" for s in ui_policy.suppress)
-    assert {s.name for s in ui_policy.suppress} == {
-        "panopto-script",
-        "panopto-disconnection-log",
-        "panopto-connectivity-check",
-        "course-roster-image",
-        "favicon-icon",
-        "external-telemetry",
-        "external-telemetry-localhost",
-        "panopto-sso-popup",
-    }
 
     # 2. Test successful dispatch (complete package)
     fake_pkg_complete = {
@@ -141,16 +111,16 @@ def test_notice_fetch_json_and_human(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert any("Completeness: complete" in line for line in human_lines)
     assert not any("Omitted:" in line for line in human_lines)
 
-    # 3. Test policy-filtered partial result
+    # 3. Test unsupported-resource partial result
     fake_pkg_partial = dict(fake_pkg_complete)
-    fake_pkg_partial["completeness"] = "policy-filtered"
+    fake_pkg_partial["completeness"] = "partial"
     fake_pkg_partial["omitted_resources"] = [
         {
             "resource_id": "res-2",
             "source_ref": {},
-            "original_name": "unapproved.bin",
+            "original_name": "unsupported.bin",
             "media_type": None,
-            "reason": "unapproved-file-route",
+            "reason": "unverified-notice-attachment",
         }
     ]
 
@@ -162,18 +132,20 @@ def test_notice_fetch_json_and_human(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert errors_p is not None
     assert len(errors_p) == 1
     assert errors_p[0].code == "resource-omitted"
-    assert result_p["source_package"]["completeness"] == "policy-filtered"
+    assert "Notices fetch packaging" in errors_p[0].message
+    assert result_p["source_package"]["completeness"] == "partial"
 
     # Human render of partial
     human_lines_p = notices.render("notices.fetch", result_p, 80)
-    assert any("Completeness: policy-filtered" in line for line in human_lines_p)
-    assert any("Omitted: unapproved-file-route — unapproved.bin" in line for line in human_lines_p)
+    assert any("Completeness: partial" in line for line in human_lines_p)
+    assert any("Omitted: unverified-notice-attachment — unsupported.bin" in line for line in human_lines_p)
 
     # 4. Error: catalog-missing
     monkeypatch.setattr(notices, "data_dir", lambda: tmp_path / "nonexistent")
     with pytest.raises(CampusError) as exc_cat:
         notices.dispatch(args)
     assert exc_cat.value.code == "catalog-missing"
+    assert "Notices fetch catalog lookup" in exc_cat.value.message
     monkeypatch.setattr(notices, "data_dir", lambda: tmp_path)
 
     # 5. Error: entity-unknown (including numeric material selection)
@@ -183,6 +155,8 @@ def test_notice_fetch_json_and_human(tmp_path: Path, monkeypatch: pytest.MonkeyP
     with pytest.raises(CampusError) as exc_unk:
         notices.dispatch(args_unknown)
     assert exc_unk.value.code == "entity-unknown"
+    assert "Notices fetch selection" in exc_unk.value.message
+    assert "2026-09-25:999" not in exc_unk.value.message
 
     args_num = SimpleNamespace(notices_command="fetch", entity_id="1", out=None, headless_override=None)
     with pytest.raises(CampusError) as exc_num:
@@ -201,6 +175,8 @@ def test_notice_fetch_json_and_human(tmp_path: Path, monkeypatch: pytest.MonkeyP
     with pytest.raises(CampusError) as exc_conf:
         notices.dispatch(args_conflict)
     assert exc_conf.value.code == "output-path-conflict"
+    assert "Notices fetch output selection" in exc_conf.value.message
+    assert str(existing_file) not in exc_conf.value.message
 
     # 7. Error: headless-unavailable (unsupported effective headless fails before navigation)
     args_headless = SimpleNamespace(
@@ -209,6 +185,7 @@ def test_notice_fetch_json_and_human(tmp_path: Path, monkeypatch: pytest.MonkeyP
     with pytest.raises(CampusError) as exc_hl:
         notices.dispatch(args_headless)
     assert exc_hl.value.code == "headless-unavailable"
+    assert "Notices fetch browser preflight" in exc_hl.value.message
 
     # 8. Error: session-busy
     async def mock_fetch_busy(*_args: Any, **_kwargs: Any) -> dict[str, Any]:

@@ -4,8 +4,6 @@ import importlib
 import pkgutil
 from types import ModuleType
 
-from campusctl.providers.cnu.ui_policy import UiRequestPolicy
-
 _HOOKS = ("register", "dispatch", "render", "sync")
 _EXPORTS = (*_HOOKS, "CAPABILITY")
 
@@ -18,29 +16,20 @@ class DomainDiscoveryError(RuntimeError):
 
 
 def _nonempty_strings(value: object) -> bool:
-    return isinstance(value, list) and all(isinstance(item, str) and bool(item.strip()) for item in value)
+    return (
+        isinstance(value, list) and bool(value) and all(isinstance(item, str) and bool(item.strip()) for item in value)
+    )
 
 
 def _valid_capability(value: object) -> bool:
-    if not isinstance(value, dict) or set(value) != {"commands", "policy"}:
+    if not isinstance(value, dict) or set(value) != {"commands"}:
         return False
     commands = value["commands"]
-    policy = value["policy"]
-    if not _nonempty_strings(commands) and commands != []:
-        return False
-    if len(set(commands)) != len(commands):
-        return False
-    if not UiRequestPolicy.validate_reviewed_config(policy):
-        return False
-    if policy["approved"]:
-        parsed_policy = UiRequestPolicy.from_reviewed_config(policy)
-        if not parsed_policy.approved or not parsed_policy.origins or not parsed_policy.routes:
-            return False
-    return True
+    return _nonempty_strings(commands) and len(set(commands)) == len(commands)
 
 
 def discover_domain_modules() -> dict[str, ModuleType]:
-    """Import and validate sorted command modules, returning only approved domains."""
+    """Import and validate sorted command modules."""
     names = sorted(item.name for item in pkgutil.iter_modules(__path__))
     modules: dict[str, ModuleType] = {}
     for name in names:
@@ -58,8 +47,6 @@ def discover_domain_modules() -> dict[str, ModuleType]:
         capability = module.CAPABILITY
         if not _valid_capability(capability):
             raise DomainDiscoveryError()
-        if capability["policy"]["approved"] is False:
-            continue
         if not all(callable(getattr(module, hook)) for hook in _HOOKS):
             raise DomainDiscoveryError()
         modules[name] = module

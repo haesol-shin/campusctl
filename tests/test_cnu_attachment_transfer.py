@@ -6,18 +6,12 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from test_cnu_request_policy import FIXTURE, approved_ui
+from test_cnu_request_policy import FIXTURE
 
 from campusctl.envelope import CampusError
 from campusctl.providers.cnu.attachment_transfer import OfficialAttachmentTarget, fetch_official_attachment
 from campusctl.providers.cnu.request_policy import RequestPolicy
-from campusctl.providers.cnu.ui_policy import (
-    UiRequestDenied,
-    UiRequestDiagnostics,
-    UiRequestInterceptor,
-    bind_selected_file_request,
-    guard_ui_request,
-)
+from campusctl.providers.cnu.selected_file_policy import SelectedFileDenied, bind_selected_file_request
 
 URL = "https://dcs-lcms.cnu.ac.kr/upload/storage-1/example.pdf"
 PARENT_URL = "https://dcs-learning.cnu.ac.kr/std/archive"
@@ -48,25 +42,15 @@ class Control:
         for listener in self.owner.listeners:
             listener(request)
         response = MetadataResponse(request, self.owner.payload)
-        if self.owner.interceptor is not None:
-            assert self.owner.interceptor._capture is not None
-            if self.owner.foreign_response_before:
-                other = MetadataRequest(self.owner.referer)
-                await self.owner.interceptor._capture[1](other, MetadataResponse(other, {"header": {"code": 403}}))
-                assert self.owner.interceptor._selected_file is None
-            await self.owner.interceptor._capture[1](request, response)
-            if self.owner.context_duplicate_url is not None:
-                duplicate = DuplicateRoute(
-                    self.owner.context_duplicate_url, resource_type=self.owner.context_duplicate_resource_type
-                )
-                await self.owner.interceptor._handle(duplicate)
-                assert duplicate.aborted
         if self.owner.pending.predicate(response):
             self.owner.pending.value.set_result(response)
         if self.owner.duplicate_url:
             route = DuplicateRoute(self.owner.duplicate_url, self.owner.duplicate_headers)
             await self.owner.route_handler(route)
             assert route.aborted
+        unrelated = DuplicateRoute("https://other.invalid/static/course.js")
+        await self.owner.route_handler(unrelated)
+        assert unrelated.fell_back and not unrelated.aborted
 
 
 class MetadataRequest:
@@ -121,12 +105,13 @@ class DuplicateRoute:
             url=url, method="GET", resource_type=resource_type, redirected_from=None, all_headers=all_headers
         )
         self.aborted = False
+        self.fell_back = False
 
     async def abort(self) -> None:
         self.aborted = True
 
     async def fallback(self) -> None:
-        raise AssertionError("Selected GET must be suppressed")
+        self.fell_back = True
 
 
 class FakePage:
@@ -159,10 +144,6 @@ class FakePage:
         self.route_handler: object | None = None
         self.pending: ResponseWaiter | None = None
         self.idle = False
-        self.interceptor: UiRequestInterceptor | None = None
-        self.context_duplicate_url: str | None = None
-        self.context_duplicate_resource_type = "document"
-        self.foreign_response_before = False
 
     def locator(self, selector: str) -> Control:
         assert selector == TARGET.control_locator
@@ -272,8 +253,7 @@ def test_selected_guarded_bounded_transfer(tmp_path: Path) -> None:
 
 
 async def _selected_guarded_bounded_transfer(tmp_path: Path) -> None:
-    diagnostics = UiRequestDiagnostics()
-    policy = RequestPolicy(approved_ui(), "example.pdf", diagnostics)
+    policy = RequestPolicy("example.pdf")
     response = Response()
     browser = page(response)
     fetched = await fetch_official_attachment(browser, TARGET, policy, tmp_path, max_bytes=200_000_000)
@@ -287,7 +267,6 @@ async def _selected_guarded_bounded_transfer(tmp_path: Path) -> None:
     candidate_page = page(Response(), duplicate_url=URL)
     selected = await fetch_official_attachment(candidate_page, TARGET, policy, tmp_path, max_bytes=200_000_000)
     assert candidate_page.context.request.calls == [(URL, {}, 0)]
-    assert diagnostics.suppressed_reasons["duplicate-download"] == 1
     assert candidate_page.route_handler is None
     assert not candidate_page.listeners
     selected.temp_path.unlink()
@@ -304,7 +283,7 @@ def test_response_failures_leave_no_temp_and_do_not_read_declared_oversize(tmp_p
 
 
 async def _response_failures(tmp_path: Path) -> None:
-    policy = RequestPolicy(approved_ui(), "example.pdf")
+    policy = RequestPolicy("example.pdf")
     for response, expected_reads in (
         (Response(status=FIXTURE["redirect_response"]["status"]), 0),
         (Response(headers={"Content-Type": "application/x-pdf", "Content-Length": "200000001"}), 0),
@@ -321,7 +300,7 @@ async def _response_failures(tmp_path: Path) -> None:
 
 def test_invalid_official_target_blocks_as_operational_policy_error(tmp_path: Path) -> None:
     target = OfficialAttachmentTarget("", "archive", "post-1", "#official-file", None)
-    policy = RequestPolicy(approved_ui(), "example.pdf")
+    policy = RequestPolicy("example.pdf")
     with pytest.raises(CampusError) as denial:
         asyncio.run(fetch_official_attachment(object(), target, policy, tmp_path, max_bytes=200_000_000))
     assert denial.value.code == "policy-blocked"
@@ -334,7 +313,7 @@ def test_official_response_is_only_url_provenance(tmp_path: Path) -> None:
 
 
 async def _provenance_failures(tmp_path: Path) -> None:
-    policy = RequestPolicy(approved_ui(), "example.pdf")
+    policy = RequestPolicy("example.pdf")
     other_origin = "https://dcs-learning.cnu.ac.kr/file/term-1/course-1/board/manager-1/post-1/example.pdf"
     wrong_post = "https://dcs-learning.cnu.ac.kr/file/term-1/course-1/board/manager-1/foreign-post/example.pdf"
     for target, payload in (
@@ -369,22 +348,18 @@ async def _provenance_failures(tmp_path: Path) -> None:
             await fetch_official_attachment(browser, TARGET, policy, tmp_path, max_bytes=200_000_000)
         assert not browser.context.request.calls
         assert browser.route_handler is None
-    diagnostics = UiRequestDiagnostics()
     ranged = page(Response(), duplicate_url=URL, duplicate_headers={"rAnGe": "bytes=0-"})
-    with pytest.raises(UiRequestDenied) as denied:
-        await fetch_official_attachment(
-            ranged, TARGET, RequestPolicy(approved_ui(), "example.pdf", diagnostics), tmp_path, max_bytes=200_000_000
-        )
-    assert denied.value.reason_code == "range"
-    assert diagnostics.suppressed_count == 0
+    with pytest.raises(CampusError) as denied:
+        await fetch_official_attachment(ranged, TARGET, policy, tmp_path, max_bytes=200_000_000)
+    assert denied.value.code == "policy-blocked"
     assert not ranged.context.request.calls
     late_foreign = page(Response(), late_url=other_origin)
-    with pytest.raises(UiRequestDenied):
+    with pytest.raises(CampusError):
         await fetch_official_attachment(late_foreign, TARGET, policy, tmp_path, max_bytes=200_000_000)
     assert late_foreign.context.request.calls == [(URL, {}, 0)]
     assert not list(tmp_path.iterdir())
     delayed = page(Response(), late_url=other_origin, delayed_headers=True)
-    with pytest.raises(UiRequestDenied):
+    with pytest.raises(CampusError):
         await fetch_official_attachment(delayed, TARGET, policy, tmp_path, max_bytes=200_000_000)
     assert delayed.late_tasks and all(task.done() for task in delayed.late_tasks)
     assert not list(tmp_path.iterdir())
@@ -395,92 +370,38 @@ async def _provenance_failures(tmp_path: Path) -> None:
     assert not list(tmp_path.iterdir())
 
 
-def test_cms_response_binds_before_context_download_navigation(tmp_path: Path) -> None:
+def test_cms_response_binds_selected_transfer_without_page_interceptor(tmp_path: Path) -> None:
     async def scenario() -> None:
-        diagnostics = UiRequestDiagnostics()
-        ui = approved_ui()
-        interceptor = UiRequestInterceptor(
-            SimpleNamespace(), ui, operation="materials.download", diagnostics=diagnostics
-        )
-        browser = page(Response(url=CMS_URL), payload=CMS_PAYLOAD)
-        browser.interceptor = interceptor
-        browser.foreign_response_before = True
-        browser.context_duplicate_url = CMS_URL
+        browser = page(Response(url=CMS_URL), payload=CMS_PAYLOAD, duplicate_url=CMS_URL)
         target = OfficialAttachmentTarget("file-1", "archive", "post-1", "#official-file", None)
         fetched = await fetch_official_attachment(
-            browser,
-            target,
-            RequestPolicy(ui, "example file.pdf", diagnostics),
-            tmp_path,
-            max_bytes=200_000_000,
-            interceptor=interceptor,
+            browser, target, RequestPolicy("example file.pdf"), tmp_path, max_bytes=200_000_000
         )
         assert browser.context.request.calls == [(CMS_URL, {}, 0)]
         assert fetched.temp_path.read_bytes() == BODY
-        assert diagnostics.suppressed_reasons["duplicate-download"] == 1
-        assert interceptor._selected_file is None
         fetched.temp_path.unlink()
 
-    asyncio.run(scenario())
-
-
-def test_cms_response_rejects_inconsistent_metadata_and_foreign_document(tmp_path: Path) -> None:
-    async def scenario() -> None:
-        ui = approved_ui()
-        target = OfficialAttachmentTarget("file-1", "archive", "post-1", "#official-file", CMS_URL)
         for payload in (
             {"header": {"code": 403}, "body": CMS_PAYLOAD["body"]},
             {"header": {"code": 200}, "body": {**CMS_PAYLOAD["body"], "name": "other.pdf"}},
             {"header": {"code": 200}, "body": {**CMS_PAYLOAD["body"], "path": "/elsewhere/example file.pdf"}},
             {"header": {"code": 200}, "body": {**CMS_PAYLOAD["body"], "path": "/storage-1/../example file.pdf"}},
         ):
-            interceptor = UiRequestInterceptor(
-                SimpleNamespace(), ui, operation="materials.download", diagnostics=UiRequestDiagnostics()
-            )
             browser = page(Response(url=CMS_URL), payload=payload)
-            browser.interceptor = interceptor
             with pytest.raises(CampusError) as denied:
                 await fetch_official_attachment(
                     browser,
-                    target,
-                    RequestPolicy(ui, "example file.pdf"),
+                    OfficialAttachmentTarget("file-1", "archive", "post-1", "#official-file", CMS_URL),
+                    RequestPolicy("example file.pdf"),
                     tmp_path,
                     max_bytes=200_000_000,
-                    interceptor=interceptor,
                 )
             assert denied.value.code == "policy-blocked"
             assert not browser.context.request.calls
-            assert interceptor._selected_file is None
-        interceptor = UiRequestInterceptor(
-            SimpleNamespace(), ui, operation="materials.download", diagnostics=UiRequestDiagnostics()
-        )
-        browser = page(Response(url=CMS_URL), payload=CMS_PAYLOAD)
-        browser.interceptor = interceptor
-        browser.context_duplicate_url = URL
-        with pytest.raises(UiRequestDenied):
+        browser = page(Response(url=CMS_URL), payload=CMS_PAYLOAD, duplicate_url=URL)
+        with pytest.raises(CampusError):
             await fetch_official_attachment(
-                browser,
-                target,
-                RequestPolicy(ui, "example file.pdf"),
-                tmp_path,
-                max_bytes=200_000_000,
-                interceptor=interceptor,
-            )
-        assert not browser.context.request.calls
-        browser = page(Response(url=CMS_URL), payload=CMS_PAYLOAD)
-        browser.interceptor = interceptor = UiRequestInterceptor(
-            SimpleNamespace(), ui, operation="materials.download", diagnostics=UiRequestDiagnostics()
-        )
-        browser.context_duplicate_url = CMS_URL
-        browser.context_duplicate_resource_type = "fetch"
-        with pytest.raises(UiRequestDenied):
-            await fetch_official_attachment(
-                browser,
-                target,
-                RequestPolicy(ui, "example file.pdf"),
-                tmp_path,
-                max_bytes=200_000_000,
-                interceptor=interceptor,
+                browser, target, RequestPolicy("example file.pdf"), tmp_path, max_bytes=200_000_000
             )
         assert not browser.context.request.calls
         assert not list(tmp_path.iterdir())
@@ -514,7 +435,7 @@ async def _invalid_bodies(tmp_path: Path) -> None:
         )
         try:
             await fetch_official_attachment(
-                page(response), TARGET, RequestPolicy(approved_ui(), filename), tmp_path, max_bytes=200_000_000
+                page(response), TARGET, RequestPolicy(filename), tmp_path, max_bytes=200_000_000
             )
         except CampusError:
             pass
@@ -524,7 +445,7 @@ async def _invalid_bodies(tmp_path: Path) -> None:
     underreported = Response(headers={"Content-Type": "application/x-pdf", "Content-Length": "6"})
     with pytest.raises(CampusError) as oversized:
         await fetch_official_attachment(
-            page(underreported), TARGET, RequestPolicy(approved_ui(), "example.pdf"), tmp_path, max_bytes=8
+            page(underreported), TARGET, RequestPolicy("example.pdf"), tmp_path, max_bytes=8
         )
     assert oversized.value.code == "file-too-large"
     assert not list(tmp_path.iterdir())
@@ -533,7 +454,7 @@ async def _invalid_bodies(tmp_path: Path) -> None:
         await fetch_official_attachment(
             page(empty_without_length),
             TARGET,
-            RequestPolicy(approved_ui(), "example.pdf"),
+            RequestPolicy("example.pdf"),
             tmp_path,
             max_bytes=200_000_000,
         )
@@ -546,9 +467,7 @@ async def _invalid_bodies(tmp_path: Path) -> None:
     failing_dispose.dispose = fail_dispose
     browser = page(failing_dispose)
     with pytest.raises(RuntimeError, match="dispose failure"):
-        await fetch_official_attachment(
-            browser, TARGET, RequestPolicy(approved_ui(), "example.pdf"), tmp_path, max_bytes=200_000_000
-        )
+        await fetch_official_attachment(browser, TARGET, RequestPolicy("example.pdf"), tmp_path, max_bytes=200_000_000)
     assert browser.route_handler is None
     assert not list(tmp_path.iterdir())
     cancelled = Response()
@@ -559,64 +478,29 @@ async def _invalid_bodies(tmp_path: Path) -> None:
     cancelled.dispose = cancel_dispose
     with pytest.raises(asyncio.CancelledError):
         await fetch_official_attachment(
-            page(cancelled), TARGET, RequestPolicy(approved_ui(), "example.pdf"), tmp_path, max_bytes=200_000_000
+            page(cancelled), TARGET, RequestPolicy("example.pdf"), tmp_path, max_bytes=200_000_000
         )
     assert not list(tmp_path.iterdir())
     unroute_failure = page(Response(), unroute_error=True)
     with pytest.raises(RuntimeError, match="unroute failure"):
         await fetch_official_attachment(
-            unroute_failure, TARGET, RequestPolicy(approved_ui(), "example.pdf"), tmp_path, max_bytes=200_000_000
+            unroute_failure, TARGET, RequestPolicy("example.pdf"), tmp_path, max_bytes=200_000_000
         )
     assert not unroute_failure.listeners
     assert not list(tmp_path.iterdir())
 
 
-def test_response_fixture_cases() -> None:
-    policy = approved_ui()
+def test_selected_file_url_binding_rejects_unapproved_paths() -> None:
     for origin, selected in zip(
         ("https://dcs-lcms.cnu.ac.kr", "https://dcs-learning.cnu.ac.kr"), FIXTURE["selected_urls"], strict=True
     ):
         selected_url = origin + selected["valid"]
         binding = bind_selected_file_request(
-            policy, selected_file_id="file-1", resolved_url=selected_url, source="official-control"
+            selected_file_id="file-1", resolved_url=selected_url, source="official-control"
         )
-        assert (
-            guard_ui_request(
-                policy,
-                selected_url,
-                "GET",
-                {},
-                operation="materials.download",
-                resource_type="fetch",
-                selected_file=binding,
-                selected_file_id="file-1",
-            )
-            == "allow"
-        )
-        with pytest.raises(UiRequestDenied):
-            guard_ui_request(
-                policy,
-                selected_url,
-                "GET",
-                {"rAnGe": "bytes=0-"},
-                operation="materials.download",
-                resource_type="fetch",
-                selected_file=binding,
-                selected_file_id="file-1",
-            )
-        with pytest.raises(UiRequestDenied):
-            guard_ui_request(
-                policy,
-                selected_url,
-                "GET",
-                {},
-                operation="materials.download",
-                resource_type="fetch",
-                selected_file=binding,
-                selected_file_id=FIXTURE["selected_file_ids"][1]["id"],
-            )
+        assert binding.origin == origin and binding.path == selected["valid"] and binding.selected_file_id == "file-1"
         for invalid in selected["invalid"]:
-            with pytest.raises(UiRequestDenied):
+            with pytest.raises(SelectedFileDenied):
                 bind_selected_file_request(
-                    policy, selected_file_id="file-1", resolved_url=origin + invalid, source="official-control"
+                    selected_file_id="file-1", resolved_url=origin + invalid, source="official-control"
                 )

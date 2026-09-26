@@ -83,7 +83,9 @@ _DETAIL_JS = r"""() => {
 
 
 def _failed(message: str) -> CampusError:
-    return CampusError("entity-unknown", message, "Sync the notice catalog and retry.", "user-action")
+    return CampusError(
+        "entity-unknown", f"Notice detail: {message}", "Sync the notice catalog and retry.", "user-action"
+    )
 
 
 def _items(payload: Any) -> list[dict[str, Any]]:
@@ -92,13 +94,13 @@ def _items(payload: Any) -> list[dict[str, Any]]:
         or not isinstance(payload.get("header"), dict)
         or payload["header"].get("code") != 200
     ):
-        raise ValueError("Invalid notice response")
+        raise _failed("board list response is invalid.")
     body = payload.get("body")
     if not isinstance(body, dict) or not isinstance(body.get("list"), list):
-        raise ValueError("Invalid notice board list")
+        raise _failed("board list payload is invalid.")
     items = body["list"]
     if any(not isinstance(item, dict) for item in items):
-        raise ValueError("Invalid notice board item")
+        raise _failed("board list item is invalid.")
     return items
 
 
@@ -119,11 +121,11 @@ def _escape_markdown(text: str) -> str:
 
 def _extract_parts(raw: Any, source_url: str) -> tuple[str | ResourceReference, ...]:
     if not isinstance(raw, list) or not raw:
-        raise ValueError("Notice has no readable detail")
+        raise _failed("detail has no readable content.")
     parts: list[str | ResourceReference] = []
     for item in raw:
         if not isinstance(item, dict):
-            raise ValueError("Invalid detail part")
+            raise _failed("detail content part is invalid.")
         kind = item.get("kind")
         if kind == "text" and isinstance(item.get("text"), str):
             parts.append(_escape_markdown(item["text"]))
@@ -144,7 +146,7 @@ def _extract_parts(raw: Any, source_url: str) -> tuple[str | ResourceReference, 
         elif kind in {"video", "audio"}:
             url, label = item.get("url"), item.get("label")
             if not isinstance(url, str) or not isinstance(label, str):
-                raise ValueError("Invalid media part")
+                raise _failed("detail media part is invalid.")
             parts.append(ResourceReference(kind, url, item.get("name"), f"{kind}/*", label, None, None))
         elif kind == "attachment":
             file_id = item.get("file_id")
@@ -162,12 +164,12 @@ def _extract_parts(raw: Any, source_url: str) -> tuple[str | ResourceReference, 
                 )
             )
         else:
-            raise ValueError("Invalid detail part")
+            raise _failed("detail content part is invalid.")
     return tuple(parts)
 
 
-async def capture_notice_detail(page: Any, selected_row: dict[str, Any], *, interceptor: Any) -> DetailSnapshot:
-    """Open exactly the selected course row; caller owns login and operation guard.
+async def capture_notice_detail(page: Any, selected_row: dict[str, Any]) -> DetailSnapshot:
+    """Open exactly the selected course row through the notice menu; caller owns login.
 
     The selected catalog ID never encodes the native board-item ID. A wrong or
     stale composite ID is rejected before visiting any detail (or transferring bytes).
@@ -205,30 +207,28 @@ async def capture_notice_detail(page: Any, selected_row: dict[str, Any], *, inte
     async def response_payload(path: str) -> Any:
         matches = captured[path]
         if len(matches) != 1 or matches[0].status != 200 or matches[0].request.method != "POST":
-            raise ValueError("Missing or duplicated notice response")
+            raise _failed(f"{path.rsplit('/', 1)[-1]} response is missing, duplicated, or unsuccessful.")
         result = matches[0]
         await bounded(result.finished(), PROTOCOL_TIMEOUT_SECONDS, "finishing notice response")
-        interceptor.raise_if_denied()
         return await bounded(result.json(), PROTOCOL_TIMEOUT_SECONDS, "reading notice response")
 
     page.on("response", on_response)
     try:
         await bounded(
-            page.goto(MY_LECTURE_URL, wait_until="domcontentloaded"), PROTOCOL_TIMEOUT_SECONDS, "opening course roster"
+            page.goto(MY_LECTURE_URL, wait_until="domcontentloaded"),
+            PROTOCOL_TIMEOUT_SECONDS,
+            "opening notice course roster",
         )
-        interceptor.raise_if_denied()
         await bounded(
             page.click(f'[data-act="moveLecture"][data-courseid={_css_string(course_id)}]'),
             PROTOCOL_TIMEOUT_SECONDS,
-            "opening selected course",
+            "opening selected notice course",
         )
-        interceptor.raise_if_denied()
         await bounded(
             page.wait_for_selector('a[href="/std/notice"]'), PROTOCOL_TIMEOUT_SECONDS, "waiting for notice menu"
         )
         await bounded(page.click('a[href="/std/notice"]'), PROTOCOL_TIMEOUT_SECONDS, "opening notice board")
         await bounded(page.wait_for_load_state("networkidle"), PROTOCOL_TIMEOUT_SECONDS, "settling notice board")
-        interceptor.raise_if_denied()
         rows = [*_items(await response_payload(_LIST_PATHS[0])), *_items(await response_payload(_LIST_PATHS[1]))]
         board: list[dict[str, Any]] = []
         for item in rows:
@@ -262,7 +262,6 @@ async def capture_notice_detail(page: Any, selected_row: dict[str, Any], *, inte
         native = matched_item["native_id"]
         board_url = page.url
         rendered = await bounded(page.evaluate(_BOARD_JS), PROTOCOL_TIMEOUT_SECONDS, "reading board links")
-        interceptor.raise_if_denied()
         if not isinstance(rendered, list):
             raise _failed("Selected notice board did not render.")
         links = [
@@ -277,7 +276,6 @@ async def capture_notice_detail(page: Any, selected_row: dict[str, Any], *, inte
         selector = f"tbody#table-body a[href={_css_string(links[0])}]"
         await bounded(page.click(selector), PROTOCOL_TIMEOUT_SECONDS, "opening selected notice")
         await bounded(page.wait_for_load_state("networkidle"), PROTOCOL_TIMEOUT_SECONDS, "settling notice detail")
-        interceptor.raise_if_denied()
         source_url = page.url
         if _native_from_href(source_url, board_url) != native:
             raise _failed("Opened notice does not match the selected board item.")
@@ -287,7 +285,7 @@ async def capture_notice_detail(page: Any, selected_row: dict[str, Any], *, inte
             or not isinstance(payload.get("body"), dict)
             or payload.get("header", {}).get("code") != 200
         ):
-            raise ValueError("Notice detail response invalid")
+            raise _failed("detail response is invalid.")
         body = payload["body"]
         info = body.get("data", body)
         if (
@@ -302,16 +300,15 @@ async def capture_notice_detail(page: Any, selected_row: dict[str, Any], *, inte
             or not isinstance(comments.get("header"), dict)
             or comments["header"].get("code") != 200
         ):
-            raise ValueError("Notice comments response invalid")
+            raise _failed("comments response is invalid.")
         detail = await bounded(page.evaluate(_DETAIL_JS), PROTOCOL_TIMEOUT_SECONDS, "reading notice detail")
-        interceptor.raise_if_denied()
         if (
             not isinstance(detail, dict)
             or detail.get("native_id") != native
             or not isinstance(detail.get("title"), str)
             or not detail["title"].strip()
         ):
-            raise _failed("Notice detail identity cannot be verified.")
+            raise _failed("rendered detail identity cannot be verified.")
         extracted = _extract_parts(detail.get("parts"), source_url=source_url)
         has_attachment_ref = any(isinstance(p, ResourceReference) and p.kind == "attachment" for p in extracted)
         notice_has_attachments = bool(matched_item.get("has_attachments") or selected_row.get("has_attachments"))

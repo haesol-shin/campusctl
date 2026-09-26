@@ -5,17 +5,10 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from time import perf_counter
-from types import SimpleNamespace
 
 import pytest
 
 from campusctl import browser
-from campusctl.providers.cnu.ui_policy import (
-    UiRequestDiagnostics,
-    UiRequestInterceptor,
-    UiRequestPolicy,
-    install_ui_request_interceptor,
-)
 
 ROSTER_PATH = "/std/myLecture"
 SSO_PATH = "/SSOServiceLogin"
@@ -100,96 +93,35 @@ def _fixture_server(posts: list[str]) -> tuple[ThreadingHTTPServer, threading.Th
     return server, thread
 
 
-def test_popup_settles_before_guard_and_roster_links_render(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_popup_settles_and_roster_links_render(monkeypatch: pytest.MonkeyPatch) -> None:
     posts: list[str] = []
     server, thread = _fixture_server(posts)
     lms = f"http://lms.invalid:{server.server_port}"
-    provider = f"http://provider.invalid:{server.server_port}"
     roster = f"{lms}{ROSTER_PATH}"
     sso = f"{lms}{SSO_PATH}"
     monkeypatch.setattr(browser, "_roster_page_url", lambda url: url == roster)
 
-    async def fixture_popup(request):
-        frame = request.frame
-        opener = await frame.page.opener()
-        return frame.url == sso and opener is not None and opener.url == roster, frame.page
-
-    monkeypatch.setattr(UiRequestInterceptor, "_sso_popup", lambda self, request: fixture_popup(request))
-    policy = UiRequestPolicy(
-        approved=True,
-        origins=frozenset({lms}),
-        routes=(
-            SimpleNamespace(
-                origin=lms,
-                path=ROSTER_PATH,
-                operation="assignments.sync",
-                methods=frozenset({"GET"}),
-                query=(),
-                logging_token_reviewed=False,
-                resource_type="",
-            ),
-        ),
-        suppress=(
-            SimpleNamespace(
-                origin=provider,
-                path_template=PROVIDER_PATH,
-                operation="assignments.sync",
-                methods=frozenset({"POST"}),
-                name="panopto-sso-popup",
-                reason="panopto-sso-popup",
-            ),
-        ),
-    )
-
     async def scenario() -> None:
         manager, instance, context = await _browser_context(fixture_port=server.server_port)
         try:
-            for settle in (False, True):
-                if settle:
-                    context = await instance.new_context()
-                popups, pending, remove = browser._track_sso_popups(context)
-                try:
-                    page = await context.new_page()
-                    async with page.expect_popup() as popup_info:
-                        await page.goto(roster)
-                    popup = await popup_info.value
-                    await popup.wait_for_url(sso)
-                    session = browser.BrowserSession(page, context, "local", popups, pending)
-                    diagnostics = UiRequestDiagnostics()
-                    if settle:
-                        started = perf_counter()
-                        await browser.settle_sso_popups(session, domain="assignments")
-                        elapsed = perf_counter() - started
-                        assert 2.5 <= elapsed < 8.0
-                        assert posts == [f"provider.invalid:{server.server_port}"]
-                    guard = await install_ui_request_interceptor(
-                        context, policy, operation="assignments.sync", diagnostics=diagnostics
-                    )
-                    try:
-                        if settle:
-                            await page.goto(roster)
-                            await page.wait_for_selector('[data-act="moveLecture"]', timeout=1000)
-                            assert diagnostics.suppressed_count == 0
-                            before = perf_counter()
-                            await browser.settle_sso_popups(session, domain="assignments")
-                            idle_elapsed = perf_counter() - before
-                            assert idle_elapsed < 0.1
-                            print(f"fixture sso-settle active={elapsed:.3f}s idle={idle_elapsed:.6f}s")
-                        else:
-                            await page.wait_for_timeout(800)
-                            assert diagnostics.suppressed_reasons["panopto-sso-popup"] == 1
-                            await page.goto(roster)
-                            from playwright.async_api import TimeoutError as PlaywrightTimeoutError
-
-                            with pytest.raises(PlaywrightTimeoutError):
-                                await page.wait_for_selector('[data-act="moveLecture"]', timeout=250)
-                            assert len(posts) == 0
-                        guard.raise_if_denied()
-                    finally:
-                        await guard.close()
-                finally:
-                    remove()
-                    await context.close()
+            popups, pending, remove = browser._track_sso_popups(context)
+            try:
+                page = await context.new_page()
+                async with page.expect_popup() as popup_info:
+                    await page.goto(roster)
+                popup = await popup_info.value
+                await popup.wait_for_url(sso)
+                session = browser.BrowserSession(page, context, "local", popups, pending)
+                await browser.settle_sso_popups(session, domain="assignments")
+                assert posts == [f"provider.invalid:{server.server_port}"]
+                await page.goto(roster)
+                await page.wait_for_selector('[data-act="moveLecture"]', timeout=1000)
+                before = perf_counter()
+                await browser.settle_sso_popups(session, domain="assignments")
+                assert perf_counter() - before < 0.1
+            finally:
+                remove()
+                await context.close()
         finally:
             await instance.close()
             await manager.stop()

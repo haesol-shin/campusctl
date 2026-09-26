@@ -28,9 +28,6 @@ PHASES = frozenset(
         "course-selection",
         "document-commit",
         "response-completion",
-        "guard-headers",
-        "guard-decision",
-        "guard-disposition",
         "idle",
         "dom-ready",
         "extract",
@@ -44,9 +41,7 @@ PHASES = frozenset(
     }
 )
 DOMAINS = frozenset({"lectures", "assignments", "notices", "materials"})
-ROUTES = frozenset({"document", "xhr", "fetch", "static", "attachment", "other"})
-DISPOSITIONS = frozenset({"allowed", "blocked", "suppressed"})
-COUNT_NAMES = frozenset({"course_selections", "documents", "requests", "sso_settles"})
+COUNT_NAMES = frozenset({"course_selections", "documents", "sso_settles"})
 
 
 @dataclass
@@ -115,7 +110,6 @@ class SpanRecorder:
         self._spans: list[_Span] = []
         self._parent: ContextVar[int | None] = ContextVar("profile_parent", default=None)
         self._counts = dict.fromkeys(sorted(COUNT_NAMES), 0)
-        self._routes: dict[str, int] = {}
         self._dropped = 0
         self._event_loop_lag_ns: int | None = None
         self._finished: dict | None = None
@@ -158,15 +152,6 @@ class SpanRecorder:
         if name not in COUNT_NAMES or type(amount) is not int or amount < 0:
             raise ValueError("unknown count or invalid increment")
         self._counts[name] += amount
-
-    def request(self, route: str, disposition: str) -> None:
-        if not self.enabled:
-            return
-        if route not in ROUTES or disposition not in DISPOSITIONS:
-            raise ValueError("unknown route or disposition")
-        self.count("requests")
-        key = f"{route}:{disposition}"
-        self._routes[key] = self._routes.get(key, 0) + 1
 
     def observe_event_loop_lag(self, lag_ns: int) -> None:
         """Record the largest observed scheduler delay from an external loop probe."""
@@ -230,7 +215,6 @@ class SpanRecorder:
             "wall_ns": end - self._started,
             "spans": list(aggregates.values()),
             "counts": self._counts.copy(),
-            "routes": self._routes.copy(),
             "dropped_events": self._dropped,
             "event_loop_lag_ns": self._event_loop_lag_ns,
         }

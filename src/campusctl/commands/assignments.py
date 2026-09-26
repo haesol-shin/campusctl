@@ -12,230 +12,45 @@ from campusctl.domain_catalog import domain_catalog_path, read_domain_catalog
 from campusctl.envelope import CampusError, UsageError
 from campusctl.paths import data_dir
 
-_LMS = "https://dcs-learning.cnu.ac.kr"
-_OPERATION = "assignments.sync"
-_FETCH_OPERATION = "assignments.fetch"
+CAPABILITY = {"commands": ["list"]}
 
-
-def _pin(path: str, method: str, query: dict[str, str] | None = None) -> dict[str, Any]:
-    route: dict[str, Any] = {"origin": _LMS, "path": path, "operation": _OPERATION, "methods": [method]}
-    if query is not None:
-        route["query"] = query
-    return route
-
-
-def _suppress(name: str, path: str, method: str, reason: str, origin: str = _LMS) -> dict[str, Any]:
-    return {
-        "name": name,
-        "origin": origin,
-        "path_template": path,
-        "operation": _OPERATION,
-        "methods": [method],
-        "reason": reason,
+_DETAIL_TIMEOUT_STEPS = frozenset(
+    {
+        "settling CNU course requests",
+        "opening a CNU course",
+        "waiting for the CNU course menu",
+        "opening the CNU course section",
+        "waiting for CNU task rows",
+        "checking the selected CNU task course",
+        "binding the selected task row",
+        "checking the selected task ID",
+        "opening the selected CNU task",
+        "waiting for CNU task detail",
+        "finishing CNU task detail",
+        "verifying CNU task detail identity",
+        "waiting for selected CNU task content",
+        "reading selected CNU task brief",
     }
+)
 
 
-CAPABILITY = {
-    "commands": ["list"],
-    "policy": {
-        "approved": True,
-        "read_only_evidence": "2026-09-25 sanitized LMS report §§1.1,2,4.1,5 and owner LMS pins decision",
-        "origins": [_LMS],
-        "routes": [
-            _pin("/std/myLecture", "GET"),
-            _pin("/std/lecture", "GET"),
-            _pin("/api/v1/course/addSessionCourseInfo", "POST"),
-            _pin("/std/task", "GET"),
-            _pin("/api/v1/task/stdList", "POST"),
-            _pin("/api/v1/user/getUserInfo", "POST"),
-            _pin("/api/v1/user/getMenuList", "POST"),
-            _pin("/api/v1/alarm/getAlarmListByDate", "POST"),
-            _pin("/api/v1/course/getCeShortcuts", "POST"),
-            _pin("/api/v1/course/get", "POST"),
-            _pin("/api/v1/common/checkEnableUrl", "POST"),
-            _pin("/api/v1/boardM/getBoardItemList", "POST"),
-            _pin("/api/v1/term/getYearTermList", "POST"),
-            _pin("/api/v1/course/getStdMyCourseList", "POST"),
-            _pin("/api/v1/board/courseNotice/list", "POST"),
-            _pin("/api/v1/week/getStdWeekList", "POST"),
-            _pin("/api/v1/week/getStdEtcList", "POST"),
-            {
-                **_pin("/api/v1/week/getStdActivityStatus", "POST"),
-                "logging_token_reviewed": True,
-                "resource_type": "xhr",
-            },
-            _pin("/api/v1/survey/getApplyPopList", "POST"),
-            _pin("/api/v1/board/popup/noticeList", "POST"),
-            _pin("/properties/messages.properties", "GET", {"_": "cachebuster"}),
-            _pin("/properties/messages_ko.properties", "GET", {"_": "cachebuster"}),
-        ],
-        "suppress": [
-            _suppress("panopto-script", "/js/common/panopto-{hash}.js", "GET", "media-integration"),
-            _suppress("panopto-saml-script", "/js/common/panoptoSaml-{hash}.js", "GET", "media-integration"),
-            _suppress(
-                "panopto-sso-popup",
-                "/Panopto/Pages/Auth/Login.aspx",
-                "POST",
-                "panopto-sso-popup",
-                "https://cnu.ap.panopto.com",
-            ),
-            _suppress("course-roster-image", "/upload/dunetadmin/college/{hash}.png", "GET", "course-roster-image"),
-            _suppress("favicon-icon", "/assets/images/favicon-{hash}.ico", "GET", "favicon"),
-            _suppress("external-telemetry", "/v1/events", "POST", "telemetry", "http://0.0.0.0:3000"),
-            _suppress("external-telemetry-localhost", "/v1/events", "POST", "telemetry", "http://localhost:3000"),
-            _suppress("panopto-disconnection-log", "/api/v1/panopto/addInternetDisconnectionLog", "POST", "logging"),
-            _suppress("panopto-connectivity-check", "/api/v1/panopto/checkInternetConnection", "GET", "logging"),
-        ],
-        "static_asset_origins": [_LMS],
-        "static_resource_types": ["script", "stylesheet", "font", "image"],
-        "selected_file_routes": [],
-        "allowed_media": [],
-        "max_bytes": None,
-    },
-}
-FETCH_POLICY = {
-    "approved": True,
-    "read_only_evidence": "2026-09-25 sanitized LMS report §§1.5,2 and owner LMS pins decision",
-    "origins": [_LMS],
-    "routes": [
-        {"origin": _LMS, "path": "/std/myLecture", "operation": _FETCH_OPERATION, "methods": ["GET"]},
-        {"origin": _LMS, "path": "/std/lecture", "operation": _FETCH_OPERATION, "methods": ["GET"]},
-        {
-            "origin": _LMS,
-            "path": "/api/v1/week/getStdActivityStatus",
-            "operation": _FETCH_OPERATION,
-            "methods": ["POST"],
-            "logging_token_reviewed": True,
-            "resource_type": "xhr",
-        },
-        {"origin": _LMS, "path": "/std/task", "operation": _FETCH_OPERATION, "methods": ["GET"]},
-        {
-            "origin": _LMS,
-            "path": "/std/taskView",
-            "operation": _FETCH_OPERATION,
-            "methods": ["GET"],
-            "query": {"curPage": "page"},
-        },
-        {
-            "origin": _LMS,
-            "path": "/properties/messages.properties",
-            "operation": _FETCH_OPERATION,
-            "methods": ["GET"],
-            "query": {"_": "cachebuster"},
-        },
-        {
-            "origin": _LMS,
-            "path": "/properties/messages_ko.properties",
-            "operation": _FETCH_OPERATION,
-            "methods": ["GET"],
-            "query": {"_": "cachebuster"},
-        },
-        {
-            "origin": _LMS,
-            "path": "/api/v1/course/addSessionCourseInfo",
-            "operation": _FETCH_OPERATION,
-            "methods": ["POST"],
-        },
-        {"origin": _LMS, "path": "/api/v1/user/getUserInfo", "operation": _FETCH_OPERATION, "methods": ["POST"]},
-        {"origin": _LMS, "path": "/api/v1/user/getMenuList", "operation": _FETCH_OPERATION, "methods": ["POST"]},
-        {
-            "origin": _LMS,
-            "path": "/api/v1/alarm/getAlarmListByDate",
-            "operation": _FETCH_OPERATION,
-            "methods": ["POST"],
-        },
-        {"origin": _LMS, "path": "/api/v1/course/getCeShortcuts", "operation": _FETCH_OPERATION, "methods": ["POST"]},
-        {"origin": _LMS, "path": "/api/v1/common/checkEnableUrl", "operation": _FETCH_OPERATION, "methods": ["POST"]},
-        {"origin": _LMS, "path": "/api/v1/boardM/getBoardItemList", "operation": _FETCH_OPERATION, "methods": ["POST"]},
-        {"origin": _LMS, "path": "/api/v1/term/getYearTermList", "operation": _FETCH_OPERATION, "methods": ["POST"]},
-        {
-            "origin": _LMS,
-            "path": "/api/v1/course/getStdMyCourseList",
-            "operation": _FETCH_OPERATION,
-            "methods": ["POST"],
-        },
-        {"origin": _LMS, "path": "/api/v1/course/get", "operation": _FETCH_OPERATION, "methods": ["POST"]},
-        {"origin": _LMS, "path": "/api/v1/board/courseNotice/list", "operation": _FETCH_OPERATION, "methods": ["POST"]},
-        {"origin": _LMS, "path": "/api/v1/week/getStdWeekList", "operation": _FETCH_OPERATION, "methods": ["POST"]},
-        {"origin": _LMS, "path": "/api/v1/week/getStdEtcList", "operation": _FETCH_OPERATION, "methods": ["POST"]},
-        {"origin": _LMS, "path": "/api/v1/survey/getApplyPopList", "operation": _FETCH_OPERATION, "methods": ["POST"]},
-        {"origin": _LMS, "path": "/api/v1/board/popup/noticeList", "operation": _FETCH_OPERATION, "methods": ["POST"]},
-        {"origin": _LMS, "path": "/api/v1/task/stdList", "operation": _FETCH_OPERATION, "methods": ["POST"]},
-        {"origin": _LMS, "path": "/api/v1/task/detail", "operation": _FETCH_OPERATION, "methods": ["POST"]},
-        {"origin": _LMS, "path": "/api/v1/task/stdDetail", "operation": _FETCH_OPERATION, "methods": ["POST"]},
-    ],
-    "suppress": [
-        {
-            "name": "panopto-script",
-            "origin": _LMS,
-            "path_template": "/js/common/panopto-{hash}.js",
-            "operation": _FETCH_OPERATION,
-            "methods": ["GET"],
-            "reason": "media-integration",
-        },
-        {
-            "name": "course-roster-image",
-            "origin": _LMS,
-            "path_template": "/upload/dunetadmin/college/{hash}.png",
-            "operation": _FETCH_OPERATION,
-            "methods": ["GET"],
-            "reason": "course-roster-image",
-        },
-        {
-            "name": "favicon-icon",
-            "origin": _LMS,
-            "path_template": "/assets/images/favicon-{hash}.ico",
-            "operation": _FETCH_OPERATION,
-            "methods": ["GET"],
-            "reason": "favicon",
-        },
-        {
-            "name": "external-telemetry",
-            "origin": "http://0.0.0.0:3000",
-            "path_template": "/v1/events",
-            "operation": _FETCH_OPERATION,
-            "methods": ["POST"],
-            "reason": "telemetry",
-        },
-        {
-            "name": "external-telemetry-localhost",
-            "origin": "http://localhost:3000",
-            "path_template": "/v1/events",
-            "operation": _FETCH_OPERATION,
-            "methods": ["POST"],
-            "reason": "telemetry",
-        },
-        {
-            "name": "panopto-sso-popup",
-            "origin": "https://cnu.ap.panopto.com",
-            "path_template": "/Panopto/Pages/Auth/Login.aspx",
-            "operation": _FETCH_OPERATION,
-            "methods": ["POST"],
-            "reason": "panopto-sso-popup",
-        },
-        {
-            "name": "panopto-disconnection-log",
-            "origin": _LMS,
-            "path_template": "/api/v1/panopto/addInternetDisconnectionLog",
-            "operation": _FETCH_OPERATION,
-            "methods": ["POST"],
-            "reason": "logging",
-        },
-        {
-            "name": "panopto-connectivity-check",
-            "origin": _LMS,
-            "path_template": "/api/v1/panopto/checkInternetConnection",
-            "operation": _FETCH_OPERATION,
-            "methods": ["GET"],
-            "reason": "logging",
-        },
-    ],
-    "static_asset_origins": [_LMS],
-    "static_resource_types": ["script", "stylesheet", "font", "image"],
-    "selected_file_routes": [],
-    "allowed_media": [],
-    "max_bytes": 200_000_000,
-}
+def _fetch_error(step: str, error: Exception) -> CampusError:
+    code = error.code if isinstance(error, CampusError) else "fetch-failed"
+    status = error.status if isinstance(error, CampusError) else "error"
+    if step == "detail capture" and isinstance(error, CampusError) and code == "browser-timeout":
+        detail_step = error.message.removeprefix("Timed out while ").removesuffix(".")
+        if error.message == f"Timed out while {detail_step}." and detail_step in _DETAIL_TIMEOUT_STEPS:
+            return CampusError(
+                code, f"Assignments fetch: {detail_step} timed out.", "Check the browser and retry.", status
+            )
+    remediation = {
+        "catalog load": "Sync assignments again and retry.",
+        "configuration load": "Check campusctl configuration and retry.",
+        "authentication": "Sign in and retry.",
+        "detail capture": "Sync assignments again and select the current full ID.",
+        "package creation": "Retry the fetch and inspect unsupported resources.",
+    }.get(step, "Check the browser session and retry.")
+    return CampusError(code, f"Assignments fetch: {step} failed.", remediation, status)
 
 
 def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -262,22 +77,25 @@ def dispatch(args: argparse.Namespace) -> tuple[dict[str, Any], CampusError | li
     if command == "fetch":
         entity_id = getattr(args, "entity_id", None)
         if not isinstance(entity_id, str) or not entity_id.strip():
-            raise UsageError("an entity ID is required")
+            raise UsageError("Assignments fetch selection: an entity ID is required")
         root = data_dir()
         cat_path = domain_catalog_path("assignments", root)
         if not cat_path.exists():
             raise CampusError(
                 "catalog-missing",
-                "Assignment catalog is missing.",
+                "Assignments fetch catalog lookup: catalog is missing.",
                 "Run 'campusctl sync --only assignments' to create it.",
                 "user-action",
             )
-        catalog = read_domain_catalog("assignments", cat_path)
+        try:
+            catalog = read_domain_catalog("assignments", cat_path)
+        except Exception as exc:
+            raise _fetch_error("catalog load", exc) from exc
         matching = [r for r in catalog.get("assignments", []) if r.get("entity_id") == entity_id]
         if len(matching) != 1:
             raise CampusError(
                 "entity-unknown",
-                "The selected assignment ID is not in the catalog.",
+                "Assignments fetch selection: selected ID is not in the catalog.",
                 "Select one full ID from 'campusctl assignments list'.",
                 "user-action",
             )
@@ -288,7 +106,7 @@ def dispatch(args: argparse.Namespace) -> tuple[dict[str, Any], CampusError | li
             if p.exists() or p.is_symlink():
                 raise CampusError(
                     "output-path-conflict",
-                    "Selected output path already exists.",
+                    "Assignments fetch output selection: output path already exists.",
                     "Choose a nonexistent destination path with --out.",
                     "user-action",
                 )
@@ -297,13 +115,27 @@ def dispatch(args: argparse.Namespace) -> tuple[dict[str, Any], CampusError | li
         from campusctl.browser_options import preflight_browser_mode
         from campusctl.config import load_config
 
-        config = load_config()
+        try:
+            config = load_config()
+        except Exception as exc:
+            raise _fetch_error("configuration load", exc) from exc
         headless_override = getattr(args, "headless_override", None)
-        mode = preflight_browser_mode(config, "assignments.fetch", override=headless_override)
+        try:
+            mode = preflight_browser_mode(config, "assignments.fetch", override=headless_override)
+        except CampusError as exc:
+            raise CampusError(
+                exc.code, f"Assignments fetch browser preflight: {exc.message}", exc.remediation, exc.status
+            ) from exc
         pkg = asyncio.run(_fetch_assignment(config, root, row, out=out_path, headless=mode))
         errors = (
-            [CampusError("resource-omitted", "Some resources were omitted by reviewed policy.", status="user-action")]
-            if pkg.get("completeness") == "policy-filtered"
+            [
+                CampusError(
+                    "resource-omitted",
+                    "Assignments fetch packaging: some resources are unsupported.",
+                    status="user-action",
+                )
+            ]
+            if pkg.get("completeness") == "partial"
             else None
         )
         return {"source_package": pkg}, errors
@@ -321,41 +153,40 @@ async def _fetch_assignment(
     from campusctl.browser import open_session, settle_sso_popups
     from campusctl.providers.cnu.assignment_detail import capture_assignment_detail
     from campusctl.providers.cnu.login import ensure_logged_in
-    from campusctl.providers.cnu.request_policy import RequestPolicy
-    from campusctl.providers.cnu.ui_policy import UiRequestDiagnostics, UiRequestPolicy, install_ui_request_interceptor
     from campusctl.source_package import build_source_package
 
-    ui_policy = UiRequestPolicy.from_reviewed_config(FETCH_POLICY)
-    if not ui_policy.approved:
-        raise CampusError("policy-blocked", "The reviewed assignment fetch policy is unavailable.", None, "error")
-    diagnostics = UiRequestDiagnostics()
-    request_policy = RequestPolicy(ui_policy, "assignment", diagnostics)
-
-    async with open_session(config, data_dir=root, headless=headless, operation="assignments.fetch") as session:
-        page = session.page
-        await ensure_logged_in(page, config)
-        await settle_sso_popups(session, domain="assignments")
-        interceptor = await install_ui_request_interceptor(
-            session.context,
-            ui_policy,
-            operation="assignments.fetch",
-            diagnostics=diagnostics,
-        )
-        snapshot = await capture_assignment_detail(page, config, row)
-        interceptor.raise_if_denied()
-        result = await build_source_package(
-            page,
-            snapshot,
-            entity_id=row["entity_id"],
-            kind="assignment",
-            course_id=row["course"]["id"],
-            course_label=row["course"]["label"],
-            root=root,
-            policy=request_policy,
-            out=out,
-            interceptor=interceptor,
-        )
-        return result
+    try:
+        async with open_session(config, data_dir=root, headless=headless, operation="assignments.fetch") as session:
+            page = session.page
+            try:
+                await ensure_logged_in(page, config)
+            except Exception as exc:
+                raise _fetch_error("authentication", exc) from exc
+            try:
+                await settle_sso_popups(session, domain="assignments")
+            except Exception as exc:
+                raise _fetch_error("SSO settlement", exc) from exc
+            try:
+                snapshot = await capture_assignment_detail(page, config, row)
+            except Exception as exc:
+                raise _fetch_error("detail capture", exc) from exc
+            try:
+                return await build_source_package(
+                    page,
+                    snapshot,
+                    entity_id=row["entity_id"],
+                    kind="assignment",
+                    course_id=row["course"]["id"],
+                    course_label=row["course"]["label"],
+                    root=root,
+                    out=out,
+                )
+            except Exception as exc:
+                raise _fetch_error("package creation", exc) from exc
+    except Exception as exc:
+        if isinstance(exc, CampusError) and exc.message.startswith("Assignments fetch:"):
+            raise
+        raise _fetch_error("browser session", exc) from exc
 
 
 async def sync(
@@ -363,7 +194,7 @@ async def sync(
 ) -> tuple[dict[str, Any], list[CampusError]]:
     from campusctl.providers.cnu.assignments import sync_assignments
 
-    return await sync_assignments(config, root, course_id, headless=headless, reviewed_policy=CAPABILITY["policy"])
+    return await sync_assignments(config, root, course_id, headless=headless)
 
 
 def _updated(value: object) -> str:

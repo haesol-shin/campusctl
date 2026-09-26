@@ -1,4 +1,4 @@
-"""Synthetic archive metadata and guarded catalog sync tests (no LMS session)."""
+"""Synthetic archive metadata and catalog sync tests (no LMS session)."""
 
 from __future__ import annotations
 
@@ -14,19 +14,6 @@ from campusctl.envelope import CampusError
 from campusctl.providers.cnu import materials
 
 _FIXTURE = Path(__file__).parent / "fixtures/lms_sources/materials_archive.json"
-
-
-class FakeGuard:
-    def __init__(self) -> None:
-        self.closed = False
-        self.denied = False
-
-    def raise_if_denied(self) -> None:
-        if self.denied:
-            raise CampusError("policy-blocked", "Blocked", None, "error")
-
-    async def close(self) -> None:
-        self.closed = True
 
 
 class FakeRequest:
@@ -66,7 +53,6 @@ class FakePage:
         self.post = None
         self.view = "archive"
         self.modal_open = False
-        self.guard = FakeGuard()
         self.main_frame = SimpleNamespace(url="https://dcs-learning.cnu.ac.kr/std/archive")
         self.listeners = {}
         self.responses = []
@@ -239,9 +225,9 @@ def test_archive_fixture_cases() -> None:
         page = FakePage({**case, "course": data["course"]}, [])
         if case.get("fails"):
             with pytest.raises((CampusError, ValueError)):
-                asyncio.run(materials.enumerate_archive(page, data["course"], page.guard))
+                asyncio.run(materials.enumerate_archive(page, data["course"]))
         else:
-            rows = asyncio.run(materials.enumerate_archive(page, data["course"], page.guard))
+            rows = asyncio.run(materials.enumerate_archive(page, data["course"]))
             assert len(rows) == sum(len(p.get("modal") or p.get("inline") or []) for p in case["posts"])
             assert len({row["entity_id"] for row in rows}) == len(rows)
             assert all(row["archive_entry"]["board_item_id"] for row in rows)
@@ -268,7 +254,7 @@ def test_archive_waits_for_attachment_request_completion() -> None:
     data = fixture()
     case = next(case for case in data["cases"] if case["name"] == "official-list-filename")
     page = FakePage({**case, "course": data["course"], "delayed_attachment": True}, [])
-    rows = asyncio.run(materials.enumerate_archive(page, data["course"], page.guard))
+    rows = asyncio.run(materials.enumerate_archive(page, data["course"]))
     assert rows[0]["filename"] == "original.pdf"
 
 
@@ -287,7 +273,7 @@ def test_inline_controls_belong_to_selected_post_before_duplicate_check() -> Non
         },
     ]
     page = FakePage({"course": course, "posts": posts}, [])
-    rows = asyncio.run(materials.enumerate_archive(page, course, page.guard))
+    rows = asyncio.run(materials.enumerate_archive(page, course))
     assert [(row["archive_entry"]["board_item_id"], row["file_id"]) for row in rows] == [
         ("board-a", "file-a"),
         ("board-b", "file-b"),
@@ -306,7 +292,7 @@ def test_unresolved_inline_row_does_not_borrow_other_post_controls() -> None:
     ]
     page = FakePage({"course": course, "posts": posts, "missing_inline_rows": ["board-missing"]}, [])
     with pytest.raises(CampusError, match="unresolved") as exc:
-        asyncio.run(materials.enumerate_archive(page, course, page.guard))
+        asyncio.run(materials.enumerate_archive(page, course))
     assert exc.value.code == "course-sync-failed"
 
 
@@ -315,7 +301,7 @@ def test_modal_inline_detail_and_course_failure() -> None:
     case = next(c for c in data["cases"] if c["name"] == "duplicate-id")
     page = FakePage({**case, "course": data["course"]}, [])
     with pytest.raises(CampusError, match="enumerate") as exc:
-        asyncio.run(materials.enumerate_archive(page, data["course"], page.guard))
+        asyncio.run(materials.enumerate_archive(page, data["course"]))
     assert exc.value.code == "item-identity-missing"
 
 
@@ -327,11 +313,9 @@ def test_material_collector_validates_entry_response_and_preserves_full_records(
     page = FakePage({**case, "course": data["course"], "wrong_restore_course": wrong_restore_course}, [])
 
     async def collect():
-        capture = await materials.arm_materials_capture(page, page.guard)
-        await materials.open_materials_section(
-            page, page.guard, lambda: page.click(materials._ARCHIVE_MENU), capture=capture
-        )
-        return await materials.collect_materials_rows(page, data["course"], page.guard, capture=capture)
+        capture = await materials.arm_materials_capture(page)
+        await materials.open_materials_section(page, lambda: page.click(materials._ARCHIVE_MENU), capture=capture)
+        return await materials.collect_materials_rows(page, data["course"], capture=capture)
 
     if wrong_restore_course:
         with pytest.raises(ValueError, match="archive table did not complete"):
@@ -352,12 +336,10 @@ def test_material_collector_rejects_duplicate_entry_list() -> None:
     page = FakePage({**case, "course": data["course"]}, [])
 
     async def collect():
-        capture = await materials.arm_materials_capture(page, page.guard)
-        await materials.open_materials_section(
-            page, page.guard, lambda: page.click(materials._ARCHIVE_MENU), capture=capture
-        )
+        capture = await materials.arm_materials_capture(page)
+        await materials.open_materials_section(page, lambda: page.click(materials._ARCHIVE_MENU), capture=capture)
         page._request(materials._ARCHIVE_LIST, "POST")
-        return await materials.collect_materials_rows(page, data["course"], page.guard, capture=capture)
+        return await materials.collect_materials_rows(page, data["course"], capture=capture)
 
     with pytest.raises(CampusError):
         asyncio.run(collect())
@@ -378,11 +360,9 @@ def test_material_collector_fails_entire_course_without_detail_fallback(case_nam
     page = FakePage({**case, "course": data["course"]}, events)
 
     async def collect() -> None:
-        capture = await materials.arm_materials_capture(page, page.guard)
-        await materials.open_materials_section(
-            page, page.guard, lambda: page.click(materials._ARCHIVE_MENU), capture=capture
-        )
-        await materials.collect_materials_rows(page, data["course"], page.guard, capture=capture)
+        capture = await materials.arm_materials_capture(page)
+        await materials.open_materials_section(page, lambda: page.click(materials._ARCHIVE_MENU), capture=capture)
+        await materials.collect_materials_rows(page, data["course"], capture=capture)
 
     with pytest.raises((CampusError, ValueError)) as failure:
         asyncio.run(collect())
@@ -398,12 +378,12 @@ def test_failed_archive_section_open_closes_armed_capture() -> None:
     page = FakePage({"course": data["course"], "posts": []}, [])
 
     async def fail() -> None:
-        capture = await materials.arm_materials_capture(page, page.guard)
+        capture = await materials.arm_materials_capture(page)
 
         async def broken_click() -> None:
             raise RuntimeError("archive menu unavailable")
 
-        await materials.open_materials_section(page, page.guard, broken_click, capture=capture)
+        await materials.open_materials_section(page, broken_click, capture=capture)
 
     with pytest.raises(RuntimeError, match="menu unavailable"):
         asyncio.run(fail())

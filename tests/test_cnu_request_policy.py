@@ -14,43 +14,8 @@ from campusctl.providers.cnu.request_policy import (
     ResponseValidator,
     guard_response,
 )
-from campusctl.providers.cnu.ui_policy import UiRequestPolicy
 
 FIXTURE = json.loads((Path(__file__).parent / "fixtures/lms_sources/materials_responses.json").read_text())
-
-
-def approved_ui() -> UiRequestPolicy:
-    return UiRequestPolicy.from_reviewed_config(
-        {
-            "approved": True,
-            "read_only_evidence": "synthetic-test-evidence",
-            "origins": ["https://dcs-learning.cnu.ac.kr", "https://dcs-lcms.cnu.ac.kr"],
-            "routes": [
-                {
-                    "origin": "https://dcs-learning.cnu.ac.kr",
-                    "path": "/api/v1/archive/fileDownload",
-                    "operation": "materials.download",
-                    "methods": ["POST"],
-                }
-            ],
-            "allowed_media": [],
-            "max_bytes": MAX_ATTACHMENT_BYTES,
-            "selected_file_routes": [
-                {
-                    "origin": "https://dcs-lcms.cnu.ac.kr",
-                    "path_template": "/upload/{storage-id}/{encoded-filename}",
-                    "operation": "materials.download",
-                    "methods": ["GET"],
-                },
-                {
-                    "origin": "https://dcs-learning.cnu.ac.kr",
-                    "path_template": "/file/{term}/{course}/board/{board-manager}/{board-item}/{stored-filename}",
-                    "operation": "materials.download",
-                    "methods": ["GET"],
-                },
-            ],
-        }
-    )
 
 
 def fixture_bytes(item: dict) -> bytes:
@@ -63,22 +28,15 @@ def fixture_bytes(item: dict) -> bytes:
     return output.getvalue()
 
 
-def check_response(item: dict, ui: UiRequestPolicy, saved: Path) -> None:
-    policy = RequestPolicy(ui, item["filename"])
+def check_response(item: dict, saved: Path) -> None:
+    policy = RequestPolicy(item["filename"])
     if item.get("name") == "pptx-duplicate-entry":
         with pytest.warns(UserWarning, match="Duplicate name"):
             body = fixture_bytes(item)
     else:
         body = fixture_bytes(item)
     saved.write_bytes(body)
-    guard_response(
-        policy,
-        "synthetic-selected-url",
-        item["mime"],
-        None,
-        operation="materials.download",
-        selected_file_id="fixture-file-1",
-    )
+    guard_response(policy, item["mime"], None)
     validator = ResponseValidator(policy)
     validator.declared(str(len(body)))
     validator.feed(body[:3])
@@ -87,25 +45,16 @@ def check_response(item: dict, ui: UiRequestPolicy, saved: Path) -> None:
 
 
 def test_selected_response_mime_signature_and_limit(tmp_path: Path) -> None:
-    ui = approved_ui()
-    assert ui.approved
     for item in FIXTURE["responses"]:
         if item["valid"]:
-            check_response(item, ui, tmp_path / "payload")
+            check_response(item, tmp_path / "payload")
         else:
             with pytest.raises(CampusError, match="attachment"):
-                check_response(item, ui, tmp_path / "payload")
+                check_response(item, tmp_path / "payload")
     for mime in ("video/mp4", "audio/mpeg"):
         with pytest.raises(CampusError):
-            guard_response(
-                RequestPolicy(ui, "example.py"),
-                "fixture",
-                mime,
-                None,
-                operation="materials.download",
-                selected_file_id="fixture-file-1",
-            )
-    validator = ResponseValidator(RequestPolicy(ui, "example.txt"))
+            guard_response(RequestPolicy("example.py"), mime, None)
+    validator = ResponseValidator(RequestPolicy("example.txt"))
     validator.declared(str(MAX_ATTACHMENT_BYTES))
     with pytest.raises(CampusError) as oversized:
         validator.declared(str(MAX_ATTACHMENT_BYTES + 1))
@@ -116,18 +65,3 @@ def test_selected_response_mime_signature_and_limit(tmp_path: Path) -> None:
     with pytest.raises(CampusError) as streamed:
         validator.feed(b"x")
     assert streamed.value.code == "file-too-large"
-
-
-def test_response_fixture_cases() -> None:
-    assert {entry["name"] for entry in FIXTURE["responses"]} >= {
-        "observed-pdf",
-        "observed-pptx",
-        "observed-zip",
-        "broken-ole",
-        "unobserved-docx",
-        "invalid-utf8",
-    }
-    assert FIXTURE["get_requests"] == [
-        {"headers": {}, "valid": True},
-        {"headers": {"rAnGe": "bytes=0-"}, "valid": False},
-    ]

@@ -62,10 +62,6 @@ class FakePage:
         return self.rows
 
 
-def _guard(page: FakePage) -> SimpleNamespace:
-    return SimpleNamespace(raise_if_denied=lambda: None)
-
-
 def test_unsupported_domain_is_rejected_before_loading_config(
     capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -92,17 +88,14 @@ def test_busy_session_lock_returns_exit_75(
 
 def test_lecture_collector_uses_committed_section_without_another_selection() -> None:
     page = FakePage([_row("new-a"), _row("other", moduletype="AS")])
-    rows = asyncio.run(sync_module.collect_lectures_rows(page, COURSES[0], _guard(page)))
+    rows = asyncio.run(sync_module.collect_lectures_rows(page, COURSES[0]))
     assert [row["entity_id"] for row in rows] == ["cnu_lecture:course-a:new-a"]
     assert page.course_clicks == []
 
 
-def test_lecture_collector_empty_and_denial() -> None:
+def test_lecture_collector_empty() -> None:
     page = FakePage([], empty=True)
-    assert asyncio.run(sync_module.collect_lectures_rows(page, COURSES[0], _guard(page))) == []
-    denied = SimpleNamespace(raise_if_denied=lambda: (_ for _ in ()).throw(CampusError("policy-blocked", "Blocked")))
-    with pytest.raises(CampusError, match="Blocked"):
-        asyncio.run(sync_module.collect_lectures_rows(page, COURSES[0], denied))
+    assert asyncio.run(sync_module.collect_lectures_rows(page, COURSES[0])) == []
 
 
 def test_missing_lecture_topbar_fails_after_bounded_wait(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -111,7 +104,7 @@ def test_missing_lecture_topbar_fails_after_bounded_wait(monkeypatch: pytest.Mon
     monkeypatch.setattr(course_context, "COURSE_MENU_TIMEOUT_MS", 25)
     page = FakePage([_row("new-a")], topbar_id=None)
     with pytest.raises(CampusError) as caught:
-        asyncio.run(sync_module.collect_lectures_rows(page, COURSES[0], _guard(page)))
+        asyncio.run(sync_module.collect_lectures_rows(page, COURSES[0]))
     assert caught.value.code == "browser-timeout"
 
 
@@ -121,7 +114,7 @@ def test_lecture_collector_keeps_non_counted_recorded_rows_out_of_incomplete_cou
     youtube["progress_text"] = "20분/20분"
     youtube["row_text"] = "Lecture non-counted 20분/20분 출석 미반영"
     page = FakePage([youtube, _row("incomplete")])
-    rows = asyncio.run(sync_module.collect_lectures_rows(page, COURSES[0], _guard(page)))
+    rows = asyncio.run(sync_module.collect_lectures_rows(page, COURSES[0]))
     assert [(record["completion"], record["provider_state"]) for record in rows] == [
         ("recorded", "N"),
         ("incomplete", "N"),

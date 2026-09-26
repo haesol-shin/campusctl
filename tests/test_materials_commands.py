@@ -15,7 +15,6 @@ from campusctl.domain_catalog import write_domain_catalog
 from campusctl.providers.cnu import attachment_transfer
 from campusctl.providers.cnu import materials as provider
 from campusctl.providers.cnu.sync_all import DomainOutcome
-from campusctl.providers.cnu.ui_policy import UiRequestPolicy
 
 ID = "cnu_lms_material:course-a:file-1"
 ROW = {
@@ -77,16 +76,10 @@ def test_sync_list_human_json_and_staleness(
     ) == ["Synced 1 course, 2 materials."]
 
 
-def test_discovery_only_exposes_reviewed_materials() -> None:
+def test_discovery_exposes_materials_without_ui_request_policy() -> None:
     assert discover_domain_modules()["materials"] is materials
     assert cli.CAPABILITIES["materials"] == ["list", "download"]
-    assert UiRequestPolicy.from_reviewed_config(materials.CAPABILITY["policy"]).approved
-    assert materials.CAPABILITY["policy"]["max_bytes"] == 200_000_000
-    assert {entry["mime"] for entry in materials.CAPABILITY["policy"]["allowed_media"]} == {
-        "application/x-pdf",
-        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-        "application/zip",
-    }
+    assert materials.CAPABILITY == {"commands": ["list", "download"]}
 
 
 def _fake_network(
@@ -123,13 +116,6 @@ def _fake_network(
 
             return SimpleNamespace(count=count)
 
-    class Guard:
-        def raise_if_denied(self) -> None:
-            pass
-
-        async def close(self) -> None:
-            calls.append("close")
-
     page = Page()
     page.context = SimpleNamespace()
 
@@ -144,15 +130,10 @@ def _fake_network(
     async def login(*args: Any, **kwargs: Any) -> None:
         calls.append("authenticate")
 
-    async def install(*args: Any, **kwargs: Any) -> Guard:
-        calls.append("interceptor")
-        assert kwargs["diagnostics"] is not None
-        return Guard()
-
-    async def navigate(page: Any, guard: Any, action: Any, **kwargs: Any) -> None:
+    async def navigate(page: Any, action: Any, **kwargs: Any) -> None:
         await action()
 
-    async def step(action: Any, guard: Any, description: str) -> Any:
+    async def step(action: Any, description: str) -> Any:
         return await action
 
     async def prepare(*args: Any) -> None:
@@ -172,14 +153,13 @@ def _fake_network(
     async def state(*args: Any) -> dict[str, Any]:
         return {"total_count": 1, "page_size": 1, "posts": [{"board_item_id": "board-1"}]}
 
-    async def fetch(page: Any, target: Any, policy: Any, directory: Path, *, max_bytes: int, interceptor: Any) -> Any:
+    async def fetch(page: Any, target: Any, policy: Any, directory: Path, *, max_bytes: int) -> Any:
         calls.append("fetch")
         assert target.file_id == "file-1" and target.parent_kind == "archive" and target.parent_id == "board-1"
         expected_modal = '#file_download [data-act="downloadFile"][data-id="file-1"]'
         expected_inline = '#listBody tr:has([data-act="file"][data-boarditem_no="board-1"]) [data-act="downloadFile"][data-id="file-1"]'
         assert target.control_locator == (expected_modal if modal_matches else expected_inline)
-        assert max_bytes == 200_000_000 and policy.diagnostics is not None
-        assert interceptor is not None
+        assert max_bytes == 200_000_000 and policy.filename == "example.pdf"
         temp = directory / ".attachment-synthetic"
         temp.write_bytes(BYTES)
         return attachment_transfer.FetchedAttachment(
@@ -189,7 +169,6 @@ def _fake_network(
     monkeypatch.setattr("campusctl.material_files.default_download_dir", lambda: root / "Downloads" / "campusctl")
     monkeypatch.setattr("campusctl.browser.open_session", session)
     monkeypatch.setattr("campusctl.providers.cnu.login.ensure_logged_in", login)
-    monkeypatch.setattr("campusctl.providers.cnu.ui_policy.install_ui_request_interceptor", install)
     monkeypatch.setattr("campusctl.providers.cnu.course_context.prepare_course_section", prepare)
     monkeypatch.setattr("campusctl.providers.cnu.course_context.open_course_section", open_section)
     monkeypatch.setattr(provider, "_archive_navigation", navigate)
@@ -210,7 +189,7 @@ def test_download_selection_policy_and_outcome(
     calls = _fake_network(monkeypatch, tmp_path)
     code, human = _cli(["materials", "download", ID], capsys)
     assert code == 0 and human.startswith("Saved: ")
-    assert calls.index("lock") < calls.index("authenticate") < calls.index("interceptor") < calls.index("fetch")
+    assert calls.index("lock") < calls.index("authenticate") < calls.index("fetch")
     path = tmp_path / "Downloads" / "campusctl" / "Example Course" / "example.pdf"
     assert path.read_bytes() == BYTES and str(path) in human
     assert not (path.parent / ".attachment-synthetic").exists()
@@ -263,7 +242,7 @@ def test_skip_existing_and_restart_after_interruption(
     code, raw = _cli(["materials", "download", ID, "--out", str(destination), "--json"], capsys)
     skipped = json.loads(raw)["result"]["material"]
     assert code == 0 and skipped["outcome"] == "skipped-existing" and skipped["path"] == first["path"]
-    assert calls == ["lock"]  # no authentication, navigation, interceptor, or LMS request
+    assert calls == ["lock"]  # no authentication, navigation, or LMS request
     Path(first["path"]).write_bytes(b"changed")
     calls.clear()
     code, raw = _cli(["materials", "download", ID, "--out", str(destination), "--json"], capsys)

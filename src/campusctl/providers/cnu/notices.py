@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import re
 from collections import Counter
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -148,22 +148,6 @@ def parse_board_rows(
             }
         )
     return result
-
-
-def _error(reason: str) -> CampusError:
-    if reason == "notice-board-paginated":
-        return CampusError(reason, "A notice board has more than one page.", "Review the board and retry.", "error")
-    if reason == "notice-identity-ambiguous":
-        return CampusError(
-            reason, "A notice identity cannot be matched uniquely.", "Review the board and retry.", "error"
-        )
-    if reason == "item-identity-missing":
-        return CampusError(
-            reason, "A notice could not be identified unambiguously.", "Review the LMS notice board and retry.", "error"
-        )
-    return CampusError(
-        "course-sync-failed", "A course notice list could not be completed.", "Check the LMS and retry.", "error"
-    )
 
 
 def _read_state(value: object) -> tuple[str | None, bool | None]:
@@ -336,21 +320,15 @@ class _TodoCapture:
             self.page.remove_listener("framenavigated", self.on_navigate)
 
 
-async def open_notice_todo(page: Any, section_guard: Any) -> _TodoCapture:
+async def open_notice_todo(page: Any) -> _TodoCapture:
     """Navigate to the to-do document and capture its first list XHR."""
-    section_guard.raise_if_denied()
     capture = _TodoCapture(page)
 
     async def navigate() -> None:
-        try:
-            options = {"wait_until": "domcontentloaded"}
-            await bounded(page.goto(_TODO_URL, **options), PROTOCOL_TIMEOUT_SECONDS, "opening notices")
-        finally:
-            section_guard.raise_if_denied()
+        await bounded(page.goto(_TODO_URL, wait_until="domcontentloaded"), PROTOCOL_TIMEOUT_SECONDS, "opening notices")
 
     try:
         await bounded(page.wait_for_load_state("networkidle"), PROTOCOL_TIMEOUT_SECONDS, "settling prior page requests")
-        section_guard.raise_if_denied()
         await navigate()
         if (
             capture.document_sequence is None
@@ -365,12 +343,11 @@ async def open_notice_todo(page: Any, section_guard: Any) -> _TodoCapture:
         raise
 
 
-async def _grid_snapshot(page: Any, interceptor: Any, capture: _TodoCapture) -> list[dict[str, Any]]:
-    """Read the committed, guarded notice grid; per-course coverage is a live release gate."""
+async def _grid_snapshot(page: Any, capture: _TodoCapture) -> list[dict[str, Any]]:
+    """Read the committed notice grid; per-course coverage is a live release gate."""
 
     async def settle(start: int, *, required: bool) -> None:
         await bounded(page.wait_for_load_state("networkidle"), PROTOCOL_TIMEOUT_SECONDS, "settling page requests")
-        interceptor.raise_if_denied()
         window = [request for order, request in capture.requests if order > start]
         if capture.stale_response or len(window) > 1 or (required and len(window) != 1):
             raise ValueError("Notice request was stale, absent or duplicated")
@@ -389,12 +366,9 @@ async def _grid_snapshot(page: Any, interceptor: Any, capture: _TodoCapture) -> 
             raise ValueError("Notice request did not complete successfully")
         response = matching[0]
         await bounded(response.finished(), PROTOCOL_TIMEOUT_SECONDS, "settling the notice list")
-        interceptor.raise_if_denied()
         await bounded(response.json(), PROTOCOL_TIMEOUT_SECONDS, "validating the notice list response")
-        interceptor.raise_if_denied()
 
     try:
-        interceptor.raise_if_denied()
         async with asyncio.timeout(120):
             if capture.committed_sequence is None:
                 raise ValueError("To-do document navigation did not commit")
@@ -418,11 +392,9 @@ async def _grid_snapshot(page: Any, interceptor: Any, capture: _TodoCapture) -> 
                     PROTOCOL_TIMEOUT_SECONDS,
                     "waiting for notice rendering",
                 )
-                interceptor.raise_if_denied()
                 snapshot = await bounded(
                     page.evaluate(_EXTRACT_GRID_JS), PROTOCOL_TIMEOUT_SECONDS, "extracting notice grid"
                 )
-                interceptor.raise_if_denied()
                 if not isinstance(snapshot, dict) or not isinstance(snapshot.get("rows"), list):
                     raise ValueError("Notice grid was not rendered")
                 page_rows = snapshot["rows"]
@@ -443,10 +415,7 @@ async def _grid_snapshot(page: Any, interceptor: Any, capture: _TodoCapture) -> 
                 if next_page not in {'.tabulator-page[data-page="next"]', '[data-act="loadMore"]', ".load-more"}:
                     raise ValueError("Unknown notice pagination control")
                 window_start = capture.sequence
-                try:
-                    await bounded(page.click(next_page), PROTOCOL_TIMEOUT_SECONDS, "opening next notice page")
-                finally:
-                    interceptor.raise_if_denied()
+                await bounded(page.click(next_page), PROTOCOL_TIMEOUT_SECONDS, "opening next notice page")
     finally:
         capture.close()
 
@@ -509,9 +478,8 @@ def _board_item(item: dict[str, Any], course_id: str) -> dict[str, Any] | None:
 class _NoticeCapture:
     """Keep the board's request identities and document boundary from before navigation."""
 
-    def __init__(self, page: Any, section_guard: Any, *, armed: bool = True) -> None:
+    def __init__(self, page: Any, *, armed: bool = True) -> None:
         self.page = page
-        self.section_guard = section_guard
         self.requests: list[tuple[int, Any]] = []
         self.responses: list[Any] = []
         self.sequence = 0
@@ -561,16 +529,13 @@ class _NoticeCapture:
             self.page.remove_listener("framenavigated", self.on_navigate)
 
     async def collect(self, page: Any, course: dict[str, Any], courses: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        interceptor = self.section_guard
         requests, responses, commit, notice_document = (
             self.requests,
             self.responses,
             self.commit,
             self.notice_document,
         )
-        interceptor.raise_if_denied()
         await bounded(page.wait_for_load_state("networkidle"), PROTOCOL_TIMEOUT_SECONDS, "settling notice board")
-        interceptor.raise_if_denied()
         if self.stale or commit is None or notice_document is None or commit < notice_document:
             raise ValueError("Notice navigation did not commit cleanly")
         board_sequences: list[int] = []
@@ -603,7 +568,6 @@ class _NoticeCapture:
                 top_items = items
             else:
                 list_items, list_total = items, total
-            interceptor.raise_if_denied()
         if board_sequences != sorted(board_sequences) or board_sequences[0] == board_sequences[1]:
             raise ValueError("Board responses arrived out of request order")
         context = await bounded(
@@ -628,7 +592,6 @@ class _NoticeCapture:
             raise ValueError("Notice board course name is not unique")
         with profile_span("extract", domain="notices"):
             snapshot = await bounded(page.evaluate(_EXTRACT_BOARD_JS), PROTOCOL_TIMEOUT_SECONDS, "reading notice board")
-        interceptor.raise_if_denied()
         if not isinstance(snapshot, dict) or type(snapshot.get("row_count")) is not int:
             raise ValueError("Notice board did not render")
         if (
@@ -681,13 +644,11 @@ class _NoticeCapture:
             for path in ("/api/v1/board/notice/list/top", "/api/v1/board/notice/list")
         ):
             raise ValueError("Board response changed during extraction")
-        interceptor.raise_if_denied()
         return list(rows_by_id.values())
 
 
 async def collect_notice_todo(
     page: Any,
-    section_guard: Any,
     courses: list[dict[str, Any]],
     *,
     capture: _TodoCapture,
@@ -695,20 +656,17 @@ async def collect_notice_todo(
 ) -> tuple[dict[str, list[dict[str, Any]]], set[str]]:
     """Read the committed global to-do once; failure cannot confirm an empty board."""
     with profile_span("todo", domain="notices"):
-        rows = await _grid_snapshot(page, section_guard, capture)
-        section_guard.raise_if_denied()
+        rows = await _grid_snapshot(page, capture)
         return parse_notice_rows(rows, courses, selected_course_id=selected_course_id)
 
 
-def arm_notice_capture(page: Any, section_guard: Any) -> _NoticeCapture:
+def arm_notice_capture(page: Any) -> _NoticeCapture:
     """Arm the board observer before its section document is opened."""
-    section_guard.raise_if_denied()
-    return _NoticeCapture(page, section_guard)
+    return _NoticeCapture(page)
 
 
 async def open_notice_section(
     page: Any,
-    section_guard: Any,
     action: Callable[[], Any],
     *,
     capture: _NoticeCapture | None = None,
@@ -725,7 +683,6 @@ async def open_notice_section(
 async def collect_notice_rows(
     page: Any,
     course: dict[str, Any],
-    section_guard: Any,
     *,
     capture: _NoticeCapture,
     courses: list[dict[str, Any]],
@@ -734,7 +691,6 @@ async def collect_notice_rows(
     """Validate the already-entered board and join its verified global to-do snapshot."""
     try:
         board = await capture.collect(page, course, courses)
-        section_guard.raise_if_denied()
         return parse_board_rows(board, course, todo_rows)
     finally:
         capture.close()
@@ -746,9 +702,8 @@ async def sync_notices(
     course_id: str | None = None,
     *,
     headless: bool = False,
-    reviewed_policy: Mapping[str, Any],
 ) -> tuple[dict[str, Any], list[CampusError]]:
-    """Synchronize notices through the shared guarded course orchestration."""
+    """Synchronize notices through the shared course traversal."""
     from .sync_all import sync_one
 
-    return await sync_one(config, root, "notices", course_id, headless=headless, reviewed_policy=reviewed_policy)
+    return await sync_one(config, root, "notices", course_id, headless=headless)

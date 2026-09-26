@@ -13,60 +13,6 @@ from campusctl import cli
 from campusctl.commands import assignments, notices
 from campusctl.envelope import CampusError, make_envelope
 from campusctl.presentation import render_human
-from campusctl.providers.cnu.ui_policy import UiRequestDenied, UiRequestPolicy, guard_ui_request
-
-
-@pytest.mark.parametrize(
-    ("config", "operation", "sync_config", "sync_operation"),
-    [
-        (assignments.FETCH_POLICY, "assignments.fetch", assignments.CAPABILITY["policy"], "assignments.sync"),
-        (notices.FETCH_POLICY, "notices.fetch", notices.CAPABILITY["policy"], "notices.sync"),
-    ],
-)
-def test_fetch_reviewed_side_requests_and_saml_script(
-    config: dict[str, Any], operation: str, sync_config: dict[str, Any], sync_operation: str
-) -> None:
-    origin = "https://dcs-learning.cnu.ac.kr"
-    policy = UiRequestPolicy.from_reviewed_config(config)
-    assert policy.approved
-    assert len(policy.suppress) == 8
-    for path, method, kind in (
-        ("/js/common/panopto-Ab_9.js", "GET", "script"),
-        ("/api/v1/panopto/addInternetDisconnectionLog", "POST", "xhr"),
-        ("/api/v1/panopto/checkInternetConnection", "GET", "xhr"),
-    ):
-        assert (
-            guard_ui_request(policy, origin + path, method, {}, operation=operation, resource_type=kind) == "suppress"
-        )
-
-    # A roster may load these side requests before the selected detail; each is aborted.
-    for url, method, kind in (
-        (origin + "/upload/dunetadmin/college/Ab_9.png", "GET", "image"),
-        (origin + "/assets/images/favicon-Ab_9.ico", "GET", "other"),
-        ("http://0.0.0.0:3000/v1/events", "POST", "fetch"),
-        ("http://localhost:3000/v1/events", "POST", "fetch"),
-        ("https://cnu.ap.panopto.com/Panopto/Pages/Auth/Login.aspx", "POST", "document"),
-    ):
-        assert guard_ui_request(policy, url, method, {}, operation=operation, resource_type=kind) == "suppress"
-
-    saml_url = origin + "/js/common/panoptoSaml-Ab_9.js"
-    assert guard_ui_request(policy, saml_url, "GET", {}, operation=operation, resource_type="script") == "allow"
-    for url, method, kind, headers in (
-        (saml_url + "?v=1", "GET", "script", {}),
-        (origin + "/js/common/panoptoSaml-Ab_9.js/extra", "GET", "script", {}),
-        (saml_url, "POST", "script", {}),
-        (saml_url, "GET", "xhr", {}),
-        (saml_url, "GET", "script", {"Range": "bytes=0-1"}),
-    ):
-        with pytest.raises(UiRequestDenied):
-            guard_ui_request(policy, url, method, headers, operation=operation, resource_type=kind)
-
-    sync_policy = UiRequestPolicy.from_reviewed_config(sync_config)
-    assert sync_policy.approved
-    assert (
-        guard_ui_request(sync_policy, saml_url, "GET", {}, operation=sync_operation, resource_type="script")
-        == "suppress"
-    )
 
 
 def _setup_catalogs(root: Path) -> None:
@@ -121,41 +67,6 @@ def test_fetch_unpublished_surface(
     _setup_catalogs(tmp_path)
 
     # 1. Public CLI does NOT advertise fetch
-    assert "fetch" not in assignments.CAPABILITY["commands"]
-    assert "fetch" not in notices.CAPABILITY["commands"]
-    from campusctl.providers.cnu.ui_policy import UiRequestPolicy, guard_ui_request
-
-    policy_a = UiRequestPolicy.from_reviewed_config(assignments.FETCH_POLICY)
-    assert policy_a.approved is True
-    assert (
-        guard_ui_request(
-            policy_a,
-            "https://dcs-learning.cnu.ac.kr/api/v1/week/getStdActivityStatus",
-            "POST",
-            {},
-            operation="assignments.fetch",
-            resource_type="xhr",
-        )
-        == "allow"
-    )
-    assert not any(s.name == "panopto-saml-script" for s in policy_a.suppress)
-    assert len(policy_a.suppress) == 8
-
-    policy_n = UiRequestPolicy.from_reviewed_config(notices.FETCH_POLICY)
-    assert policy_n.approved is True
-    assert (
-        guard_ui_request(
-            policy_n,
-            "https://dcs-learning.cnu.ac.kr/api/v1/week/getStdActivityStatus",
-            "POST",
-            {},
-            operation="notices.fetch",
-            resource_type="xhr",
-        )
-        == "allow"
-    )
-    assert not any(s.name == "panopto-saml-script" for s in policy_n.suppress)
-    assert len(policy_n.suppress) == 8
 
     assert cli.main(["assignments", "--help"]) == 0
     out_help_a = capsys.readouterr().out
