@@ -38,6 +38,8 @@ _STATIC_SEGMENTS = frozenset(
 )
 _SAFE_OPERATION = re.compile(r"[^a-z0-9-]")
 _LIMIT = 12
+_COLLECT_TIMEOUT_S = 2.5
+_WRITE_TIMEOUT_S = 1.0
 
 
 def _location(url: str) -> dict[str, str]:
@@ -241,8 +243,10 @@ def _write_record(record: dict[str, Any], operation: str, root: Path) -> Path:
     with os.fdopen(fd, "w", encoding="utf-8") as output:
         json.dump(record, output, separators=(",", ":"), sort_keys=True)
         output.write("\n")
+    # Pruning is best effort: a transient Windows file lock must not discard the saved record.
     for old in sorted(directory.glob("roster-*.json"), reverse=True)[20:]:
-        old.unlink()
+        with contextlib.suppress(OSError):
+            old.unlink()
     return target
 
 
@@ -276,8 +280,8 @@ def _write_in_daemon_thread(record: dict[str, Any], operation: str, root: Path) 
 async def capture_roster_failure(page: Any, *, operation: str, step: str, elapsed_s: float, root: Path) -> Path | None:
     """Write one private JSON snapshot within about three seconds; never raise or block the caller longer."""
     try:
-        record = await asyncio.wait_for(_collect(page, operation, step, elapsed_s), timeout=2.5)
-        target = await asyncio.wait_for(_write_in_daemon_thread(record, operation, root), timeout=1.0)
+        record = await asyncio.wait_for(_collect(page, operation, step, elapsed_s), timeout=_COLLECT_TIMEOUT_S)
+        target = await asyncio.wait_for(_write_in_daemon_thread(record, operation, root), timeout=_WRITE_TIMEOUT_S)
         print(f"Roster diagnostic saved to {target}", file=sys.stderr)
         return target
     except Exception:
