@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from campusctl.browser_options import preflight_browser_mode, resolve_headless
 from campusctl.envelope import CampusError
 from campusctl.lock import exclusive_lock
 from campusctl.paths import data_dir as default_data_dir
@@ -288,13 +289,13 @@ async def open_session(
     config: dict[str, Any],
     *,
     data_dir: Path | None = None,
-    headless: bool = False,
+    headless: bool | None = None,
     operation: str | None = None,
 ) -> AsyncIterator[BrowserSession]:
     if operation is not None:
-        from campusctl.browser_options import preflight_browser_mode
-
-        preflight_browser_mode(config, operation, override=headless)
+        headless = preflight_browser_mode(config, operation, override=headless)
+    else:
+        headless = resolve_headless(config, headless)
     browser_config = config.get("browser", {})
     endpoint = browser_config.get("cdp_endpoint")
     mode = "cdp" if endpoint else "local"

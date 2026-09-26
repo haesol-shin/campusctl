@@ -12,7 +12,7 @@ HEADLESS_SUPPORT: dict[str, bool] = {
     "assignments.sync": False,
     "notices.sync": False,
     "materials.sync": False,
-    "materials.download": False,
+    "materials.download": True,
     "lectures.play": False,
 }
 
