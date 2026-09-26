@@ -4,6 +4,7 @@ import contextlib
 import json
 import os
 import tempfile
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -67,6 +68,8 @@ def _validate_catalog(domain: str, value: Any, path: Path) -> dict[str, Any]:
     for key in ("courses", "failed_courses", domain):
         if not isinstance(value.get(key), list):
             raise _invalid(domain, path, f"is missing its {key} records")
+    if "generation_id" in value and not isinstance(value["generation_id"], str):
+        raise _invalid(domain, path, "has an invalid generation ID")
     return value
 
 
@@ -117,6 +120,7 @@ def write_domain_catalog(domain: Domain, value: dict[str, Any], path: Path | Non
     payload.setdefault("courses", [])
     payload.setdefault("failed_courses", [])
     payload.setdefault(key, [])
+    payload["generation_id"] = uuid.uuid4().hex
     _validate_catalog(key, payload, target)
     try:
         ensure_private_dir(target.parent)

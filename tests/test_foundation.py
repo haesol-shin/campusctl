@@ -890,7 +890,9 @@ def test_catalog_write_is_atomic_and_round_trips(tmp_path: Path) -> None:
         "lectures": [],
     }
     assert catalog.write_catalog(value, target) == target
-    assert catalog.read_catalog(target) == value
+    saved = catalog.read_catalog(target)
+    assert len(saved.pop("generation_id")) == 32
+    assert saved == value
     assert list(target.parent.glob("*.tmp")) == []
     assert list(target.parent.glob(".*.tmp")) == []
 

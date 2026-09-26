@@ -4,6 +4,7 @@ import contextlib
 import json
 import os
 import tempfile
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -38,6 +39,10 @@ def read_catalog(path: Path | None = None) -> dict[str, Any]:
         ) from None
     except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         raise _invalid(target, "could not be read as valid JSON") from None
+    return _validate_catalog(value, target)
+
+
+def _validate_catalog(value: Any, target: Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise _invalid(target, "does not contain an object")
     if type(value.get("schema_version")) is not int or value["schema_version"] != SCHEMA_VERSION:
@@ -49,9 +54,10 @@ def read_catalog(path: Path | None = None) -> dict[str, Any]:
         )
     if not isinstance(value.get("courses"), list) or not isinstance(value.get("lectures"), list):
         raise _invalid(target, "is missing course or lecture records")
-    generated_at = value.get("generated_at")
-    if not isinstance(generated_at, str):
+    if not isinstance(value.get("generated_at"), str):
         raise _invalid(target, "is missing its generated timestamp")
+    if "generation_id" in value and not isinstance(value["generation_id"], str):
+        raise _invalid(target, "has an invalid generation ID")
     return value
 
 
@@ -77,6 +83,7 @@ def write_catalog(value: dict[str, Any], path: Path | None = None) -> Path:
     payload.setdefault("generated_at", datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z"))
     payload.setdefault("courses", [])
     payload.setdefault("lectures", [])
+    payload["generation_id"] = uuid.uuid4().hex
     if not isinstance(payload["courses"], list) or not isinstance(payload["lectures"], list):
         raise CampusError(
             "catalog-invalid",
