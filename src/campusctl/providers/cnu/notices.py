@@ -24,6 +24,7 @@ from campusctl.identity import notice_entity_id
 from .course_context import SECTION_RESPONSE_TIMEOUT_MS, _css_string
 from .courses import COURSE_LINK_SELECTOR, EXTRACT_COURSES_JS, parse_courses
 from .login import MY_LECTURE_URL, ensure_logged_in
+from .roster_diagnostics import capture_roster_failure, start_roster_requests, stop_roster_requests
 from .ui_policy import UiRequestDiagnostics, UiRequestPolicy, install_ui_request_interceptor
 
 _ORIGIN = "https://dcs-learning.cnu.ac.kr"
@@ -741,6 +742,7 @@ async def sync_notices(
         interceptor = await install_ui_request_interceptor(
             page, policy, operation="notices.sync", diagnostics=diagnostics, selected_file=None
         )
+        trace = start_roster_requests(page, headless=headless)
         try:
             try:
                 with profile_span("roster", domain="notices"):
@@ -751,6 +753,7 @@ async def sync_notices(
                             "opening enrolled courses",
                         )
                     interceptor.raise_if_denied()
+                    trace.step = "wait"
                     with profile_span("dom-ready", domain="notices"):
                         await bounded(
                             page.wait_for_selector(COURSE_LINK_SELECTOR),
@@ -758,11 +761,13 @@ async def sync_notices(
                             "waiting for enrolled courses",
                         )
                     interceptor.raise_if_denied()
+                    trace.step = "evaluate"
                     with profile_span("extract", domain="notices"):
                         raw_roster = await bounded(
                             page.evaluate(EXTRACT_COURSES_JS), PROTOCOL_TIMEOUT_SECONDS, "reading enrolled courses"
                         )
                 interceptor.raise_if_denied()
+                trace.step = "parse"
                 if not isinstance(raw_roster, list) or any(
                     not isinstance(course, dict)
                     or not isinstance(course.get("course_id"), str)
@@ -777,11 +782,15 @@ async def sync_notices(
                     raise ValueError("Ambiguous roster")
             except Exception:
                 interceptor.raise_if_denied()
+                await capture_roster_failure(
+                    page, operation="notices.sync", step=trace.step, elapsed_s=trace.elapsed_s, root=root
+                )
                 if course_id is None:
                     mark_enrollment_unknown("notices", root)
                 raise CampusError(
                     "course-discovery-failed", "Enrolled courses could not be discovered.", "Retry the sync.", "error"
                 ) from None
+            stop_roster_requests(page)
             if course_id is not None and not any(course["course_id"] == course_id for course in courses):
                 raise CampusError(
                     "course-not-found",
@@ -854,4 +863,5 @@ async def sync_notices(
                 "catalog": {"generated_at": merged["generated_at"], "enrollment_state": merged["enrollment_state"]},
             }, [_error(entry["reason"]) for entry in failed]
         finally:
+            stop_roster_requests(page)
             await interceptor.close()

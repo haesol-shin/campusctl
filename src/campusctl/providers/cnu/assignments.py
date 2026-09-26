@@ -22,6 +22,7 @@ from campusctl.identity import assignment_entity_id
 from .course_context import SECTION_RESPONSE_TIMEOUT_MS, open_course_section, prepare_course_section
 from .courses import COURSE_LINK_SELECTOR, EXTRACT_COURSES_JS, parse_courses
 from .login import MY_LECTURE_URL, ensure_logged_in
+from .roster_diagnostics import capture_roster_failure, start_roster_requests, stop_roster_requests
 from .ui_policy import UiRequestDiagnostics, UiRequestPolicy, install_ui_request_interceptor
 
 TASK_TABLE_SELECTOR = "#table_list tbody#tbody"
@@ -328,6 +329,7 @@ async def sync_assignments(
         interceptor = await install_ui_request_interceptor(
             session.context, policy, operation="assignments.sync", diagnostics=diagnostics
         )
+        trace = start_roster_requests(page, headless=headless)
         try:
             try:
                 with profile_span("roster", domain="assignments"):
@@ -335,22 +337,27 @@ async def sync_assignments(
                         await bounded(
                             page.goto(MY_LECTURE_URL), PROTOCOL_TIMEOUT_SECONDS, "opening the CNU course roster"
                         )
+                    trace.step = "wait"
                     with profile_span("dom-ready", domain="assignments"):
                         await bounded(
                             page.wait_for_selector(COURSE_LINK_SELECTOR, state="attached", timeout=COURSE_WAIT_MS),
                             PROTOCOL_TIMEOUT_SECONDS,
                             "waiting for the CNU course roster",
                         )
-                    roster = parse_courses(
-                        await bounded(
-                            page.evaluate(EXTRACT_COURSES_JS), PROTOCOL_TIMEOUT_SECONDS, "extracting CNU courses"
-                        )
+                    trace.step = "evaluate"
+                    raw_roster = await bounded(
+                        page.evaluate(EXTRACT_COURSES_JS), PROTOCOL_TIMEOUT_SECONDS, "extracting CNU courses"
                     )
+                    trace.step = "parse"
+                    roster = parse_courses(raw_roster)
                 interceptor.raise_if_denied()
             except Exception as error:
                 interceptor.raise_if_denied()
                 if isinstance(error, CampusError) and error.code in {"login-action-required", "login-failed"}:
                     raise
+                await capture_roster_failure(
+                    page, operation="assignments.sync", step=trace.step, elapsed_s=trace.elapsed_s, root=root
+                )
                 if course_id is None:
                     mark_enrollment_unknown("assignments", root)
                 raise CampusError(
@@ -359,6 +366,7 @@ async def sync_assignments(
                     "Retry assignment sync after the LMS course list loads.",
                     "error",
                 ) from None
+            stop_roster_requests(page)
             courses = roster if course_id is None else [course for course in roster if course["course_id"] == course_id]
             if not courses and course_id is not None:
                 raise CampusError(
@@ -373,6 +381,7 @@ async def sync_assignments(
             successful: set[str] = set()
             for index, course in enumerate(courses):
                 if index:
+                    trace = start_roster_requests(page, headless=headless)
                     try:
                         await bounded(
                             page.goto(MY_LECTURE_URL), PROTOCOL_TIMEOUT_SECONDS, "returning to the CNU course roster"
@@ -380,9 +389,14 @@ async def sync_assignments(
                         interceptor.raise_if_denied()
                     except Exception:
                         interceptor.raise_if_denied()
+                        await capture_roster_failure(
+                            page, operation="assignments.sync", step="goto", elapsed_s=trace.elapsed_s, root=root
+                        )
                         raise CampusError(
                             "course-discovery-failed", "The CNU course roster became unavailable.", None, "error"
                         ) from None
+                    finally:
+                        stop_roster_requests(page)
                 try:
                     with profile_span("extract", domain="assignments", course=index + 1):
                         course_rows = await _course_rows(page, config, course)
@@ -427,4 +441,5 @@ async def sync_assignments(
             }
             return result, errors
         finally:
+            stop_roster_requests(page)
             await interceptor.close()

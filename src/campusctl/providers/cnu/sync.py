@@ -12,6 +12,7 @@ from campusctl.envelope import CampusError
 from .courses import discover_courses
 from .lectures import EXTRACT_LEARNING_ROWS_JS, LEARNING_ROW_SELECTOR, parse_learning_rows
 from .login import COURSE_LINK_SELECTOR, MY_LECTURE_URL, ensure_logged_in
+from .roster_diagnostics import capture_roster_failure, start_roster_requests, stop_roster_requests
 
 COURSE_ROOM_URL_ANCHOR = 'a[href="/std/course"]'
 COURSE_ROOM_TIMEOUT_MS = 7000
@@ -97,11 +98,15 @@ async def sync_lectures(
     """Scrape enrolled-course lecture rows and merge them into the local catalog."""
     async with open_session(config, data_dir=root, headless=headless, operation="lectures.sync") as session:
         page = session.page
+        trace = start_roster_requests(page, headless=headless)
         try:
             discovered_courses = await discover_courses(page, config)
         except Exception as error:
             if isinstance(error, CampusError) and error.code in {*_LOGIN_ERRORS, "policy-blocked"}:
                 raise
+            await capture_roster_failure(
+                page, operation="lectures.sync", step=trace.step, elapsed_s=trace.elapsed_s, root=root
+            )
             if course_id is None:
                 _mark_enrollment_unknown(root)
             raise CampusError(
@@ -110,6 +115,8 @@ async def sync_lectures(
                 "Retry the lecture sync after the LMS course list loads.",
                 "error",
             ) from None
+        finally:
+            stop_roster_requests(page)
         if course_id is None:
             courses = discovered_courses
         else:

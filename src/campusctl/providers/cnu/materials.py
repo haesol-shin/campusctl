@@ -23,6 +23,7 @@ from campusctl.identity import material_entity_id
 from .course_context import SECTION_RESPONSE_TIMEOUT_MS, open_course_section, prepare_course_section
 from .courses import EXTRACT_COURSES_JS, parse_courses
 from .login import COURSE_LINK_SELECTOR, MY_LECTURE_URL, ensure_logged_in
+from .roster_diagnostics import capture_roster_failure, start_roster_requests, stop_roster_requests
 from .ui_policy import UiRequestDiagnostics, UiRequestPolicy, install_ui_request_interceptor
 
 _MODAL = '#file_download.show, #file_download[style*="display: block"]'
@@ -523,19 +524,23 @@ async def sync_materials(
             operation="materials.sync",
             diagnostics=diagnostics,
         )
+        trace = start_roster_requests(page, headless=headless)
         try:
             try:
                 with profile_span("roster", domain="materials"):
                     with profile_span("document-commit", domain="materials"):
                         await _step(page.goto(MY_LECTURE_URL), guard, "opening guarded course roster")
+                    trace.step = "wait"
                     with profile_span("dom-ready", domain="materials"):
                         await _step(
                             page.wait_for_selector(COURSE_LINK_SELECTOR, timeout=_WAIT_MS),
                             guard,
                             "waiting for guarded course roster",
                         )
+                    trace.step = "evaluate"
                     with profile_span("extract", domain="materials"):
                         raw = await _step(page.evaluate(EXTRACT_COURSES_JS), guard, "reading guarded course roster")
+                trace.step = "parse"
                 if not isinstance(raw, list) or not raw:
                     raise ValueError("incomplete course roster")
                 roster = parse_courses(raw)
@@ -545,6 +550,9 @@ async def sync_materials(
                 guard.raise_if_denied()
                 if isinstance(error, CampusError) and error.code == "policy-blocked":
                     raise
+                await capture_roster_failure(
+                    page, operation="materials.sync", step=trace.step, elapsed_s=trace.elapsed_s, root=root
+                )
                 mark_enrollment_unknown("materials", root)
                 raise CampusError(
                     "course-discovery-failed",
@@ -552,6 +560,7 @@ async def sync_materials(
                     "Check the LMS roster and retry.",
                     "error",
                 ) from None
+            stop_roster_requests(page)
             if course_id is not None and not any(course["course_id"] == course_id for course in roster):
                 raise CampusError(
                     "course-not-found",
@@ -609,6 +618,7 @@ async def sync_materials(
             with profile_span("serialize-write", domain="materials"):
                 write_domain_catalog("materials", merged, target)
         finally:
+            stop_roster_requests(page)
             try:
                 guard.raise_if_denied()
             finally:
