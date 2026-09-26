@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import threading
 from collections import Counter
@@ -20,6 +21,7 @@ from campusctl.commands import assignments as assignment_command
 from campusctl.commands import materials as material_command
 from campusctl.commands import notices as notice_command
 from campusctl.domain_catalog import domain_catalog_path, read_domain_catalog, write_domain_catalog
+from campusctl.profiling import SpanRecorder
 from campusctl.providers.cnu import assignments, login, materials, notices, sync_all
 from campusctl.providers.cnu.sync import sync_lectures
 from campusctl.sync import run_sync
@@ -432,6 +434,38 @@ def test_seven_courses_one_guarded_session_and_full_normalized_catalogs(
             else:
                 assert "/std/todo" not in visits
         assert all("log" not in path.lower() and "video" not in path.lower() for _, path, _ in server.requests)
+
+
+def test_document_commit_spans_exclude_all_four_collector_phases(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ticks = [0]
+    recorder = SpanRecorder(enabled=True, scope=DOMAINS, clock=lambda: ticks[0])
+    for module, name in (
+        (sync_all, "collect_lectures_rows"),
+        (assignments, "collect_assignment_rows"),
+        (notices, "collect_notice_rows"),
+        (materials, "collect_materials_rows"),
+    ):
+        original = getattr(module, name)
+
+        async def measured(*args: Any, _collector: Any = original, **kwargs: Any) -> list[dict[str, Any]]:
+            ticks[0] += 1_000_000_000
+            return await _collector(*args, **kwargs)
+
+        monkeypatch.setattr(module, name, measured)
+
+    with fixture_server() as server:
+        config = _install_fixture(monkeypatch, server)
+        result, errors = run_sync(config, tmp_path, DOMAINS, IDS[0], headless=True, profile=recorder)
+        assert errors is None
+        assert all(result["domains"][domain]["status"] == "ok" for domain in DOMAINS)
+
+    profile = recorder.finish(stderr=io.StringIO())
+    commits = [span for span in profile["spans"] if span["phase"] == "document-commit" and span["course"] == 1]
+    assert {span["domain"] for span in commits} == set(DOMAINS)
+    assert all(span["inclusive_ns"] == 0 for span in commits)
+    assert profile["wall_ns"] == 4_000_000_000
 
 
 def test_guard_denial_before_receipt_publishes_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

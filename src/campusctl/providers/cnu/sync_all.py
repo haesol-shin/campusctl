@@ -336,21 +336,23 @@ async def _section(
         navigation_path=_SECTION_PATH[domain],
         settled=True,
     )
-    with browser.profile_span("document-commit", domain=domain, course=selection.ordinal):
-        if domain == "lectures":
+    if domain == "lectures":
+        with browser.profile_span("document-commit", domain=domain, course=selection.ordinal):
             async with bind_on_commit(page, guard, frame=frame, expected_path="/std/course", selection=selection):
                 await browser.bounded(
                     page.click(COURSE_ROOM_URL_ANCHOR), browser.PROTOCOL_TIMEOUT_SECONDS, "opening lecture section"
                 )
-            return await collect_lectures_rows(page, course, selection, guard)
-        if domain == "assignments":
-            capture = assignments.arm_assignment_capture(page, guard)
+        return await collect_lectures_rows(page, course, selection, guard)
+    if domain == "assignments":
+        capture = assignments.arm_assignment_capture(page, guard)
+        with browser.profile_span("document-commit", domain=domain, course=selection.ordinal):
             await assignments.open_assignment_section(
                 page, guard, lambda: page.click('a[href="/std/task"]'), capture=capture, selection=selection
             )
-            return await assignments.collect_assignment_rows(page, course, selection, guard, capture=capture)
-        if domain == "notices":
-            capture = notices.arm_notice_capture(page, guard)
+        return await assignments.collect_assignment_rows(page, course, selection, guard, capture=capture)
+    if domain == "notices":
+        capture = notices.arm_notice_capture(page, guard)
+        with browser.profile_span("document-commit", domain=domain, course=selection.ordinal):
             await notices.open_notice_section(
                 page,
                 guard,
@@ -362,25 +364,26 @@ async def _section(
                 capture=capture,
                 selection=selection,
             )
-            return await notices.collect_notice_rows(
-                page, course, selection, guard, capture=capture, courses=courses, todo_rows=todo[course["course_id"]]
+        return await notices.collect_notice_rows(
+            page, course, selection, guard, capture=capture, courses=courses, todo_rows=todo[course["course_id"]]
+        )
+    capture = await materials.arm_materials_capture(page, guard)
+
+    async def open_archive() -> None:
+        if urlsplit(frame.url).path == "/std/todo":
+            # A failed to-do prerequisite skips the board; the to-do has no archive menu.
+            previous = frame.url
+            await page.goto(
+                urlsplit(previous)._replace(path="/std/archive", query="", fragment="").geturl(),
+                referer=previous,
+                wait_until="domcontentloaded",
             )
-        capture = await materials.arm_materials_capture(page, guard)
+        else:
+            await page.click('a[href="/std/archive"]')
 
-        async def open_archive() -> None:
-            if urlsplit(frame.url).path == "/std/todo":
-                # A failed to-do prerequisite skips the board; the to-do has no archive menu.
-                previous = frame.url
-                await page.goto(
-                    urlsplit(previous)._replace(path="/std/archive", query="", fragment="").geturl(),
-                    referer=previous,
-                    wait_until="domcontentloaded",
-                )
-            else:
-                await page.click('a[href="/std/archive"]')
-
+    with browser.profile_span("document-commit", domain=domain, course=selection.ordinal):
         await materials.open_materials_section(page, guard, open_archive, capture=capture, selection=selection)
-        return await materials.collect_materials_rows(page, course, selection, guard, capture=capture)
+    return await materials.collect_materials_rows(page, course, selection, guard, capture=capture)
 
 
 async def _todo(
