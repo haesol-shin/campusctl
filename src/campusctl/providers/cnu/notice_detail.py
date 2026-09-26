@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from typing import Any
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, urljoin, urlsplit
 
 from campusctl.browser import PROTOCOL_TIMEOUT_SECONDS, bounded
 from campusctl.envelope import CampusError
@@ -102,15 +102,11 @@ def _items(payload: Any) -> list[dict[str, Any]]:
     return items
 
 
-def _native_from_href(href: str) -> str | None:
-    parsed = urlsplit(href)
-    query = parse_qs(parsed.query, keep_blank_values=True)
-    if (
-        parsed.path != "/std/noticeDetail"
-        or parsed.netloc not in ("", "dcs-learning.cnu.ac.kr")
-        or (parsed.netloc and parsed.scheme != "https")
-    ):
+def _native_from_href(href: str, board_url: str) -> str | None:
+    parsed = urlsplit(urljoin(board_url, href))
+    if f"{parsed.scheme}://{parsed.netloc}" != _ORIGIN or parsed.path != "/std/noticeDetail" or parsed.fragment:
         return None
+    query = parse_qs(parsed.query, keep_blank_values=True)
     if set(query) != {"no", "curPage"} or query["curPage"] != ["1"]:
         return None
     native = query["no"]
@@ -264,6 +260,7 @@ async def capture_notice_detail(page: Any, selected_row: dict[str, Any], *, inte
             raise _failed("Selected notice no longer matches one board row.")
         matched_item = selected[0]
         native = matched_item["native_id"]
+        board_url = page.url
         rendered = await bounded(page.evaluate(_BOARD_JS), PROTOCOL_TIMEOUT_SECONDS, "reading board links")
         interceptor.raise_if_denied()
         if not isinstance(rendered, list):
@@ -273,7 +270,7 @@ async def capture_notice_detail(page: Any, selected_row: dict[str, Any], *, inte
             for row in rendered
             if isinstance(row, dict) and isinstance(row.get("links"), list)
             for href in row["links"]
-            if isinstance(href, str) and _native_from_href(href) == native
+            if isinstance(href, str) and _native_from_href(href, board_url) == native
         ]
         if len(links) != 1:
             raise _failed("Selected notice board link is missing or ambiguous.")
@@ -282,7 +279,7 @@ async def capture_notice_detail(page: Any, selected_row: dict[str, Any], *, inte
         await bounded(page.wait_for_load_state("networkidle"), PROTOCOL_TIMEOUT_SECONDS, "settling notice detail")
         interceptor.raise_if_denied()
         source_url = page.url
-        if _native_from_href(source_url) != native or urlsplit(source_url).scheme != "https":
+        if _native_from_href(source_url, board_url) != native:
             raise _failed("Opened notice does not match the selected board item.")
         payload = await response_payload(_DETAIL_PATHS[0])
         if (
