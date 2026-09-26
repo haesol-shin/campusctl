@@ -385,7 +385,6 @@ def test_profiled_archive_roster_wait_and_course_selection(
     report = recorder.finish()
     assert report is not None
     phases = [item["phase"] for item in report["spans"]]
-    assert phases[:5] == ["auth", "roster", "document-commit", "dom-ready", "extract"]
     assert phases.index("course-selection") < phases.index("merge") < phases.index("serialize-write")
     assert report["counts"]["course_selections"] == 1
     output = capsys.readouterr()

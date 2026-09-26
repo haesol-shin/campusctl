@@ -28,6 +28,18 @@ class FakePage:
         self.context = context
         self.closed = 0
         self.cdp_session = FakeCdpSession()
+        self.url = "about:blank"
+        self.main_frame = object()
+        self.listeners: dict[str, list[Any]] = {}
+
+    async def opener(self) -> None:
+        return None
+
+    def on(self, event: str, callback: Any) -> None:
+        self.listeners.setdefault(event, []).append(callback)
+
+    def remove_listener(self, event: str, callback: Any) -> None:
+        self.listeners[event].remove(callback)
 
     async def close(self) -> None:
         self.closed += 1
@@ -42,6 +54,13 @@ class FakeContext:
         self.close_wait = close_wait
         self.close_cancel = close_cancel
         self.new_pages: list[FakePage] = []
+        self.listeners: dict[str, list[Any]] = {}
+
+    def on(self, event: str, callback: Any) -> None:
+        self.listeners.setdefault(event, []).append(callback)
+
+    def remove_listener(self, event: str, callback: Any) -> None:
+        self.listeners[event].remove(callback)
 
     async def new_page(self) -> FakePage:
         page = FakePage(self)
@@ -323,6 +342,43 @@ def test_local_mode_uses_headed_persistent_profile_and_normal_user_agent(
             ("Network.setUserAgentOverride", {"userAgent": browser.NORMAL_CHROME_USER_AGENT})
         ]
         assert context.closed == 1
+
+    _run(scenario())
+
+
+def test_guarded_session_removes_popup_listener_on_close(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DISPLAY", ":99")
+    executable = tmp_path / "chromium"
+    executable.touch()
+    context = FakeContext()
+    install_fake_playwright(monkeypatch, FakeChromium(context))
+
+    async def scenario() -> None:
+        async with browser.open_session(
+            {"browser": {"executable_path": str(executable)}},
+            data_dir=tmp_path,
+            operation="assignments.sync",
+        ) as session:
+            assert len(context.listeners["page"]) == 1
+            await browser.settle_sso_popups(session)
+        assert context.listeners["page"] == []
+
+    _run(scenario())
+
+
+def test_existing_sso_page_is_tracked_and_listener_is_removed(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(browser, "_sso_page_url", lambda url: url == "https://lms.invalid/SSOServiceLogin")
+
+    async def scenario() -> None:
+        context = FakeContext()
+        page = FakePage(context)
+        page.url = "https://lms.invalid/SSOServiceLogin"
+        context.pages.append(page)
+        popups, _pending, remove = browser._track_sso_popups(context)
+        assert page in popups
+        remove()
+        assert context.listeners["page"] == []
+        assert page.listeners["framenavigated"] == []
 
     _run(scenario())
 

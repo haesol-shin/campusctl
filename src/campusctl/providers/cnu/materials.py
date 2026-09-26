@@ -9,7 +9,14 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from campusctl.browser import PROTOCOL_TIMEOUT_SECONDS, bounded, open_session, profile_count, profile_span
+from campusctl.browser import (
+    PROTOCOL_TIMEOUT_SECONDS,
+    bounded,
+    open_session,
+    profile_count,
+    profile_span,
+    settle_sso_popups,
+)
 from campusctl.domain_catalog import (
     domain_catalog_path,
     mark_enrollment_unknown,
@@ -518,6 +525,7 @@ async def sync_materials(
         with profile_span("auth", domain="materials"):
             await ensure_logged_in(page, config, target_url=MY_LECTURE_URL, expected_selector=COURSE_LINK_SELECTOR)
         diagnostics = UiRequestDiagnostics()
+        await settle_sso_popups(session)
         guard = await install_ui_request_interceptor(
             session.context,
             policy,

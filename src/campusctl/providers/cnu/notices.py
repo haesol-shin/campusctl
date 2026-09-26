@@ -10,7 +10,14 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from campusctl.browser import PROTOCOL_TIMEOUT_SECONDS, bounded, open_session, profile_count, profile_span
+from campusctl.browser import (
+    PROTOCOL_TIMEOUT_SECONDS,
+    bounded,
+    open_session,
+    profile_count,
+    profile_span,
+    settle_sso_popups,
+)
 from campusctl.domain_catalog import (
     domain_catalog_path,
     mark_enrollment_unknown,
@@ -739,6 +746,7 @@ async def sync_notices(
         with profile_span("auth", domain="notices"):
             await ensure_logged_in(page, config)
         diagnostics = UiRequestDiagnostics()
+        await settle_sso_popups(session)
         interceptor = await install_ui_request_interceptor(
             page, policy, operation="notices.sync", diagnostics=diagnostics, selected_file=None
         )
