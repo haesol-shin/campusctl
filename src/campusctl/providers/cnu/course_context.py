@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Literal
 
 from campusctl.browser import PROTOCOL_TIMEOUT_SECONDS, bounded
@@ -21,6 +22,19 @@ _TOPBAR_COURSE_JS = """() => {
         .filter(link => link.textContent.replace(/\\s+/g, '').trim() === name);
     return matches.length === 1 ? matches[0].getAttribute('data-courseid') : null;
 }"""
+
+
+async def _wait_for_topbar_course_id(page: Any) -> str:
+    """Wait for the page's own course identity, not just its document commit."""
+
+    async def poll() -> str:
+        while True:
+            course_id = await page.evaluate(_TOPBAR_COURSE_JS)
+            if isinstance(course_id, str) and course_id:
+                return course_id
+            await asyncio.sleep(0.1)
+
+    return await bounded(poll(), COURSE_MENU_TIMEOUT_MS / 1000, "waiting for the course topbar")
 
 
 async def prepare_course_section(

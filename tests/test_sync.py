@@ -15,6 +15,7 @@ from campusctl import cli
 from campusctl.envelope import CampusError
 from campusctl.lock import exclusive_lock
 from campusctl.providers.cnu import sync as sync_module
+from campusctl.providers.cnu.course_context import _TOPBAR_COURSE_JS
 
 COURSES = [
     {"course_id": "course-a", "label": "Course A", "class_no": None},
@@ -41,9 +42,10 @@ def _row(row_id: str, *, state: str = "N", moduletype: str = "LV") -> dict[str, 
 
 
 class FakePage:
-    def __init__(self, rows: list[dict[str, Any]], *, empty: bool = False) -> None:
+    def __init__(self, rows: list[dict[str, Any]], *, empty: bool = False, topbar_id: str | None = "course-a") -> None:
         self.rows = rows
         self.empty = empty
+        self.topbar_id = topbar_id
         self.main_frame = SimpleNamespace(url="https://lms.example.invalid/std/course")
         self.course_clicks: list[str] = []
 
@@ -54,8 +56,8 @@ class FakePage:
             raise PlaywrightTimeoutError("no lecture rows")
 
     async def evaluate(self, script: str) -> Any:
-        if script == sync_module._TOPBAR_COURSE_JS:
-            return "course-a"
+        if script == _TOPBAR_COURSE_JS:
+            return self.topbar_id
         assert script == sync_module.EXTRACT_LEARNING_ROWS_JS
         return self.rows
 
@@ -101,6 +103,16 @@ def test_lecture_collector_empty_and_denial() -> None:
     denied = SimpleNamespace(raise_if_denied=lambda: (_ for _ in ()).throw(CampusError("policy-blocked", "Blocked")))
     with pytest.raises(CampusError, match="Blocked"):
         asyncio.run(sync_module.collect_lectures_rows(page, COURSES[0], denied))
+
+
+def test_missing_lecture_topbar_fails_after_bounded_wait(monkeypatch: pytest.MonkeyPatch) -> None:
+    from campusctl.providers.cnu import course_context
+
+    monkeypatch.setattr(course_context, "COURSE_MENU_TIMEOUT_MS", 25)
+    page = FakePage([_row("new-a")], topbar_id=None)
+    with pytest.raises(CampusError) as caught:
+        asyncio.run(sync_module.collect_lectures_rows(page, COURSES[0], _guard(page)))
+    assert caught.value.code == "browser-timeout"
 
 
 def test_lecture_collector_keeps_non_counted_recorded_rows_out_of_incomplete_count() -> None:
