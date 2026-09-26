@@ -24,7 +24,7 @@ from campusctl.domain_catalog import (
 )
 from campusctl.envelope import CampusError
 from campusctl.providers.cnu import assignments, materials, notices
-from campusctl.providers.cnu.course_context import _TOPBAR_COURSE_JS, _css_string
+from campusctl.providers.cnu.course_context import _css_string, _wait_for_topbar_course_id
 from campusctl.providers.cnu.courses import COURSE_LINK_SELECTOR, EXTRACT_COURSES_JS, parse_courses
 from campusctl.providers.cnu.login import MY_LECTURE_URL, ensure_logged_in
 from campusctl.providers.cnu.roster_diagnostics import (
@@ -221,9 +221,7 @@ async def _select_course(page: Any, guard: Any, course: dict[str, Any], ordinal:
             browser.PROTOCOL_TIMEOUT_SECONDS,
             "waiting for selected course menu",
         )
-        topbar_id = await browser.bounded(
-            page.evaluate(_TOPBAR_COURSE_JS), browser.PROTOCOL_TIMEOUT_SECONDS, "checking selected course topbar"
-        )
+        topbar_id = await _wait_for_topbar_course_id(page)
         if (
             commits != 1
             or len(requests) != 1

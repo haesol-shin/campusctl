@@ -32,14 +32,20 @@ COURSES = [{"course_id": cid, "label": f"Fixture Course {n}", "class_no": "01"} 
 DOMAINS = ("lectures", "assignments", "notices", "materials")
 
 
-def _topbar(*, wrong_selection: bool = False) -> str:
+def _topbar(*, wrong_selection: bool = False, delay_ms: int = 0) -> str:
     links = "".join(
         f'<a data-act="changeLecture" data-courseid="{cid}">Fixture Course {i}</a>' for i, cid in enumerate(IDS, 1)
     )
     selected = f"'{IDS[1]}'" if wrong_selection else "sessionStorage.selected"
-    return f"""<span id="topbarCurrentLecture"></span><div id="topbarLectureDropdown">{links}</div>
-<script>document.getElementById('topbarCurrentLecture').textContent =
- document.querySelector('#topbarLectureDropdown [data-courseid="' + {selected} + '"]').textContent;</script>"""
+    update = (
+        "document.getElementById('topbarCurrentLecture').textContent = "
+        f"document.querySelector('#topbarLectureDropdown [data-courseid=\"' + {selected} + '\"]').textContent;"
+    )
+    if delay_ms:
+        update = f"setTimeout(() => {{{update}}}, {delay_ms});"
+    return (
+        f'<span id="topbarCurrentLecture"></span><div id="topbarLectureDropdown">{links}</div><script>{update}</script>'
+    )
 
 
 def _roster() -> str:
@@ -70,6 +76,7 @@ def _document(
     wrong_topbar: bool = False,
     wrong_course_topbar: bool = False,
     skip_course_navigation: bool = False,
+    delayed_topbar: bool = False,
     archive_count_mismatch: bool = False,
     malformed_todo: bool = False,
     third_party: tuple[str, str, str] | None = None,
@@ -87,13 +94,13 @@ def _document(
             else:
                 body += f'<script>fetch("{probe_origin}/probe",{{method:"{method}"}});</script>'
     elif path == "/std/lecture":
-        body = _topbar(wrong_selection=wrong_topbar) + _menu()
+        body = _topbar(wrong_selection=wrong_topbar, delay_ms=900 if delayed_topbar else 0) + _menu()
         if skip_course_navigation:
             body += """<script>document.querySelector('a[href="/std/course"]')
  .addEventListener('click', event => event.preventDefault());</script>"""
     elif path == "/std/course":
         body = (
-            _topbar(wrong_selection=wrong_course_topbar)
+            _topbar(wrong_selection=wrong_course_topbar, delay_ms=900 if delayed_topbar else 0)
             + _menu()
             + """<div class="learningRow" id="LV1" data-moduletype="LV"
  data-state="N" data-openyn="Y" data-weekno="2" data-seqno="1">
@@ -186,6 +193,7 @@ class FixtureServer(ThreadingHTTPServer):
         self.wrong_topbar = False
         self.wrong_course_topbar = False
         self.skip_course_navigation = False
+        self.delayed_topbar = False
         self.malformed_todo = False
         self.third_party: tuple[str, str, str] | None = None
         self.external_probe: tuple[str, str, str] | None = None
@@ -221,6 +229,7 @@ class FixtureHandler(BaseHTTPRequestHandler):
                     wrong_topbar=self.server.wrong_topbar,
                     wrong_course_topbar=self.server.wrong_course_topbar,
                     skip_course_navigation=self.server.skip_course_navigation,
+                    delayed_topbar=self.server.delayed_topbar,
                     archive_count_mismatch=self.server.archive_count_mismatch,
                     malformed_todo=self.server.malformed_todo,
                     third_party=self.server.third_party,
@@ -554,6 +563,20 @@ def test_seven_course_sync_suppresses_external_assets_in_every_document(
             assert paths[("GET", path)] >= 1
         visited = {path for method, path, _ in server.requests if method == "GET"}
         assert {"/std/myLecture", "/std/lecture", "/std/course", "/std/task", "/std/notice", "/std/archive"} <= visited
+
+
+def test_delayed_entry_and_section_topbars_still_bind_the_selected_course(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with fixture_server() as server:
+        server.delayed_topbar = True
+        config = _install_fixture(monkeypatch, server)
+        result, errors = run_sync(config, tmp_path, ("lectures", "assignments"), IDS[0], headless=True)
+        assert errors is None, (errors, server.requests, result)
+        assert all(result["domains"][domain]["status"] == "ok" for domain in ("lectures", "assignments"))
+        assert read_catalog(catalog_path(tmp_path))["lectures"] == [_expected_row("lectures", IDS[0], 1)]
+        assignments_catalog = read_domain_catalog("assignments", domain_catalog_path("assignments", tmp_path))
+        assert assignments_catalog["assignments"] == [_expected_row("assignments", IDS[0], 1)]
 
 
 @pytest.mark.parametrize(("method", "kind"), [("POST", "fetch"), ("GET", "fetch"), ("GET", "xhr")])
