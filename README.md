@@ -138,6 +138,10 @@ From v0.2.1, run `uv tool upgrade campusctl` to get the new domain commands; ref
 - [CLI contract](docs/contracts/cli.md)
 - [Assignments](docs/contracts/assignments.md), [notices](docs/contracts/notices.md), and [materials](docs/contracts/materials.md) contracts
 
+## Contributing: scan exceptions
+
+CI scans commits and the current tree with `.gitleaks.toml` for default secret detectors and `.gitleaks-public.toml` for local paths and emails, then checks tracked files for binary content. If a safe fixture or example needs an exception, request it in a PR for review. A narrowly scoped path regex in `.gitleaks-public.toml` `[allowlist] paths` exempts that path from the public path/email rules and the binary check only; a default secret-detector finding needs its specific fingerprint in `.gitleaksignore`. Do not add private data to justify an exception.
+
 ## FAQ
 
 #### Is campusctl official?

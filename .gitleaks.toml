@@ -1,0 +1,5 @@
+title = "campusctl default secret rules"
+
+[extend]
+useDefault = true
+
