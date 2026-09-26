@@ -67,6 +67,47 @@ def pre_browser_check(check: Callable[[], None]) -> Iterator[None]:
         _PRE_BROWSER_CHECK.reset(token)
 
 
+@dataclass(slots=True)
+class _SessionLockLease:
+    path: Path
+    owner: asyncio.Task[Any]
+    live: bool = True
+
+
+_OWNED_SESSION_LOCK: ContextVar[_SessionLockLease | None] = ContextVar("owned_session_lock", default=None)
+_ACTIVE_SESSION: ContextVar[bool] = ContextVar("active_browser_session", default=False)
+
+
+def _session_lock_path(config: dict[str, Any], data_dir: Path | None) -> Path:
+    root = ensure_private_dir(Path(data_dir).expanduser()) if data_dir is not None else default_data_dir(create=True)
+    browser_config = config.get("browser", {})
+    return Path(browser_config["lock_path"]).expanduser() if browser_config.get("lock_path") else root / "session.lock"
+
+
+@contextmanager
+def session_lock(config: dict[str, Any], *, data_dir: Path | None = None) -> Iterator[None]:
+    """Own the single browser lock across guarded browser cleanup and catalog publication.
+
+    Pass the same config and data_dir to open_session inside this scope. A nested
+    acquisition is prohibited; open_session recognizes this scope instead.
+    """
+    path = _session_lock_path(config, data_dir)
+    owner = asyncio.current_task()
+    if owner is None:
+        raise RuntimeError("browser session lock requires an async task")
+    inherited = _OWNED_SESSION_LOCK.get()
+    if inherited is not None and inherited.live and inherited.owner is owner:
+        raise RuntimeError("browser session lock already owned")
+    with profile_span("lock"), exclusive_lock(path):
+        lease = _SessionLockLease(path, owner)
+        token = _OWNED_SESSION_LOCK.set(lease)
+        try:
+            yield
+        finally:
+            lease.live = False
+            _OWNED_SESSION_LOCK.reset(token)
+
+
 @dataclass
 class BrowserSession:
     page: Any
@@ -400,11 +441,18 @@ async def open_session(
             "user-action",
         )
     root = ensure_private_dir(Path(data_dir).expanduser()) if data_dir is not None else default_data_dir(create=True)
-    lock_path = (
-        Path(browser_config["lock_path"]).expanduser() if browser_config.get("lock_path") else root / "session.lock"
-    )
+    lock_path = _session_lock_path(config, data_dir)
 
-    with profile_span("lock"), exclusive_lock(lock_path):
+    lease = _OWNED_SESSION_LOCK.get()
+    owns_lock = lease is not None and lease.live and lease.owner is asyncio.current_task()
+    if owns_lock and _ACTIVE_SESSION.get():
+        raise RuntimeError("browser session already active")
+    if owns_lock and lease.path != lock_path:
+        raise RuntimeError("browser session lock does not match the owned lock")
+    with (
+        profile_span("lock") if not owns_lock else nullcontext(),
+        nullcontext() if owns_lock else exclusive_lock(lock_path),
+    ):
         check = _PRE_BROWSER_CHECK.get()
         if check is not None:
             check()
@@ -513,13 +561,17 @@ async def open_session(
                     "error",
                 ) from None
 
-            yield BrowserSession(
-                page=page,
-                context=context,
-                mode=mode,
-                sso_popups=sso_tracking[0] if sso_tracking else None,
-                sso_pending=sso_tracking[1] if sso_tracking else None,
-            )
+            active_token = _ACTIVE_SESSION.set(True)
+            try:
+                yield BrowserSession(
+                    page=page,
+                    context=context,
+                    mode=mode,
+                    sso_popups=sso_tracking[0] if sso_tracking else None,
+                    sso_pending=sso_tracking[1] if sso_tracking else None,
+                )
+            finally:
+                _ACTIVE_SESSION.reset(active_token)
         except BaseException as error:
             primary_error = error
             raise

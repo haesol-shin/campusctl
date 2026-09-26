@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Literal
 
 from campusctl.browser import PROTOCOL_TIMEOUT_SECONDS, bounded
@@ -14,6 +15,61 @@ _SECTION_SELECTORS = {
     "task": 'a[href="/std/task"]',
     "archive": 'a[href="/std/archive"]',
 }
+
+
+@dataclass(frozen=True, slots=True)
+class CourseSelection:
+    """One validated UI selection; identities are in-memory request/document ordinals."""
+
+    course_id: str
+    ordinal: int
+    epoch: int
+    response_identity: int
+    document_identity: int
+
+    @classmethod
+    def from_response(
+        cls,
+        *,
+        course_id: str,
+        roster_course_id: str,
+        topbar_course_id: str,
+        ordinal: int,
+        epoch: int,
+        response_identity: int,
+        document_identity: int,
+        response_status: int,
+        response_body: Any,
+        response_count: int,
+        document_committed: bool,
+        pending: bool = False,
+    ) -> CourseSelection:
+        """Accept precisely one completed selection before its committed entry document."""
+        header = response_body.get("header") if isinstance(response_body, dict) else None
+        body = response_body.get("body") if isinstance(response_body, dict) else None
+        data = body.get("data") if isinstance(body, dict) else None
+        if (
+            not course_id
+            or not isinstance(course_id, str)
+            or course_id != roster_course_id
+            or course_id != topbar_course_id
+            or response_status != 200
+            or not isinstance(header, dict)
+            or header.get("code") != 200
+            or not isinstance(body, dict)
+            or body.get("result") != "Y"
+            or not isinstance(data, dict)
+            or data.get("course_id") != course_id
+            or response_count != 1
+            or pending
+            or not document_committed
+            or any(
+                type(value) is not int or value < 1 for value in (ordinal, epoch, response_identity, document_identity)
+            )
+            or response_identity >= document_identity
+        ):
+            raise ValueError("Course selection is not bound to its committed course entry")
+        return cls(course_id, ordinal, epoch, response_identity, document_identity)
 
 
 async def prepare_course_section(
