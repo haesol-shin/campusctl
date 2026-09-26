@@ -733,6 +733,7 @@ class UiRequestInterceptor:
         self._require_selection = require_selection
         self._selection: CourseSelection | None = None
         self._selection_requested = False
+        self._selection_document_requested = False
 
     @property
     def epoch(self) -> OperationEpoch:
@@ -774,6 +775,7 @@ class UiRequestInterceptor:
         )
         self._selection = None
         self._selection_requested = False
+        self._selection_document_requested = False
         self._quarantined = False
         return self._epoch
 
@@ -785,6 +787,7 @@ class UiRequestInterceptor:
             or self._epoch.course_id is not None
             or not isinstance(selection, CourseSelection)
             or (self._require_selection and not self._selection_requested)
+            or (self._require_selection and not self._selection_document_requested)
             or (self._require_selection and selection.epoch != self._epoch.selection_epoch)
             or (
                 self._require_selection
@@ -896,6 +899,9 @@ class UiRequestInterceptor:
             if request.resource_type == "document":
                 if path != epoch.navigation_path or origin != _request_parts(epoch.document_url)[0]:
                     raise UiRequestDenied("route")
+                if not self._selection_requested or self._selection_document_requested:
+                    raise UiRequestDenied("route")
+                self._selection_document_requested = True
             elif request.method == "POST" and path == "/api/v1/course/addSessionCourseInfo":
                 if self._selection_requested:
                     raise UiRequestDenied("route")

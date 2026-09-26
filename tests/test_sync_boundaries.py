@@ -300,6 +300,8 @@ def test_preselection_window_and_duplicate_are_bound_before_local_server() -> No
                 guard.bind_selection(selection(), frame=frame, document_url=origin + "/std/lecture")
             guard.arm_selection(frame=frame, document_url=roster_url)
             assert await send(Request(origin + "/api/v1/course/addSessionCourseInfo", frame, roster_url)) == "continue"
+            with pytest.raises(UiRequestDenied):
+                guard.bind_selection(selection(), frame=frame, document_url=origin + "/std/lecture")
             assert (
                 await send(Request(origin + "/std/lecture", frame, roster_url, method="GET", resource_type="document"))
                 == "continue"
