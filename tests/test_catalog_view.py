@@ -16,6 +16,7 @@ from campusctl.catalog_view import (
     catalog_snapshot,
     course_roster,
     course_snapshot_path,
+    material_snapshot_path,
     publish_course_snapshot,
     publish_material_snapshot,
     read_course_snapshot,
@@ -173,3 +174,30 @@ def test_material_numbers_bind_filtered_order_and_exact_write(tmp_path: Path) ->
     with pytest.raises(CampusError) as failure:
         resolve_material_number(tmp_path, "1")
     assert failure.value.code == "selection-stale"
+
+
+def test_failed_post_replace_sync_preserves_last_material_number(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = domain_catalog_path("materials", tmp_path)
+    write_domain_catalog("materials", {"courses": [_course("id-a", "A")]}, path)
+    generation = catalog_snapshot("materials", tmp_path)[1]
+    publish_material_snapshot(tmp_path, generation, ["material:old", "material:new"])
+
+    previous = material_snapshot_path(tmp_path).read_bytes()
+    calls = 0
+
+    def fail_once(_path: Path) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError("synthetic post-replace sync failure")
+
+    monkeypatch.setattr("campusctl.catalog_view._fsync_directory", fail_once)
+    with pytest.raises(CampusError) as failure:
+        publish_material_snapshot(tmp_path, generation, ["material:new", "material:old"])
+    assert (failure.value.code, failure.value.status) == ("selection-write-failed", "error")
+    assert material_snapshot_path(tmp_path).read_bytes() == previous
+    assert resolve_material_number(tmp_path, "1")[0] == "material:old"
+    assert calls == 2
+    assert list(material_snapshot_path(tmp_path).parent.glob("*.bak")) == []

@@ -69,11 +69,9 @@ def test_rename_and_removal_invalidate_but_json_never_replaces_snapshot(tmp_path
     _save(tmp_path, [_course("course-a", "Algebra"), _course("course-b", "Biology")])
     snapshot = publish_course_snapshot(tmp_path, course_roster(tmp_path))
     assert read_course_snapshot(tmp_path) == snapshot
-    assert (
-        resolve_course("1", course_roster(tmp_path), ids_only=True, printed_roster=snapshot) != "course-a"
-        if False
-        else True
-    )
+    with pytest.raises(CampusError) as failure:
+        resolve_course("1", course_roster(tmp_path), ids_only=True, printed_roster=snapshot)
+    assert failure.value.code == "course-index-unavailable"
     _save(tmp_path, [_course("course-b", "Biology")])
     with pytest.raises(CampusError) as failure:
         assert_course_snapshot_current(tmp_path, snapshot)
@@ -114,10 +112,11 @@ def test_out_of_range_and_corrupt_snapshot(tmp_path: Path) -> None:
         read_course_snapshot(tmp_path)
     assert failure.value.code == "selection-missing"
     snapshot = publish_course_snapshot(tmp_path, roster)
-    for selector in ("0", "2", "999"):
+    for selector in ("0", "2", "999", "9" * 5000):
         with pytest.raises(CampusError) as failure:
             resolve_course(selector, roster, ids_only=False, printed_roster=snapshot)
         assert failure.value.code == "selection-invalid"
+        assert failure.value.status == "user-action"
     path = tmp_path / "selection" / "courses-last-list.json"
     path.write_text(json.dumps({**snapshot, "courses": [_course("course-z", "Changed")]}))
     with pytest.raises(CampusError) as failure:

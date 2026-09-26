@@ -58,7 +58,12 @@ def resolve_course(
                 "Run 'campusctl courses list' again.",
             )
         printed = printed_roster.get("courses")
-        index = int(selector)
+        try:
+            index = int(selector)
+        except ValueError:
+            raise CampusError(
+                "selection-invalid", "The printed course number is out of range.", "Run 'campusctl courses list' again."
+            ) from None
         if not isinstance(printed, list) or not 1 <= index <= len(printed):
             raise CampusError(
                 "selection-invalid", "The printed course number is out of range.", "Run 'campusctl courses list' again."

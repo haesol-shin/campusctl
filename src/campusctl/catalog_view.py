@@ -6,6 +6,7 @@ import contextlib
 import hashlib
 import json
 import os
+import shutil
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
@@ -140,7 +141,18 @@ def cache_metadata(catalog: dict[str, Any], *, now: datetime, domain: str | None
     }
 
 
+def _fsync_directory(path: Path) -> None:
+    if hasattr(os, "O_DIRECTORY"):
+        directory_fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+
+
 def _write_selection(target: Path, payload: dict[str, Any], kind: str) -> None:
+    backup: Path | None = None
+    replaced = False
     try:
         ensure_private_dir(target.parent)
         fd, name = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".tmp", dir=target.parent)
@@ -151,17 +163,32 @@ def _write_selection(target: Path, payload: dict[str, Any], kind: str) -> None:
                 destination.write("\n")
                 destination.flush()
                 os.fsync(destination.fileno())
+            if target.exists():
+                backup_fd, backup_name = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".bak", dir=target.parent)
+                backup = Path(backup_name)
+                with target.open("rb") as source, os.fdopen(backup_fd, "wb") as old:
+                    shutil.copyfileobj(source, old)
+                    old.flush()
+                    os.fsync(old.fileno())
             os.replace(temp, target)
-            if hasattr(os, "O_DIRECTORY"):
-                directory_fd = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY)
-                try:
-                    os.fsync(directory_fd)
-                finally:
-                    os.close(directory_fd)
+            replaced = True
+            _fsync_directory(target.parent)
         except BaseException:
+            if replaced:
+                if backup is not None:
+                    os.replace(backup, target)
+                    backup = None
+                else:
+                    target.unlink(missing_ok=True)
+                with contextlib.suppress(OSError):
+                    _fsync_directory(target.parent)
             with contextlib.suppress(OSError):
                 temp.unlink(missing_ok=True)
             raise
+        finally:
+            if backup is not None:
+                with contextlib.suppress(OSError):
+                    backup.unlink(missing_ok=True)
     except OSError:
         raise CampusError(
             "selection-write-failed",
