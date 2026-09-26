@@ -1,11 +1,9 @@
 title = "campusctl public text rules"
 
-# Generated, untracked directories are not part of the public tree.
+# Git metadata only; reviewed path exceptions for tracked files go here.
 [allowlist]
 paths = [
     '''(?:^|/)\.git(?:/|$)''',
-    '''(?:^|/)\.venv(?:/|$)''',
-    '''(?:^|/)__pycache__(?:/|$)''',
 ]
 
 [[rules]]
