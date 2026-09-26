@@ -20,6 +20,7 @@ Use the code in JSON `errors` or the message in human output to choose a next st
 | `login-action-required` | Sign in through a normal browser to accept terms or complete the required password change, then retry. |
 | `lms-unavailable` | Check the LMS and network connection, then retry when the service is available. |
 | `course-sync-failed` | Retry once the selected course's task, archive, or notice board has loaded; the sync checks the post-navigation list response and the active course before publishing rows. |
+| `course-discovery-failed` | Retry once the enrolled-course list loads in the LMS. Check the newest private structural diagnostic under the configured data directory's `diagnostics/roster-*.json`. It contains no course names or credentials; review URL paths before sharing it. |
 | `session-busy` (status `busy`, exit 75) | Another operation owns the browser lock. Let it finish; do not automatically retry or remove an active lock. |
 
 On Windows, allow a quarantined Playwright browser through Windows Security; do not disable Defender or SmartScreen. If a `.ps1` helper is blocked by execution policy, put `-ExecutionPolicy Bypass` only on that helper's explicit PowerShell argv, never set a global bypass. If a helper fails on a long or non-ASCII path, try a shorter path and keep each executable and argument as its own TOML array item.

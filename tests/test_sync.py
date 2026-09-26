@@ -467,11 +467,44 @@ def test_discovery_failure_marks_full_enrollment_unknown_but_leaves_scoped_catal
     assert code == 1
     assert envelope["errors"][0]["code"] == "course-discovery-failed"
     assert "private error contents" not in json.dumps(envelope)
+    # The fixture page has no live browser state; evidence collection must not replace the error.
+    assert not (tmp_path / "diagnostics").exists()
     catalog = read_catalog(catalog_path(tmp_path))
     assert catalog["generated_at"] == "2026-01-01T00:00:00Z"
     assert catalog["enrollment_state"] == "unknown"
     assert catalog["courses"] == COURSES[:1]
     assert catalog["lectures"] == [_lecture("course-a", "old")]
+
+
+def test_discovery_record_keeps_stdout_and_error_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _install_fake_sync(monkeypatch, tmp_path)
+    from campusctl.providers.cnu import roster_diagnostics
+
+    async def broken_discovery(*_args: Any, **_kwargs: Any) -> list[dict[str, Any]]:
+        raise RuntimeError("synthetic failure")
+
+    async def no_record(*_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    async def structure(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        return {"schema_version": 1, "course_links": 0}
+
+    monkeypatch.setattr(sync_module, "discover_courses", broken_discovery)
+    monkeypatch.setattr(sync_module, "capture_roster_failure", no_record)
+    args = ["sync", "--only", "lectures", "--json"]
+    assert cli.main(args) == 1
+    baseline = capsys.readouterr()
+    monkeypatch.setattr(sync_module, "capture_roster_failure", roster_diagnostics.capture_roster_failure)
+    monkeypatch.setattr(roster_diagnostics, "_collect", structure)
+    assert cli.main(args) == 1
+    recorded = capsys.readouterr()
+    assert recorded.out == baseline.out
+    assert baseline.err == ""
+    assert "Roster diagnostic saved to" in recorded.err
+    assert json.loads(recorded.out)["errors"][0]["code"] == "course-discovery-failed"
+    assert len(list((tmp_path / "diagnostics").glob("roster-*.json"))) == 1
 
 
 def test_full_success_resolves_legacy_unknown_and_removes_old_failures(

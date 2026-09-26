@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from campusctl.browser import PROTOCOL_TIMEOUT_SECONDS, bounded, profile_span
 
+from .roster_diagnostics import current_roster_requests
+
 COURSE_LINK_SELECTOR = '[data-act="moveLecture"]'
 EXTRACT_COURSES_JS = r"""() => {
     const courses = [];
@@ -44,8 +46,12 @@ def parse_courses(raw: list[dict]) -> list[dict]:
 async def discover_courses(page: object, config: dict) -> list[dict]:
     from .login import ensure_logged_in
 
+    trace = current_roster_requests(page)
+
     with profile_span("auth", domain="lectures"):
         await ensure_logged_in(page, config)
+    if trace is not None:
+        trace.step = "wait"
     with profile_span("roster", domain="lectures"):
         with profile_span("dom-ready", domain="lectures"):
             await bounded(
@@ -57,10 +63,14 @@ async def discover_courses(page: object, config: dict) -> list[dict]:
                 PROTOCOL_TIMEOUT_SECONDS,
                 "waiting for CNU course links",
             )
+        if trace is not None:
+            trace.step = "evaluate"
         with profile_span("extract", domain="lectures"):
             raw = await bounded(
                 page.evaluate(EXTRACT_COURSES_JS),
                 PROTOCOL_TIMEOUT_SECONDS,
                 "extracting CNU courses",
             )
+    if trace is not None:
+        trace.step = "parse"
     return parse_courses(raw)
