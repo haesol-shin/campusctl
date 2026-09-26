@@ -155,7 +155,7 @@ The notice adapter authenticates through the trusted login path, then enters the
 | `notices.fetch` | `https://dcs-learning.cnu.ac.kr` | POST | `/api/v1/board/notice/info` | — |
 | `notices.fetch` | `https://dcs-learning.cnu.ac.kr` | POST | `/api/v1/board/cmt/list` | — |
 
-The proposed `getStdActivityStatus` rows require separate operation-scoped review before fetch is enabled; owner decision 3 currently permits only the exact LMS POST XHR in assignments, materials and notices sync (and materials download), with `logging_token_reviewed:true`. The request originates from `/std/lecture`; the route schema has no Referer constraint. All other unsuppressed logging-token paths remain denied.
+The `getStdActivityStatus` rows passed operation-scoped owner review on 2026-09-27 (owner-held sanitized evidence (2026-09-27): denying the read during guarded course entry left the section menus unrendered); both fetch operations now carry the same exact LMS POST XHR pin with `logging_token_reviewed:true` as the sync operations and materials download. The request originates from `/std/lecture`; the route schema has no Referer constraint. All other unsuppressed logging-token paths remain denied.
 
 `page` accepts digits or literal `undefined`; `board-item-id` is anchored `TB_L_BOARDITEM[0-9]+`, and the adapter separately compares `no` with the selected native board-item ID (the guard validates shape, not identity). `_:"cachebuster"` accepts only 1–20 ASCII digits; no query key is required merely because permitted. Reject unknown/repeated keys, missing detail identity, redirects and signed/queried selected-file URLs [`docs/specs/00-foundation/design.md:93–132`; owner-held sanitized notice_detail_evidence trace (2026-09-25, lines 87–105); FR-002, FR-005].
 

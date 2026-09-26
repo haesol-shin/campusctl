@@ -122,17 +122,37 @@ def test_fetch_unpublished_surface(
     # 1. Public CLI does NOT advertise fetch
     assert "fetch" not in assignments.CAPABILITY["commands"]
     assert "fetch" not in notices.CAPABILITY["commands"]
-    from campusctl.providers.cnu.ui_policy import UiRequestPolicy
+    from campusctl.providers.cnu.ui_policy import UiRequestPolicy, guard_ui_request
 
     policy_a = UiRequestPolicy.from_reviewed_config(assignments.FETCH_POLICY)
     assert policy_a.approved is True
-    assert not any(r.path == "/api/v1/week/getStdActivityStatus" for r in policy_a.routes)
+    assert (
+        guard_ui_request(
+            policy_a,
+            "https://dcs-learning.cnu.ac.kr/api/v1/week/getStdActivityStatus",
+            "POST",
+            {},
+            operation="assignments.fetch",
+            resource_type="xhr",
+        )
+        == "allow"
+    )
     assert not any(s.name == "panopto-saml-script" for s in policy_a.suppress)
     assert len(policy_a.suppress) == 7
 
     policy_n = UiRequestPolicy.from_reviewed_config(notices.FETCH_POLICY)
     assert policy_n.approved is True
-    assert not any(r.path == "/api/v1/week/getStdActivityStatus" for r in policy_n.routes)
+    assert (
+        guard_ui_request(
+            policy_n,
+            "https://dcs-learning.cnu.ac.kr/api/v1/week/getStdActivityStatus",
+            "POST",
+            {},
+            operation="notices.fetch",
+            resource_type="xhr",
+        )
+        == "allow"
+    )
     assert not any(s.name == "panopto-saml-script" for s in policy_n.suppress)
     assert len(policy_n.suppress) == 7
 

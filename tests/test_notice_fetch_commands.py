@@ -56,7 +56,20 @@ def test_notice_fetch_json_and_human(tmp_path: Path, monkeypatch: pytest.MonkeyP
 
     ui_policy = UiRequestPolicy.from_reviewed_config(notices.FETCH_POLICY)
     assert ui_policy.approved is True
-    assert not any(r.path == "/api/v1/week/getStdActivityStatus" for r in ui_policy.routes)
+    from campusctl.providers.cnu.ui_policy import guard_ui_request
+
+    # Owner-approved course-entry read; blocking it leaves the LMS on a modal.
+    assert (
+        guard_ui_request(
+            ui_policy,
+            "https://dcs-learning.cnu.ac.kr/api/v1/week/getStdActivityStatus",
+            "POST",
+            {},
+            operation="notices.fetch",
+            resource_type="xhr",
+        )
+        == "allow"
+    )
     assert not any(s.name == "panopto-saml-script" for s in ui_policy.suppress)
     assert {s.name for s in ui_policy.suppress} == {
         "panopto-script",

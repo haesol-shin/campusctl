@@ -99,6 +99,14 @@ FETCH_POLICY = {
     "routes": [
         {"origin": _LMS, "path": "/std/myLecture", "operation": _FETCH_OPERATION, "methods": ["GET"]},
         {"origin": _LMS, "path": "/std/lecture", "operation": _FETCH_OPERATION, "methods": ["GET"]},
+        {
+            "origin": _LMS,
+            "path": "/api/v1/week/getStdActivityStatus",
+            "operation": _FETCH_OPERATION,
+            "methods": ["POST"],
+            "logging_token_reviewed": True,
+            "resource_type": "xhr",
+        },
         {"origin": _LMS, "path": "/std/task", "operation": _FETCH_OPERATION, "methods": ["GET"]},
         {
             "origin": _LMS,

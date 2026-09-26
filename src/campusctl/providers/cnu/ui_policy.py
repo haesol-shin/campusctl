@@ -25,7 +25,15 @@ _REVIEWED_LOGGING_READS = frozenset(
         "POST",
         "xhr",
     )
-    for operation in ("assignments.sync", "materials.sync", "materials.download", "notices.sync")
+    for operation in (
+        "assignments.sync",
+        "materials.sync",
+        "materials.download",
+        "notices.sync",
+        # Owner-approved 2026-09-27: fetch course entry needs the same read to avoid a blocking modal.
+        "assignments.fetch",
+        "notices.fetch",
+    )
 )
 _MEDIA_RESOURCE_TYPES = frozenset({"audio", "media", "stream", "video"})
 _STATIC_TYPES = frozenset({"script", "stylesheet", "font", "image"})
