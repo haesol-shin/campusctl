@@ -193,6 +193,11 @@ async def capture_notice_detail(page: Any, selected_row: dict[str, Any], *, inte
         or not selected_row["date"].strip()
     ):
         raise _failed("Selected notice identity is incomplete.")
+    selected_native = selected_row.get("native_id")
+    if selected_native is not None and (
+        not isinstance(selected_native, str) or not _NATIVE_ID.fullmatch(selected_native)
+    ):
+        raise _failed("Selected notice native identity is invalid.")
     course_id = course["id"]
     captured: dict[str, list[Any]] = {path: [] for path in (*_LIST_PATHS, *_DETAIL_PATHS)}
 
@@ -237,18 +242,28 @@ async def capture_notice_detail(page: Any, selected_row: dict[str, Any], *, inte
                 raise _failed("Notice board item metadata invalid.") from exc
             if parsed is not None:
                 board.append(parsed)
+        candidates = [
+            raw
+            for raw in board
+            if raw["title"].strip().replace("\n", " ") == selected_row["title"]
+            and raw["date"][:10] == selected_row["date"][:10]
+            and (selected_native is None or raw["native_id"] == selected_native)
+        ]
+        if len(candidates) != 1:
+            raise _failed("Selected notice no longer matches one board row.")
         try:
             resolved = parse_board_rows(board, {"course_id": course_id, "label": course["label"]}, [selected_row])
         except ValueError as exc:
             raise _failed("Notice board identity is invalid.") from exc
         selected = [
-            (raw["native_id"], raw)
+            raw
             for raw, bound in zip(board, resolved, strict=True)
-            if bound["entity_id"] == selected_row["entity_id"]
+            if raw["native_id"] == candidates[0]["native_id"] and bound["entity_id"] == selected_row["entity_id"]
         ]
         if len(selected) != 1:
             raise _failed("Selected notice no longer matches one board row.")
-        native, matched_item = selected[0]
+        matched_item = selected[0]
+        native = matched_item["native_id"]
         rendered = await bounded(page.evaluate(_BOARD_JS), PROTOCOL_TIMEOUT_SECONDS, "reading board links")
         interceptor.raise_if_denied()
         if not isinstance(rendered, list):

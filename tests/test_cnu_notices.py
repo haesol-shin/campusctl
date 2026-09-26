@@ -664,6 +664,7 @@ def test_todo_without_native_id_keeps_historical_identity(tmp_path: Path, monkey
     first = next(item for item in catalog(tmp_path)["notices"] if item["course"]["id"] == "course-a")
     assert first["legacy_key"] == "Example Course_2026-09-01 12:30_17"
     assert first["entity_id"] == "cnu_notice:course-a:2026-09-01 12%3A30:17"
+    assert first["native_id"] == native_board_id(100)
     assert first["is_unread"] is False
 
 
@@ -936,6 +937,7 @@ def test_collector_uses_prearmed_board_and_independent_expected_row(monkeypatch:
         assert actual == [
             {
                 "entity_id": "cnu_notice:course-a:2026-09-01 08%3A00:1",
+                "native_id": "TB_L_BOARDITEM100",
                 "legacy_key": "Example Course_2026-09-01 08:00_1",
                 "course": {"id": "course-a", "label": "Example Course"},
                 "kind": "notice",
