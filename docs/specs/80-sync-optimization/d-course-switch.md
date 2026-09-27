@@ -58,8 +58,11 @@ async def _switch_course(
 
 ```python
 await wait_page_ready(
-    page, "course-entry", expected_course_id=course["course_id"],
-    domain=domain, ordinal=ordinal,
+    page,
+    "course-entry",
+    expected_course_id=course["course_id"],
+    domain=domain,
+    ordinal=ordinal,
 )
 ```
 
