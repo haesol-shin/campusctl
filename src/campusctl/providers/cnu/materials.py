@@ -441,25 +441,56 @@ async def _archive_state(
     *,
     expected_document: Any = None,
 ) -> dict:
-    state = await _step(page.evaluate(_ARCHIVE_STATE_JS, expected_document), "observing archive table")
-    if (
-        not isinstance(state, dict)
-        or state.get("completed") is not True
-        or type(state.get("total_count")) is not int
-        or type(state.get("page_size")) is not int
-        or type(state.get("row_count")) is not int
-        or not isinstance(state.get("posts"), list)
-        or state["page_size"] < 1
-        or state["total_count"] < 0
-        or state["current_page"] != expected_page
-        or (expected_total is not None and state["total_count"] != expected_total)
-        or (expected_course_id is not None and state.get("selected_course_id") != expected_course_id)
-    ):
-        raise ValueError("archive table did not complete")
-    expected_rows = min(state["page_size"], max(0, state["total_count"] - (expected_page - 1) * state["page_size"]))
-    if state["row_count"] != expected_rows:
-        raise ValueError("archive page rows incomplete")
-    return state
+    def validate(state: Any) -> dict:
+        if (
+            not isinstance(state, dict)
+            or state.get("completed") is not True
+            or type(state.get("total_count")) is not int
+            or type(state.get("page_size")) is not int
+            or type(state.get("row_count")) is not int
+            or not isinstance(state.get("posts"), list)
+            or state["page_size"] < 1
+            or state["total_count"] < 0
+            or state.get("current_page") != expected_page
+            or (expected_total is not None and state["total_count"] != expected_total)
+            or (expected_course_id is not None and state.get("selected_course_id") != expected_course_id)
+        ):
+            raise ValueError("archive table did not complete")
+        expected_rows = min(state["page_size"], max(0, state["total_count"] - (expected_page - 1) * state["page_size"]))
+        if state["row_count"] != expected_rows:
+            raise ValueError("archive page rows incomplete")
+        return state
+
+    async def observe() -> Any:
+        return await _step(page.evaluate(_ARCHIVE_STATE_JS, expected_document), "observing archive table")
+
+    if expected_document is not None:
+        return validate(await observe())
+
+    async def ready() -> dict:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _WAIT_MS / 1000
+        while True:
+            state = await observe()
+            try:
+                return validate(state)
+            except ValueError:
+                # A known wrong course is not a transient loading state.
+                if (
+                    isinstance(state, dict)
+                    and expected_course_id is not None
+                    and state.get("selected_course_id") not in (None, expected_course_id)
+                ):
+                    raise
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    raise
+                await asyncio.sleep(min(0.05, remaining))
+
+    try:
+        return await asyncio.wait_for(ready(), timeout=_WAIT_MS / 1000)
+    except TimeoutError:
+        raise ValueError("archive table did not complete") from None
 
 
 async def _wait_archive_state(

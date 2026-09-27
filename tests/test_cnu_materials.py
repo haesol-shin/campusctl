@@ -79,6 +79,7 @@ class FakePage:
         self.state_reads = 0
         self.partial_states = 0
         self.document_generation = 1
+        self.state_observations = 0
         self.handles: list[_DocumentHandle] = []
         self.mutation = None
         self.backdrop = None
@@ -249,6 +250,7 @@ class FakePage:
         return posts
 
     def _observed_state(self, arg):
+        self.state_observations += 1
         if getattr(arg, "disposed", False) and hasattr(arg, "generation"):
             raise PlaywrightError("JSHandle is disposed")
         if self.mutation == "destroyed-context":
@@ -280,8 +282,13 @@ class FakePage:
         modal_clear = not self.modal_open and self.backdrop is None and not self.body_modal_open
         if self._restoring() and self.case.get("residual_overlay"):
             modal_clear = False
-        return {
-            "completed": False if self.mutation == "incomplete-table" else self.case.get("table_ready", True),
+        state = {
+            "completed": (
+                False
+                if self.mutation == "incomplete-table"
+                or (arg is None and self.state_observations <= self.case.get("initial_incomplete_observations", 0))
+                else self.case.get("table_ready", True)
+            ),
             "posts": posts,
             "total_count": total,
             "row_count": row_count,
@@ -294,6 +301,9 @@ class FakePage:
             "archive_path": urlsplit(self.main_frame.url).path == "/std/archive",
             "modal_clear": modal_clear,
         }
+        if self.mutation and self.mutation.startswith("missing-"):
+            state.pop(self.mutation.removeprefix("missing-").replace("-", "_"), None)
+        return state
 
     async def wait_for_selector(self, selector: str, **_kwargs):
         if selector in {"#table_list #listBody", "#totalCnt strong"}:
@@ -613,6 +623,14 @@ def _profiled(page: FakePage, course: dict) -> tuple[list[dict], dict]:
         "changed-total",
         "changed-page-size",
         "changed-row-count",
+        "missing-current-page",
+        "missing-total-count",
+        "missing-page-size",
+        "missing-row-count",
+        "missing-posts",
+        "missing-modal-clear",
+        "missing-same-document",
+        "missing-archive-path",
         "reordered-ids",
         "replaced-ids",
         "title-only",
@@ -801,3 +819,15 @@ def test_profile_distinguishes_retained_and_reloaded_restores() -> None:
     assert _phase_count(profile, "archive-restore") == 2
     assert _phase_count(profile, "document-commit") == 1
     assert all(handle.disposed for handle in page.handles)
+
+
+def test_initial_archive_state_waits_for_completed_rows() -> None:
+    course = fixture()["course"]
+    page = FakePage(
+        {"course": course, "posts": _sample_posts("board-a"), "initial_incomplete_observations": 2},
+        [],
+    )
+    rows = asyncio.run(materials.enumerate_archive(page, course))
+    assert _associated(rows) == [("board-a", "file-board-a", "board-a.pdf")]
+    assert page.state_observations >= 3
+    assert page.events.count(materials._ARCHIVE_MENU) == 0
