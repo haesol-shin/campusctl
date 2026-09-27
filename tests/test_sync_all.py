@@ -8,7 +8,7 @@ import json
 import threading
 from collections import Counter
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -80,6 +80,7 @@ def _document(
     malformed_todo: bool = False,
     third_party: tuple[str, str, str] | None = None,
     external_probe: tuple[str, str, str] | None = None,
+    background_request: bool = False,
 ) -> str:
     if path == "/std/myLecture":
         body = _roster()
@@ -118,6 +119,8 @@ def _document(
  2026-09-01 ~ 2026-09-30</td><td>미완료</td></tr></tbody></table>
 <script>fetch('/api/v1/task/stdList',{method:'POST',body:JSON.stringify({course_id:sessionStorage.selected})});</script>"""
         )
+        if background_request:
+            body += "<script>fetch('/background');</script>"
     elif path == "/std/todo":
         # The global to-do page deliberately has no selected-course menu.
         rows = "".join(
@@ -201,6 +204,9 @@ class FixtureServer(ThreadingHTTPServer):
         self.todo_redirect = False
         self.third_party: tuple[str, str, str] | None = None
         self.external_probe: tuple[str, str, str] | None = None
+        self.background_request = False
+        self.background_started = threading.Event()
+        self.background_release = threading.Event()
         super().__init__(("127.0.0.1", 0), FixtureHandler)
 
 
@@ -216,7 +222,8 @@ class FixtureHandler(BaseHTTPRequestHandler):
         )
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
-        self.wfile.write(data)
+        with suppress(BrokenPipeError):
+            self.wfile.write(data)
 
     def _handle(self) -> None:
         path = self.path.split("?", 1)[0]
@@ -225,6 +232,11 @@ class FixtureHandler(BaseHTTPRequestHandler):
         incoming = json.loads(payload) if payload and path == "/api/v1/course/addSessionCourseInfo" else {}
         selected = incoming.get("course_id") if incoming else self.headers.get("X-Fixture-Course")
         self.server.requests.append((self.command, path, selected))
+        if path == "/background":
+            self.server.background_started.set()
+            self.server.background_release.wait(timeout=20)
+            self._respond("background")
+            return
         if path.startswith(("/assets/images/", "/assets/fonts/")):
             self.server.asset_referers.append((path, self.headers.get("Referer")))
         if self.command == "GET" and path == "/std/todo" and self.server.todo_redirect:
@@ -253,6 +265,7 @@ class FixtureHandler(BaseHTTPRequestHandler):
                     malformed_todo=self.server.malformed_todo,
                     third_party=self.server.third_party,
                     external_probe=self.server.external_probe,
+                    background_request=self.server.background_request,
                 )
             )
         elif self.command == "GET" and path == "/fixture.js":
@@ -453,6 +466,22 @@ def _expected_row(domain: str, cid: str, n: int) -> dict[str, Any]:
         "downloadable": True,
         "unavailable_reason": None,
     }
+
+
+def test_assignment_sync_ignores_outstanding_unrelated_request(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    with fixture_server() as server:
+        server.background_request = True
+        config = _install_fixture(monkeypatch, server)
+        try:
+            result, errors = run_sync(config, tmp_path, ("assignments",), IDS[0], headless=True)
+            assert errors is None
+            assert result["assignments"] == 1
+            assert server.background_started.is_set()
+            assert not server.background_release.is_set()
+            catalog = read_domain_catalog("assignments", domain_catalog_path("assignments", tmp_path))
+            assert catalog["assignments"] == [_expected_row("assignments", IDS[0], 1)]
+        finally:
+            server.background_release.set()
 
 
 def test_seven_courses_one_session_and_full_normalized_catalogs(
@@ -676,15 +705,19 @@ def test_lecture_section_requires_its_own_committed_course_page(
         config = _install_fixture(monkeypatch, server)
         result, errors = run_sync(config, tmp_path, ("lectures", "assignments"), IDS[0], headless=True)
         codes = [error.code for error in errors] if isinstance(errors, list) else [errors.code]
-        assert codes == ["course-sync-failed"]
+        assert codes == (["course-sync-failed"] * (2 if failure == "wrong_course_topbar" else 1))
         lecture_catalog = read_catalog(catalog_path(tmp_path))
         assert lecture_catalog["lectures"] == []
         assert lecture_catalog["failed_courses"] == [
             {"course_id": IDS[0], "label": COURSES[0]["label"], "reason": "course-sync-failed"}
         ]
-        assert result["domains"]["assignments"]["status"] == "ok"
         assignment_catalog = read_domain_catalog("assignments", domain_catalog_path("assignments", tmp_path))
-        assert assignment_catalog["assignments"] == [_expected_row("assignments", IDS[0], 1)]
+        if failure == "wrong_course_topbar":
+            assert result["domains"]["assignments"]["status"] == "partial"
+            assert assignment_catalog["assignments"] == []
+        else:
+            assert result["domains"]["assignments"]["status"] == "ok"
+            assert assignment_catalog["assignments"] == [_expected_row("assignments", IDS[0], 1)]
         assert sum(path == "/std/course" for _, path, _ in server.requests) == (
             0 if failure == "skip_course_navigation" else 1
         )

@@ -24,6 +24,13 @@ COURSES = [
 ]
 
 
+@pytest.fixture(autouse=True)
+def provider_origin(monkeypatch: pytest.MonkeyPatch) -> None:
+    from campusctl.providers.cnu import login
+
+    monkeypatch.setattr(login, "MY_LECTURE_URL", "https://lms.example.invalid/std/myLecture")
+
+
 def _row(row_id: str, *, state: str = "N", moduletype: str = "LV") -> dict[str, Any]:
     return {
         "id": row_id,
@@ -43,10 +50,18 @@ def _row(row_id: str, *, state: str = "N", moduletype: str = "LV") -> dict[str, 
 
 
 class FakePage:
-    def __init__(self, rows: list[dict[str, Any]], *, empty: bool = False, topbar_id: str | None = "course-a") -> None:
+    def __init__(
+        self,
+        rows: list[dict[str, Any]],
+        *,
+        empty: bool = False,
+        topbar_id: str | None = "course-a",
+        redirect_on_empty: str | None = None,
+    ) -> None:
         self.rows = rows
         self.empty = empty
         self.topbar_id = topbar_id
+        self.redirect_on_empty = redirect_on_empty
         self.main_frame = SimpleNamespace(url="https://lms.example.invalid/std/course")
         self.course_clicks: list[str] = []
 
@@ -54,6 +69,8 @@ class FakePage:
         assert selector == sync_module.LEARNING_ROW_SELECTOR
         assert kwargs == {"state": "attached", "timeout": sync_module.COURSE_ROOM_TIMEOUT_MS}
         if self.empty:
+            if self.redirect_on_empty is not None:
+                self.main_frame.url = self.redirect_on_empty
             raise PlaywrightTimeoutError("no lecture rows")
 
     async def evaluate(self, script: str) -> Any:
@@ -112,6 +129,13 @@ def test_empty_lecture_timeout_keeps_failed_span_and_successful_profile() -> Non
 
     assert asyncio.run(scenario()) == []
     profile = recorder.finish(outcome="ok", stderr=io.StringIO())
+    readiness = next(span for span in profile["spans"] if span["phase"] == "page-readiness")
+    assert (readiness["page_kind"], readiness["wait_kind"], readiness["domain"], readiness["course"]) == (
+        "lecture",
+        "readiness",
+        "lectures",
+        1,
+    )
     assert profile["outcome"] == "ok"
     wait = next(span for span in profile["spans"] if span["phase"] == "dom-ready")
     assert wait["failed"] is True
@@ -121,13 +145,19 @@ def test_empty_lecture_timeout_keeps_failed_span_and_successful_profile() -> Non
 
 
 def test_missing_lecture_topbar_fails_after_bounded_wait(monkeypatch: pytest.MonkeyPatch) -> None:
-    from campusctl.providers.cnu import course_context
+    from campusctl.providers.cnu import readiness
 
-    monkeypatch.setattr(course_context, "COURSE_MENU_TIMEOUT_MS", 25)
+    monkeypatch.setattr(readiness, "READINESS_TIMEOUT_S", 0.025)
     page = FakePage([_row("new-a")], topbar_id=None)
     with pytest.raises(CampusError) as caught:
         asyncio.run(sync_module.collect_lectures_rows(page, COURSES[0]))
     assert caught.value.code == "browser-timeout"
+
+
+def test_rowless_lecture_redirect_does_not_publish_empty_course() -> None:
+    page = FakePage([], empty=True, redirect_on_empty="https://elsewhere.invalid/std/course")
+    with pytest.raises(ValueError, match="document changed"):
+        asyncio.run(sync_module.collect_lectures_rows(page, COURSES[0]))
 
 
 def test_lecture_collector_keeps_non_counted_recorded_rows_out_of_incomplete_count() -> None:

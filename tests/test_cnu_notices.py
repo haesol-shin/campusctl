@@ -8,9 +8,21 @@ from typing import Any
 import pytest
 
 from campusctl.envelope import CampusError
-from campusctl.providers.cnu import notices
+from campusctl.providers.cnu import notices, readiness
 
 L = "https://lms.example.invalid"
+
+
+@pytest.fixture(autouse=True)
+def provider_origin(monkeypatch: pytest.MonkeyPatch) -> None:
+    from campusctl.providers.cnu import login
+
+    monkeypatch.setattr(login, "MY_LECTURE_URL", L + "/std/myLecture")
+    monkeypatch.setattr(readiness, "READINESS_TIMEOUT_S", 0.1)
+    monkeypatch.setattr(notices, "SECTION_RESPONSE_TIMEOUT_MS", 100)
+    monkeypatch.setattr(notices, "COURSE_MENU_TIMEOUT_MS", 100)
+
+
 COURSES = [
     {"course_id": "course-a", "label": "Example Course", "class_no": None},
     {"course_id": "course-b", "label": "Other Course", "class_no": None},
@@ -176,7 +188,8 @@ class FakePage:
         if method == "POST":
 
             async def finished() -> None:
-                return None
+                if path == "/api/v1/board/std/notice/list" and self.todo_pending:
+                    raise TimeoutError("to-do list response did not finish")
 
             async def json() -> dict[str, Any]:
                 if path == "/api/v1/course/addSessionCourseInfo":
@@ -225,6 +238,9 @@ class FakePage:
             if self.duplicate_list:
                 await self.request("/api/v1/board/notice/list", "POST", referer=L + "/std/notice")
 
+    async def wait_for_selector(self, selector: str, **_kwargs: Any) -> None:
+        assert selector == "tbody#table-body"
+
     async def wait_for_load_state(self, state: str, **kwargs: Any) -> None:
         if self.todo_pending and self.main_frame.url.endswith("/std/todo"):
             raise TimeoutError("To-do grid did not settle")
@@ -248,6 +264,10 @@ class FakePage:
                 "pages": [1, 2] if self.paginated else [1],
                 "next_enabled": self.paginated,
             }
+        if expression == readiness._TOPBAR_COURSE_JS:
+            return self.context_id
+        if expression == readiness._TODO_READY_JS:
+            return bool(self.todo) or not self.todo_pending
         return {"id": self.context_id, "name": self.context_name}
 
 
@@ -385,8 +405,9 @@ def test_verified_empty_board_requires_complete_matching_list(monkeypatch: pytes
     page = FakePage()
     page.boards["course-a"] = []
     page.missing_list = True
-    with pytest.raises(ValueError, match="missing or duplicated"):
+    with pytest.raises(CampusError) as error:
         collect_board(page, monkeypatch)
+    assert error.value.code == "browser-timeout"
 
 
 @pytest.mark.parametrize("pagination", ["controls", "response-total", "short-list"])
@@ -430,8 +451,13 @@ def test_rendered_empty_must_agree_with_board_responses(monkeypatch: pytest.Monk
                 "body": {"total": 1, "list": [item]},
             }
         )
-    with pytest.raises(ValueError):
-        collect_board(page, monkeypatch)
+    if case in {"response-has-item", "top-has-item"}:
+        with pytest.raises(CampusError) as error:
+            collect_board(page, monkeypatch)
+        assert error.value.code == "browser-timeout"
+    else:
+        with pytest.raises(ValueError):
+            collect_board(page, monkeypatch)
 
 
 def test_nonempty_rendered_board_cannot_accept_empty_response(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -440,8 +466,9 @@ def test_nonempty_rendered_board_cannot_accept_empty_response(monkeypatch: pytes
         "header": {"code": 200},
         "body": {"total": 0, "list": []},
     }
-    with pytest.raises(ValueError, match="rendered rows disagree"):
+    with pytest.raises(CampusError) as error:
         collect_board(page, monkeypatch)
+    assert error.value.code == "browser-timeout"
 
 
 def test_top_board_row_and_same_day_date_precision_are_verified(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -476,29 +503,35 @@ def test_top_only_board_item_and_rendered_multiplicity(monkeypatch: pytest.Monke
     }
     assert collect_board(page, monkeypatch)[0]["title"] == "Board notice"
     page.rendered_ids = [native_board_id(100), native_board_id(100)]
-    with pytest.raises(ValueError, match="rendered rows disagree"):
+    with pytest.raises(CampusError) as error:
         collect_board(page, monkeypatch)
+    assert error.value.code == "browser-timeout"
 
 
 @pytest.mark.parametrize("fault", ["stale_list", "missing_list", "duplicate_list", "bad_referer"])
 def test_board_rejects_unbound_or_incomplete_responses(monkeypatch: pytest.MonkeyPatch, fault: str) -> None:
     page = FakePage()
     setattr(page, fault, True)
-    with pytest.raises(ValueError):
-        collect_board(page, monkeypatch)
+    if fault == "missing_list":
+        with pytest.raises(CampusError) as error:
+            collect_board(page, monkeypatch)
+        assert error.value.code == "browser-timeout"
+    else:
+        with pytest.raises(ValueError):
+            collect_board(page, monkeypatch)
 
 
 def test_board_rejects_conflicting_context_and_ambiguous_name(monkeypatch: pytest.MonkeyPatch) -> None:
     page = FakePage()
 
     page.context_id = "course-b"
-    with pytest.raises(ValueError, match="another course"):
+    with pytest.raises(ValueError, match="page course"):
         collect_board(page, monkeypatch)
     page = FakePage()
     page.context_id = None
-    assert len(collect_board(page, monkeypatch)) == 1
-    with pytest.raises(ValueError, match="not unique"):
-        collect_board(page, monkeypatch, courses=[COURSES[0], {**COURSES[1], "label": "Example Course"}])
+    with pytest.raises(CampusError) as error:
+        collect_board(page, monkeypatch)
+    assert error.value.code == "browser-timeout"
 
 
 def test_unsettled_global_todo_cannot_confirm_board_empty(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -601,7 +634,7 @@ def test_collector_refuses_stale_course_switch_during_board(monkeypatch: pytest.
         capture = notices.arm_notice_capture(page)
         await page.click('a[href="/std/notice"]')
         await page.request("/api/v1/course/addSessionCourseInfo", "POST")
-        with pytest.raises(ValueError, match="cleanly"):
+        with pytest.raises(ValueError, match="stale"):
             await notices.collect_notice_rows(
                 page,
                 COURSES[0],

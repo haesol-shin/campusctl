@@ -13,7 +13,8 @@ from campusctl.browser import PROTOCOL_TIMEOUT_SECONDS, bounded, profile_span
 from campusctl.envelope import CampusError
 from campusctl.identity import material_entity_id
 
-from .course_context import SECTION_RESPONSE_TIMEOUT_MS
+from .course_context import _TOPBAR_COURSE_JS, SECTION_RESPONSE_TIMEOUT_MS
+from .readiness import wait_page_ready
 
 _MODAL = '#file_download.show, #file_download[style*="display: block"]'
 _ARCHIVE_MENU = 'a[href="/std/archive"]'
@@ -188,24 +189,18 @@ class _RequestWindow:
         self.page = page
         self.requests: list[Any] = []
         self.responses: dict[int, Any] = {}
-        self.pending: set[int] = set()
         self.commits: list[int] = []
-        self.settled = asyncio.Event()
-        self.settled.set()
+        self.changed = asyncio.Event()
 
     def start(self) -> None:
         self.page.on("framenavigated", self._navigated)
         self.page.on("request", self._started)
         self.page.on("response", self._received)
-        self.page.on("requestfinished", self._finished)
-        self.page.on("requestfailed", self._finished)
 
     def close(self) -> None:
         self.page.remove_listener("framenavigated", self._navigated)
         self.page.remove_listener("request", self._started)
         self.page.remove_listener("response", self._received)
-        self.page.remove_listener("requestfinished", self._finished)
-        self.page.remove_listener("requestfailed", self._finished)
 
     def _navigated(self, frame: Any) -> None:
         if frame is self.page.main_frame and urlsplit(frame.url).path == "/std/archive":
@@ -213,16 +208,11 @@ class _RequestWindow:
 
     def _started(self, request: Any) -> None:
         self.requests.append(request)
-        self.pending.add(id(request))
-        self.settled.clear()
+        self.changed.set()
 
     def _received(self, response: Any) -> None:
         self.responses[id(response.request)] = response
-
-    def _finished(self, request: Any) -> None:
-        self.pending.discard(id(request))
-        if not self.pending:
-            self.settled.set()
+        self.changed.set()
 
     def _main_frame(self, request: Any) -> bool:
         try:
@@ -249,18 +239,35 @@ class _RequestWindow:
             and urlsplit(request.url).path == path
         ]
 
-    async def idle(self) -> None:
-        with profile_span("idle", wait_kind="load", domain="materials", page_kind="archive"):
-            await _step(
-                self.page.wait_for_load_state("networkidle", timeout=SECTION_RESPONSE_TIMEOUT_MS),
-                "waiting for archive requests",
-            )
-        with profile_span("wait", wait_kind="timeout", domain="materials", page_kind="archive"):
-            await bounded(
-                self.settled.wait(), SECTION_RESPONSE_TIMEOUT_MS / 1000, "waiting for archive request completion"
-            )
-        if self.pending:
-            raise ValueError("archive requests remain pending")
+    async def wait_response(self, path: str, method: str, *, after: int = 0) -> Any:
+        """Finish exactly one matching main-frame response after the action boundary."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + SECTION_RESPONSE_TIMEOUT_MS / 1000
+
+        async def completed() -> Any:
+            while True:
+                matches = self.matches(path, method, after=after)
+                if len(matches) > 1:
+                    raise ValueError("duplicate archive response")
+                if matches:
+                    response = self.responses.get(id(matches[0][1]))
+                    if response is not None:
+                        remaining = deadline - loop.time()
+                        if remaining <= 0:
+                            raise TimeoutError
+                        if await bounded(response.finished(), remaining, "finishing archive response") is not None:
+                            raise ValueError("archive response incomplete")
+                        if response.status != 200 or len(self.matches(path, method, after=after)) != 1:
+                            raise ValueError("archive response failed or duplicated")
+                        return response
+                self.changed.clear()
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    raise TimeoutError
+                await asyncio.wait_for(self.changed.wait(), remaining)
+
+        with profile_span("response-completion", wait_kind="response", domain="materials", page_kind="archive"):
+            return await bounded(completed(), SECTION_RESPONSE_TIMEOUT_MS / 1000, "waiting for archive response")
 
 
 _ATTACH_LIST = "/api/v1/archive/getAttachFileList"
@@ -301,10 +308,12 @@ _ARCHIVE_LIST = "/api/v1/archive/list"
 
 async def _archive_navigation(page: Any, action: Callable[[], Any], *, document: bool = True) -> None:
     """Accept one list request originating after this archive navigation only."""
+    expected_course_id = await _step(page.evaluate(_TOPBAR_COURSE_JS), "checking archive course")
+    if not isinstance(expected_course_id, str) or not expected_course_id:
+        raise ValueError("archive course identity unavailable")
     activity = _RequestWindow(page)
     activity.start()
     try:
-        await activity.idle()
         before = len(activity.requests)
 
         def selected(response: Any) -> bool:
@@ -330,9 +339,10 @@ async def _archive_navigation(page: Any, action: Callable[[], Any], *, document:
                 ):
                     await _step(action(), "opening archive list")
             response = await _step(pending.value, "waiting for archive list response")
-        with profile_span("response-completion", wait_kind="response", domain="materials", page_kind="archive"):
-            await _step(response.finished(), "finishing archive list response")
-        await activity.idle()
+        completed = await activity.wait_response(_ARCHIVE_LIST, "POST", after=before)
+        if completed is not response:
+            raise ValueError("archive list response changed during navigation")
+        await wait_page_ready(page, "archive", expected_course_id=expected_course_id, domain="materials")
         records = activity.matches(_ARCHIVE_LIST, "POST", after=before)
         if (
             len(records) != 1
@@ -353,11 +363,6 @@ async def arm_materials_capture(page: Any) -> _RequestWindow:
     """Observe the first archive list request before the section document commits."""
     capture = _RequestWindow(page)
     capture.start()
-    try:
-        await capture.idle()
-    except BaseException:
-        capture.close()
-        raise
     return capture
 
 
@@ -394,23 +399,20 @@ async def collect_materials_rows(
         if urlsplit(page.main_frame.url).path != "/std/archive":
             raise _failure("course-sync-failed", course)
         if capture is not None:
-            await capture.idle()
+            response = await capture.wait_response(_ARCHIVE_LIST, "POST")
             records = capture.matches(_ARCHIVE_LIST, "POST")
             if (
                 len(capture.commits) != 1
                 or len(records) != 1
                 or records[0][0] <= capture.commits[0]
                 or not capture._archive_referer(records[0][1])
+                or response.request is not records[0][1]
             ):
                 raise _failure("course-sync-failed", course)
-            response = capture.responses.get(id(records[0][1]))
-            if response is None or response.status != 200:
-                raise _failure("course-sync-failed", course)
-            with profile_span("response-completion", domain="materials"):
-                await _step(response.finished(), "finishing archive list response")
             payload = await _step(response.json(), "parsing archive list response")
             if not isinstance(payload, (dict, list)):
                 raise _failure("course-sync-failed", course)
+        await wait_page_ready(page, "archive", expected_course_id=course["course_id"], domain="materials")
         with profile_span("extract", domain="materials"):
             rows = await enumerate_archive(page, course)
         return rows
@@ -450,23 +452,38 @@ async def _select_page(page: Any, number: int) -> None:
     await _archive_navigation(page, lambda: page.evaluate(_PAGE_JS, number), document=False)
 
 
-async def _post_names(page: Any, activity: _RequestWindow, after: int) -> dict[str, str]:
-    await activity.idle()
+async def _post_names(
+    page: Any, activity: _RequestWindow, after: int, post_id: str
+) -> tuple[dict[str, str], list[dict[str, Any]]]:
+    """Use rendered controls before deciding whether attachment metadata is optional."""
+
+    async def controls() -> list[dict[str, Any]]:
+        while True:
+            modal = await page.evaluate(_TARGETS_JS, {"modalOnly": True, "boardItemId": post_id})
+            if isinstance(modal, list) and modal:
+                return modal
+            inline = await page.evaluate(_TARGETS_JS, {"modalOnly": False, "boardItemId": post_id})
+            if isinstance(inline, list) and inline:
+                return inline
+            await asyncio.sleep(0.05)
+
+    with profile_span("page-readiness", wait_kind="readiness", domain="materials", page_kind="archive"):
+        targets = await bounded(controls(), _WAIT_MS / 1000, "waiting for archive file controls")
     if urlsplit(page.main_frame.url).path != "/std/archive":
         raise ValueError("attachment request not in the selected archive")
     requests = activity.matches(_ATTACH_LIST, "GET", after=after)
     if len(requests) > 1 or any(not activity._archive_referer(request) for _, request in requests):
         raise ValueError("duplicate attachment list response")
     if not requests:
-        return {}
-    response = activity.responses.get(id(requests[0][1]))
-    if response is None or response.status != 200:
-        raise ValueError("attachment list did not complete")
+        return {}, targets
+    response = await activity.wait_response(_ATTACH_LIST, "GET", after=after)
+    if response.request is not requests[0][1]:
+        raise ValueError("attachment list response changed")
     with profile_span("attachment-list", domain="materials"):
         body = await _step(response.json(), "reading attachment list metadata")
     if isinstance(body, dict) and isinstance(body.get("header"), dict) and body["header"].get("code") != 200:
         raise ValueError("attachment list response failed")
-    return _attachment_names(body)
+    return _attachment_names(body), targets
 
 
 async def _restore_archive_document(page: Any) -> None:
@@ -508,7 +525,6 @@ async def enumerate_archive(page: Any, course: Mapping[str, Any]) -> list[dict[s
             activity = _RequestWindow(page)
             activity.start()
             try:
-                await activity.idle()
                 baseline = len(activity.requests)
                 with (
                     profile_span("modal", domain="materials", page_kind="archive"),
@@ -516,35 +532,12 @@ async def enumerate_archive(page: Any, course: Mapping[str, Any]) -> list[dict[s
                 ):
                     await _step(page.evaluate(_CLICK_ICON_JS, post_id), "opening archive file icon")
                 try:
-                    with profile_span("attachment-list", domain="materials", page_kind="archive"):
-                        names = await _post_names(page, activity, baseline)
                     try:
-                        with profile_span("dom-ready", wait_kind="selector", domain="materials", page_kind="archive"):
-                            await _step(page.wait_for_selector(_MODAL, timeout=_WAIT_MS), "waiting for file modal")
+                        names, targets = await _post_names(page, activity, baseline, post_id)
                     except CampusError as error:
                         if error.code != "browser-timeout":
                             raise
-                        targets = []
-                    else:
-                        with profile_span("modal", domain="materials"):
-                            targets = await _step(
-                                page.evaluate(_TARGETS_JS, {"modalOnly": True, "boardItemId": post_id}),
-                                "reading modal file controls",
-                            )
-                    if not targets:
-                        targets = await _step(
-                            page.evaluate(_TARGETS_JS, {"modalOnly": False, "boardItemId": post_id}),
-                            "reading inline file controls",
-                        )
-                    if not isinstance(targets, list) or not targets:
-                        # Detail navigation uses unreviewed /std/archiveView;
-                        # require separate route approval before adding that fallback.
-                        raise CampusError(
-                            "course-sync-failed",
-                            "Archive attachment controls were unresolved after modal and inline inspection.",
-                            "Check the course archive in the LMS and retry.",
-                            "error",
-                        )
+                        raise _failure("course-sync-failed", course) from None
                     for target in targets:
                         if not isinstance(target, dict):
                             raise _failure("course-sync-failed", course)
@@ -553,6 +546,9 @@ async def enumerate_archive(page: Any, course: Mapping[str, Any]) -> list[dict[s
                             raise _failure("item-identity-missing", course)
                         seen_files.add(row["file_id"])
                         results.append(row)
+                    requests = activity.matches(_ATTACH_LIST, "GET", after=baseline)
+                    if len(requests) > 1 or any(not activity._archive_referer(request) for _, request in requests):
+                        raise ValueError("attachment list changed during extraction")
                 finally:
                     with (
                         profile_span("modal", domain="materials", page_kind="archive"),

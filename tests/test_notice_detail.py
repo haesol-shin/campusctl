@@ -14,11 +14,19 @@ from campusctl.envelope import CampusError
 from campusctl.identity import notice_entity_id
 from campusctl.providers.cnu.attachment_transfer import OfficialAttachmentTarget
 from campusctl.providers.cnu.notice_detail import capture_notice_detail
+from campusctl.providers.cnu.readiness import _TOPBAR_COURSE_JS
 from campusctl.source_package import ResourceReference
 
 FIXTURE = Path(__file__).parent / "fixtures/lms_sources/notice_detail_synthetic.html"
 ORIGIN = "https://dcs-learning.cnu.ac.kr"
 NATIVE = "TB_L_BOARDITEM7001"
+
+
+@pytest.fixture(autouse=True)
+def bounded_board_wait(monkeypatch: pytest.MonkeyPatch) -> None:
+    from campusctl.providers.cnu import notice_detail
+
+    monkeypatch.setattr(notice_detail, "COURSE_MENU_TIMEOUT_MS", 50)
 
 
 class Fixture(HTMLParser):
@@ -80,6 +88,7 @@ class FakePage:
         self.board_number = board_number
         self.duplicate_title_day = duplicate_title_day
         self.url = ORIGIN + "/std/myLecture"
+        self.main_frame = SimpleNamespace(url=self.url)
         self.listeners: dict[str, object] = {}
         self.actions: list[str] = []
         png_bytes = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4"
@@ -108,14 +117,24 @@ class FakePage:
     def remove_listener(self, event: str, callback: object) -> None:
         self.listeners.pop(event, None)
 
-    async def goto(self, url: str, *, wait_until: str) -> None:
-        self.actions.append("roster")
+    def _navigate(self, url: str) -> None:
+        request = SimpleNamespace(url=url, method="GET", resource_type="document", frame=self.main_frame)
+        self.listeners["request"](request)
         self.url = url
+        self.main_frame.url = url
+        self.listeners["framenavigated"](self.main_frame)
+
+    async def goto(self, url: str, *, wait_until: str) -> None:
+        assert wait_until == "commit"
+        self.actions.append("roster")
+        self._navigate(url)
 
     async def click(self, selector: str) -> None:
         self.actions.append(selector)
-        if selector == 'a[href="/std/notice"]':
-            self.url = ORIGIN + "/std/notice"
+        if selector.startswith('[data-act="moveLecture"]'):
+            self._navigate(ORIGIN + "/std/lecture")
+        elif selector == 'a[href="/std/notice"]':
+            self._navigate(ORIGIN + "/std/notice")
             self._respond("/api/v1/board/notice/list/top", {"list": []})
             self._respond(
                 "/api/v1/board/notice/list",
@@ -131,7 +150,7 @@ class FakePage:
                 },
             )
         elif selector.startswith("tbody#table-body a["):
-            self.url = urljoin(self.url, self.fixture.links[0])
+            self._navigate(urljoin(self.url, self.fixture.links[0]))
             info = {
                 "boarditem_no": "TB_L_BOARDITEM7002" if self.wrong_info else NATIVE,
                 "course_id": "another.invalid" if self.wrong_course else "course-example",
@@ -168,19 +187,24 @@ class FakePage:
         async def json() -> dict[str, object]:
             return {"header": {"code": 200}, "body": body}
 
-        response = SimpleNamespace(
-            request=SimpleNamespace(url=ORIGIN + path, method="POST"), status=200, finished=finished, json=json
-        )
+        request = SimpleNamespace(url=ORIGIN + path, method="POST", resource_type="xhr", frame=self.main_frame)
+        self.listeners["request"](request)
+        response = SimpleNamespace(request=request, status=200, finished=finished, json=json)
         self.listeners["response"](response)
 
-    async def wait_for_selector(self, selector: str) -> None:
-        assert selector == 'a[href="/std/notice"]'
-        self.actions.append("wait:notice-menu")
-
-    async def wait_for_load_state(self, state: str) -> None:
-        return None
+    async def wait_for_selector(self, selector: str, **_kwargs: Any) -> None:
+        assert selector in {
+            '[data-act="moveLecture"]',
+            'a[href="/std/course"]',
+            'a[href="/std/notice"]',
+            "tbody#table-body",
+        }
+        if selector == 'a[href="/std/notice"]':
+            self.actions.append("wait:notice-menu")
 
     async def evaluate(self, script: str) -> object:
+        if script == _TOPBAR_COURSE_JS:
+            return "course-example"
         assert "table-body > tr" in script, "Unobserved detail DOM must not be read"
         return [{"links": [url]} for url in self.fixture.links]
 
@@ -363,8 +387,9 @@ def test_unclosed_skipped_html_rejects_notice_instead_of_publishing_incomplete_c
 def test_unreviewed_notice_href_rejected_before_click(href: str) -> None:
     page = fixture_page()
     page.fixture.links[0] = href
-    with pytest.raises(CampusError, match="link is missing or ambiguous"):
+    with pytest.raises(CampusError) as failure:
         asyncio.run(capture_notice_detail(page, selected()))
+    assert failure.value.code == "browser-timeout"
     assert not any(action.startswith("tbody#table-body a[") for action in page.actions)
     assert not page.listeners
 

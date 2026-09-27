@@ -14,6 +14,7 @@ from campusctl.source_package import DetailSnapshot, ResourceReference
 from .assignments import EXTRACT_COURSE_CONTEXT_JS
 from .attachment_transfer import OfficialAttachmentTarget
 from .course_context import SECTION_RESPONSE_TIMEOUT_MS, _css_string, open_course_section, prepare_course_section
+from .readiness import wait_page_ready
 
 _ORIGIN = "https://dcs-learning.cnu.ac.kr"
 _TASK_ID = re.compile(r"TB_L_REPORT[0-9]+\Z")
@@ -174,9 +175,16 @@ async def capture_assignment_detail(page: Any, config: dict[str, Any], selected_
         or selected_row.get("entity_id") != assignment_entity_id(course_id, task_id)
     ):
         raise _wrong_task()
-    await bounded(page.wait_for_load_state("networkidle"), PROTOCOL_TIMEOUT_SECONDS, "settling CNU course requests")
-    await prepare_course_section(page, config, course_id, "task")
-    await open_course_section(page, "task")
+    try:
+        await wait_page_ready(page, "roster", domain="assignments")
+        await prepare_course_section(page, config, course_id, "task")
+        await open_course_section(page, "task")
+    except ValueError:
+        raise _wrong_task() from None
+    try:
+        await wait_page_ready(page, "assignments", expected_course_id=course_id, domain="assignments")
+    except ValueError:
+        raise _wrong_task() from None
     await bounded(
         page.wait_for_selector('a[data-act="detail"][data-id]', state="attached"),
         PROTOCOL_TIMEOUT_SECONDS,
@@ -214,10 +222,11 @@ async def capture_assignment_detail(page: Any, config: dict[str, Any], selected_
     ):
         await bounded(selected.click(), PROTOCOL_TIMEOUT_SECONDS, "opening the selected CNU task")
     for info in (detail_info, std_info):
-        response = await bounded(info.value, PROTOCOL_TIMEOUT_SECONDS, "waiting for CNU task detail")
+        response = await bounded(info.value, SECTION_RESPONSE_TIMEOUT_MS / 1000, "waiting for CNU task detail")
         if (
             response.status != 200
-            or await bounded(response.finished(), PROTOCOL_TIMEOUT_SECONDS, "finishing CNU task detail") is not None
+            or await bounded(response.finished(), SECTION_RESPONSE_TIMEOUT_MS / 1000, "finishing CNU task detail")
+            is not None
         ):
             raise _failed()
         identity = _response_identity(
@@ -230,11 +239,7 @@ async def capture_assignment_detail(page: Any, config: dict[str, Any], selected_
     source = urlsplit(source_url)
     if f"{source.scheme}://{source.netloc}" != _ORIGIN or source.path != "/std/taskView":
         raise _failed()
-    await bounded(
-        page.wait_for_selector(_DETAIL_TITLE, state="visible"),
-        PROTOCOL_TIMEOUT_SECONDS,
-        "waiting for selected CNU task content",
-    )
+    await wait_page_ready(page, "assignment-detail", domain="assignments")
     raw = await bounded(
         page.evaluate(EXTRACT_ASSIGNMENT_DETAIL_JS), PROTOCOL_TIMEOUT_SECONDS, "reading selected CNU task brief"
     )

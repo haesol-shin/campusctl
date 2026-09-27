@@ -14,6 +14,9 @@ from campusctl.browser import PROTOCOL_TIMEOUT_SECONDS, bounded, profile_span
 from campusctl.envelope import CampusError
 from campusctl.identity import notice_entity_id
 
+from .course_context import _TOPBAR_COURSE_JS, COURSE_MENU_TIMEOUT_MS, SECTION_RESPONSE_TIMEOUT_MS
+from .readiness import _route_matches, wait_page_ready
+
 _ORIGIN = "https://dcs-learning.cnu.ac.kr"
 _TODO_URL = f"{_ORIGIN}/std/todo"
 _NOTICE_LIST_PATH = "/api/v1/board/std/notice/list"
@@ -280,6 +283,7 @@ class _TodoCapture:
         self.requests: list[tuple[int, Any]] = []
         self.responses: list[tuple[Any, Any]] = []
         self.stale_response = False
+        self.changed = asyncio.Event()
         self.closed = False
         page.on("request", self.on_request)
         page.on("response", self.on_response)
@@ -299,6 +303,7 @@ class _TodoCapture:
             self.document_sequence = self.sequence
         if self.is_notice(request):
             self.requests.append((self.sequence, request))
+            self.changed.set()
 
     def on_navigate(self, frame: Any) -> None:
         if frame == self.page.main_frame and frame.url == _TODO_URL and self.document_sequence is not None:
@@ -311,6 +316,7 @@ class _TodoCapture:
             self.stale_response = True
         else:
             self.responses.append((response.request, response))
+            self.changed.set()
 
     def close(self) -> None:
         if not self.closed:
@@ -326,15 +332,9 @@ async def open_notice_todo(page: Any) -> _TodoCapture:
 
     async def navigate() -> None:
         with profile_span("document-commit", wait_kind="navigation", domain="notices", page_kind="todo"):
-            await bounded(
-                page.goto(_TODO_URL, wait_until="domcontentloaded"), PROTOCOL_TIMEOUT_SECONDS, "opening notices"
-            )
+            await bounded(page.goto(_TODO_URL, wait_until="commit"), PROTOCOL_TIMEOUT_SECONDS, "opening notices")
 
     try:
-        with profile_span("idle", wait_kind="load", domain="notices", page_kind="todo"):
-            await bounded(
-                page.wait_for_load_state("networkidle"), PROTOCOL_TIMEOUT_SECONDS, "settling prior page requests"
-            )
         await navigate()
         if (
             capture.document_sequence is None
@@ -350,31 +350,61 @@ async def open_notice_todo(page: Any) -> _TodoCapture:
 
 
 async def _grid_snapshot(page: Any, capture: _TodoCapture) -> list[dict[str, Any]]:
-    """Read the committed notice grid; per-course coverage is a live release gate."""
+    """Read each committed grid page after its own response and render gate."""
 
-    async def settle(start: int, *, required: bool) -> None:
-        with profile_span("idle", wait_kind="load", domain="notices", page_kind="todo"):
-            await bounded(page.wait_for_load_state("networkidle"), PROTOCOL_TIMEOUT_SECONDS, "settling page requests")
+    async def completed(start: int, *, required: bool) -> None:
+        async def response_for(request: Any) -> Any:
+            while True:
+                matching = [response for source, response in capture.responses if source is request]
+                if len(matching) > 1 or capture.stale_response:
+                    raise ValueError("Notice response was stale or duplicated")
+                if matching:
+                    return matching[0]
+                capture.changed.clear()
+                await capture.changed.wait()
+
+        if required and not any(order > start for order, _ in capture.requests):
+            with profile_span("response-completion", wait_kind="response", domain="notices", page_kind="todo"):
+                await bounded(capture.changed.wait(), SECTION_RESPONSE_TIMEOUT_MS / 1000, "waiting for the notice list")
         window = [request for order, request in capture.requests if order > start]
         if capture.stale_response or len(window) > 1 or (required and len(window) != 1):
             raise ValueError("Notice request was stale, absent or duplicated")
         if not window:
-            return  # UI-only pagination; there was no new request in the settle window.
+            return  # UI-only pagination is allowed only after DOM advancement.
         request = window[0]
         if request.method != "POST" or request.frame != page.main_frame:
             raise ValueError("Notice request did not originate in the main frame")
-        headers = await request.all_headers()
+        headers = await bounded(request.all_headers(), PROTOCOL_TIMEOUT_SECONDS, "checking notice request context")
         referer = next((value for name, value in headers.items() if name.casefold() == "referer"), "")
         parsed = urlsplit(referer)
         if f"{parsed.scheme}://{parsed.netloc}" != _ORIGIN or parsed.path != "/std/todo":
             raise ValueError("Notice request was not issued from the to-do document")
-        matching = [response for source, response in capture.responses if source is request]
-        if len(matching) != 1 or matching[0].status != 200:
-            raise ValueError("Notice request did not complete successfully")
-        response = matching[0]
         with profile_span("response-completion", wait_kind="response", domain="notices", page_kind="todo"):
-            await bounded(response.finished(), PROTOCOL_TIMEOUT_SECONDS, "settling the notice list")
+            response = await bounded(
+                response_for(request), SECTION_RESPONSE_TIMEOUT_MS / 1000, "waiting for the notice list"
+            )
+            if (
+                response.status != 200
+                or await bounded(response.finished(), SECTION_RESPONSE_TIMEOUT_MS / 1000, "finishing the notice list")
+                is not None
+            ):
+                raise ValueError("Notice request did not complete successfully")
         await bounded(response.json(), PROTOCOL_TIMEOUT_SECONDS, "validating the notice list response")
+        if capture.stale_response or len([order for order, _ in capture.requests if order > start]) != 1:
+            raise ValueError("Notice list changed during completion")
+
+    async def advanced(previous: tuple[str, ...]) -> None:
+        async def changed() -> None:
+            while True:
+                snapshot = await page.evaluate(_EXTRACT_GRID_JS)
+                if isinstance(snapshot, dict) and isinstance(snapshot.get("rows"), list):
+                    fingerprint = tuple(str(item) for item in snapshot["rows"])
+                    if fingerprint != previous and (fingerprint or snapshot.get("empty") is True):
+                        return
+                await asyncio.sleep(0.05)
+
+        with profile_span("page-readiness", wait_kind="readiness", domain="notices", page_kind="todo"):
+            await bounded(changed(), COURSE_MENU_TIMEOUT_MS / 1000, "waiting for the next notice page")
 
     try:
         async with asyncio.timeout(120):
@@ -383,24 +413,12 @@ async def _grid_snapshot(page: Any, capture: _TodoCapture) -> list[dict[str, Any
             window_start = capture.committed_sequence
             rows: list[dict[str, Any]] = []
             seen_pages: set[tuple[str, ...]] = set()
-            first_page = True
+            previous: tuple[str, ...] | None = None
             while True:
-                await settle(window_start, required=first_page)
-                first_page = False
-                with profile_span("dom-ready", wait_kind="selector", domain="notices", page_kind="todo"):
-                    await bounded(
-                        page.wait_for_function(
-                            """() => {
-                                const grid = document.querySelector('#noticeList');
-                                if (!grid) return false;
-                                const empty = grid.querySelector('#noticeNoData');
-                                return !!grid.querySelector('.tabulator-row') ||
-                                    (!!empty && getComputedStyle(empty).display !== 'none');
-                            }"""
-                        ),
-                        PROTOCOL_TIMEOUT_SECONDS,
-                        "waiting for notice rendering",
-                    )
+                if previous is not None:
+                    await advanced(previous)
+                await completed(window_start, required=previous is None)
+                await wait_page_ready(page, "todo", domain="notices")
                 snapshot = await bounded(
                     page.evaluate(_EXTRACT_GRID_JS), PROTOCOL_TIMEOUT_SECONDS, "extracting notice grid"
                 )
@@ -412,8 +430,10 @@ async def _grid_snapshot(page: Any, capture: _TodoCapture) -> list[dict[str, Any
                 if any(not isinstance(item, dict) for item in page_rows):
                     raise ValueError("Invalid notice grid row")
                 fingerprint = tuple(str(item) for item in page_rows)
-                if fingerprint in seen_pages:
-                    raise ValueError("Notice pagination did not advance")
+                if fingerprint in seen_pages or capture.stale_response:
+                    raise ValueError("Notice pagination did not advance cleanly")
+                if len([order for order, _ in capture.requests if order > window_start]) > 1:
+                    raise ValueError("Notice pagination responses changed during extraction")
                 seen_pages.add(fingerprint)
                 rows.extend(page_rows)
                 next_page = snapshot.get("next")
@@ -423,6 +443,7 @@ async def _grid_snapshot(page: Any, capture: _TodoCapture) -> list[dict[str, Any
                     raise ValueError("Notice pagination exceeded 100 pages")
                 if next_page not in {'.tabulator-page[data-page="next"]', '[data-act="loadMore"]', ".load-more"}:
                     raise ValueError("Unknown notice pagination control")
+                previous = fingerprint
                 window_start = capture.sequence
                 with profile_span("wait", wait_kind="action", domain="notices", page_kind="todo"):
                     await bounded(page.click(next_page), PROTOCOL_TIMEOUT_SECONDS, "opening next notice page")
@@ -496,6 +517,7 @@ class _NoticeCapture:
         self.notice_document: int | None = None
         self.commit: int | None = None
         self.stale = False
+        self.changed = asyncio.Event()
         self.armed = armed
         if armed:
             page.on("request", self.on_request)
@@ -511,6 +533,7 @@ class _NoticeCapture:
             self.stale = True
         if path in {"/api/v1/board/notice/list/top", "/api/v1/board/notice/list"}:
             self.requests.append((self.sequence, request))
+            self.changed.set()
 
     def on_navigate(self, frame: Any) -> None:
         if (
@@ -530,6 +553,7 @@ class _NoticeCapture:
         if not any(request is response.request for _, request in self.requests):
             self.stale = True
         self.responses.append(response)
+        self.changed.set()
 
     def close(self) -> None:
         if self.armed:
@@ -539,14 +563,26 @@ class _NoticeCapture:
             self.page.remove_listener("framenavigated", self.on_navigate)
 
     async def collect(self, page: Any, course: dict[str, Any], courses: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        async def responses_ready() -> None:
+            while True:
+                if self.stale:
+                    raise ValueError("Notice board response was stale")
+                if all(
+                    any(urlsplit(response.request.url).path == path for response in self.responses)
+                    for path in ("/api/v1/board/notice/list/top", "/api/v1/board/notice/list")
+                ):
+                    return
+                self.changed.clear()
+                await self.changed.wait()
+
+        with profile_span("response-completion", wait_kind="response", domain="notices"):
+            await bounded(responses_ready(), SECTION_RESPONSE_TIMEOUT_MS / 1000, "waiting for notice board responses")
         requests, responses, commit, notice_document = (
             self.requests,
             self.responses,
             self.commit,
             self.notice_document,
         )
-        with profile_span("idle", wait_kind="load", domain="notices"):
-            await bounded(page.wait_for_load_state("networkidle"), PROTOCOL_TIMEOUT_SECONDS, "settling notice board")
         if self.stale or commit is None or notice_document is None or commit < notice_document:
             raise ValueError("Notice navigation did not commit cleanly")
         board_sequences: list[int] = []
@@ -571,7 +607,10 @@ class _NoticeCapture:
                 raise ValueError("Board list response missing or duplicated")
             response = matching[0]
             with profile_span("response-completion", wait_kind="response", domain="notices"):
-                if await bounded(response.finished(), PROTOCOL_TIMEOUT_SECONDS, "finishing board response") is not None:
+                if (
+                    await bounded(response.finished(), SECTION_RESPONSE_TIMEOUT_MS / 1000, "finishing board response")
+                    is not None
+                ):
                     raise ValueError("Board response incomplete")
             response_body = await bounded(response.json(), PROTOCOL_TIMEOUT_SECONDS, "checking board response")
             items, total = _board_response_items(response_body, ordinary=path == "/api/v1/board/notice/list")
@@ -581,42 +620,6 @@ class _NoticeCapture:
                 list_items, list_total = items, total
         if board_sequences != sorted(board_sequences) or board_sequences[0] == board_sequences[1]:
             raise ValueError("Board responses arrived out of request order")
-        context = await bounded(
-            page.evaluate("""() => {
-                const current = document.querySelector('#topbarCurrentLecture');
-                const name = current?.textContent?.replace(/\\s+/g, '').trim();
-                const matches = [...document.querySelectorAll('#topbarLectureDropdown a[data-act="changeLecture"][data-courseid]')]
-                    .filter(link => link.textContent.replace(/\\s+/g, '').trim() === name);
-                return {id: matches.length === 1 ? matches[0].getAttribute('data-courseid') : null,
-                    name: current?.textContent?.trim()};
-            }"""),
-            PROTOCOL_TIMEOUT_SECONDS,
-            "checking board course",
-        )
-        if not isinstance(context, dict):
-            raise ValueError("Notice board course identity unavailable")
-        page_id = context.get("id")
-        if page_id is not None:
-            if page_id != course["course_id"]:
-                raise ValueError("Notice board belongs to another course")
-        elif context.get("name") != course["label"] or sum(item["label"] == course["label"] for item in courses) != 1:
-            raise ValueError("Notice board course name is not unique")
-        with profile_span("extract", domain="notices"):
-            snapshot = await bounded(page.evaluate(_EXTRACT_BOARD_JS), PROTOCOL_TIMEOUT_SECONDS, "reading notice board")
-        if not isinstance(snapshot, dict) or type(snapshot.get("row_count")) is not int:
-            raise ValueError("Notice board did not render")
-        if (
-            snapshot.get("page_size") != 10
-            or snapshot.get("next_enabled")
-            or any(page_number > 1 for page_number in snapshot.get("pages", []))
-            or snapshot["row_count"] > 10
-            or list_total is None
-            or list_total > 10
-            or len(list_items) < list_total
-        ):
-            raise CampusError("notice-board-paginated", "Notice board spans multiple pages.", None, "error")
-        if len(list_items) > list_total:
-            raise ValueError("Board response item count exceeds total")
         rows_by_id: dict[str, dict[str, Any]] = {}
         response_ids: Counter[str] = Counter()
         for item in (*top_items, *list_items):
@@ -640,6 +643,35 @@ class _NoticeCapture:
                     rows_by_id[native_id] = row
             else:
                 rows_by_id[native_id] = row
+        await wait_page_ready(page, "notices", expected_course_id=course["course_id"], domain="notices")
+
+        async def matching_rows() -> dict[str, Any]:
+            while True:
+                snapshot = await page.evaluate(_EXTRACT_BOARD_JS)
+                if (
+                    isinstance(snapshot, dict)
+                    and type(snapshot.get("row_count")) is int
+                    and isinstance(snapshot.get("row_ids"), list)
+                    and len(snapshot["row_ids"]) == snapshot["row_count"]
+                    and Counter(snapshot["row_ids"]) == response_ids
+                ):
+                    return snapshot
+                await asyncio.sleep(0.05)
+
+        with profile_span("page-readiness", wait_kind="readiness", domain="notices", page_kind="notices"):
+            snapshot = await bounded(matching_rows(), COURSE_MENU_TIMEOUT_MS / 1000, "waiting for notice board rows")
+        if (
+            snapshot.get("page_size") != 10
+            or snapshot.get("next_enabled")
+            or any(page_number > 1 for page_number in snapshot.get("pages", []))
+            or snapshot["row_count"] > 10
+            or list_total is None
+            or list_total > 10
+            or len(list_items) < list_total
+        ):
+            raise CampusError("notice-board-paginated", "Notice board spans multiple pages.", None, "error")
+        if len(list_items) > list_total:
+            raise ValueError("Board response item count exceeds total")
         row_ids = snapshot.get("row_ids")
         if (
             not isinstance(row_ids, list)
@@ -650,6 +682,11 @@ class _NoticeCapture:
             raise ValueError("Board responses and rendered rows disagree")
         if snapshot["row_count"] == 0 and (list_total != 0 or top_items or list_items):
             raise ValueError("Empty board response is unverified")
+        if (
+            not _route_matches(page.main_frame.url, "/std/notice")
+            or await page.evaluate(_TOPBAR_COURSE_JS) != course["course_id"]
+        ):
+            raise ValueError("Board page changed during extraction")
         if self.stale or any(
             len([request for _, request in requests if urlsplit(request.url).path == path]) != 1
             for path in ("/api/v1/board/notice/list/top", "/api/v1/board/notice/list")

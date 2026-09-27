@@ -13,6 +13,7 @@ import pytest
 
 from campusctl.envelope import CampusError
 from campusctl.providers.cnu import assignment_detail as adapter
+from campusctl.providers.cnu.readiness import _TOPBAR_COURSE_JS
 from campusctl.source_package import ResourceReference
 
 FIXTURE = Path(__file__).parent / "fixtures" / "lms_sources" / "assignment_detail_synthetic.html"
@@ -189,11 +190,18 @@ class Page:
         assert state == "networkidle"
 
     async def wait_for_selector(self, selector: str, **_: Any) -> None:
-        assert selector in {'a[data-act="detail"][data-id]', ".card-body h4"}
+        assert selector in {
+            '[data-act="moveLecture"]',
+            "#table_list tbody#tbody",
+            'a[data-act="detail"][data-id]',
+            ".card-body h4",
+        }
 
     async def evaluate(self, expression: str) -> Any:
+        if expression == _TOPBAR_COURSE_JS:
+            return self.observed_course
         if expression == adapter.EXTRACT_COURSE_CONTEXT_JS:
-            return "course-a"
+            return self.observed_course
         assert expression == adapter.EXTRACT_ASSIGNMENT_DETAIL_JS
         self.extracted = True
         return {"parts": self.fixture.parts, "page_task_id": self.fixture.task_id}
@@ -216,10 +224,12 @@ async def _capture(monkeypatch: pytest.MonkeyPatch, page: Page) -> Any:
     async def enter(_: Any, __: Any, course_id: str, section: str) -> None:
         assert (course_id, section) == ("course-a", "task")
         page.actions.append("course-a:task")
+        page.url = "https://dcs-learning.cnu.ac.kr/std/lecture"
 
     async def open_section(_: Any, section: str) -> None:
         assert section == "task"
         page.actions.append("task")
+        page.url = "https://dcs-learning.cnu.ac.kr/std/task"
 
     monkeypatch.setattr(adapter, "prepare_course_section", enter)
     monkeypatch.setattr(adapter, "open_course_section", open_section)
@@ -281,7 +291,7 @@ def test_assignment_response_identity_rejects_before_extraction(
         asyncio.run(_capture(monkeypatch, page))
     assert failure.value.code == "entity-unknown"
     assert not page.extracted
-    assert page.image_requests == 1
+    assert page.image_requests == (0 if options.get("observed_course") else 1)
 
 
 def test_assignment_detail_extracts_media_omission_references(

@@ -14,17 +14,20 @@ FIXTURE_PATH = Path(__file__).parent / "fixtures" / "lms_sources" / "course_navi
 
 
 class FakePage:
-    def __init__(self, *, expected_row: str, section_link: str, empty_section: bool = False) -> None:
+    def __init__(self, *, expected_row: str, section_link: str, course_id: str, empty_section: bool = False) -> None:
         self.expected_row = expected_row
         self.section_link = section_link
+        self.course_id = course_id
         self.empty_section = empty_section
         self.events: list[str] = []
+        self.main_frame = type("Frame", (), {"url": "https://lms.example.invalid/std/myLecture"})()
 
     async def click(self, selector: str) -> None:
         if selector.startswith('[data-act="moveLecture"]'):
             if selector != self.expected_row:
                 raise TimeoutError("course row was not found")
             self.events.append("click_course_row")
+            self.main_frame.url = "https://lms.example.invalid/std/lecture"
             return
         if selector == self.section_link:
             self.events.append("click_section_link")
@@ -33,10 +36,20 @@ class FakePage:
 
     async def wait_for_selector(self, selector: str, **kwargs: Any) -> None:
         assert selector == course_context.COURSE_MENU_SELECTOR
-        assert kwargs == {"timeout": course_context.COURSE_MENU_TIMEOUT_MS}
+        assert kwargs["state"] == "attached"
+        assert 0 < kwargs["timeout"] <= course_context.COURSE_MENU_TIMEOUT_MS
         self.events.append("wait_for_course_menu")
-        if self.empty_section:
-            return
+
+    async def evaluate(self, script: str) -> str:
+        assert "topbarCurrentLecture" in script
+        return self.course_id
+
+
+@pytest.fixture(autouse=True)
+def provider_origin(monkeypatch: pytest.MonkeyPatch) -> None:
+    from campusctl.providers.cnu import login
+
+    monkeypatch.setattr(login, "MY_LECTURE_URL", "https://lms.example.invalid/std/myLecture")
 
 
 @pytest.fixture
@@ -48,6 +61,7 @@ def _page(fixture: dict[str, Any], *, empty_section: bool = False) -> FakePage:
     return FakePage(
         expected_row=fixture["selectors"]["course_row"],
         section_link=fixture["selectors"]["section_link"],
+        course_id=fixture["course_id"],
         empty_section=empty_section,
     )
 
