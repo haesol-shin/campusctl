@@ -72,12 +72,30 @@ class _NoticeHTML(HTMLParser):
 
     _BLOCK = frozenset({"p", "div", "li", "h1", "h2", "h3", "h4"})
     _SKIP = frozenset({"script", "style", "noscript", "iframe"})
+    _VOID = frozenset(
+        {
+            "area",
+            "base",
+            "br",
+            "col",
+            "embed",
+            "hr",
+            "img",
+            "input",
+            "link",
+            "meta",
+            "param",
+            "source",
+            "track",
+            "wbr",
+        }
+    )
 
     def __init__(self, source_url: str) -> None:
         super().__init__(convert_charrefs=True)
         self.source_url = source_url
         self.parts: list[dict[str, str | None]] = []
-        self._hidden = 0
+        self._skip_stack: list[str] = []
         self._link: list[str] | None = None
         self._media_index: int | None = None
 
@@ -93,12 +111,9 @@ class _NoticeHTML(HTMLParser):
             self.parts.append({"kind": "text", "text": "\n"})
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if self._hidden:
-            if tag not in {"br", "img", "source", "hr", "input", "meta", "link"}:
-                self._hidden += 1
-            return
-        if tag in self._SKIP:
-            self._hidden = 1
+        if self._skip_stack or tag in self._SKIP:
+            if tag not in self._VOID:
+                self._skip_stack.append(tag)
             return
         fields = dict(attrs)
         if tag == "a":
@@ -132,9 +147,18 @@ class _NoticeHTML(HTMLParser):
         elif tag in self._BLOCK or tag == "br":
             self._break()
 
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if self._skip_stack or tag in self._SKIP:
+            return
+        self.handle_starttag(tag, attrs)
+        if tag not in self._VOID:
+            self.handle_endtag(tag)
+
     def handle_endtag(self, tag: str) -> None:
-        if self._hidden:
-            self._hidden -= 1
+        if self._skip_stack:
+            if tag in self._skip_stack:
+                while self._skip_stack.pop() != tag:
+                    pass
             return
         if tag == "a" and self._link is not None:
             self.parts.append({"kind": "link", "text": "".join(self._link).strip()})
@@ -145,12 +169,17 @@ class _NoticeHTML(HTMLParser):
             self._break()
 
     def handle_data(self, data: str) -> None:
-        if self._hidden or not data.strip():
+        if self._skip_stack or not data.strip():
             return
         if self._link is not None:
             self._link.append(data)
         else:
             self.parts.append({"kind": "text", "text": data})
+
+    def close(self) -> None:
+        super().close()
+        if self._skip_stack:
+            raise _failed("notice info HTML skipped element is unclosed.")
 
 
 def _extract_parts(raw: list[dict[str, str | None]]) -> tuple[str | ResourceReference, ...]:

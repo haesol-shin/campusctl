@@ -311,6 +311,46 @@ def test_html_content_omits_scripts_external_images_and_media(tmp_path: Path) ->
 
 
 @pytest.mark.parametrize(
+    "hidden",
+    [
+        "<noscript>Fallback<wbr>text</noscript>",
+        "<noscript>Fallback<wbr/>text</noscript>",
+        '<noscript>Fallback<embed src="/bad"><param name="bad"></noscript>',
+        "<noscript><span>Fallback</noscript>",
+        "<noscript/>",
+    ],
+)
+def test_skipped_html_does_not_hide_following_notice_content(tmp_path: Path, hidden: str) -> None:
+    from campusctl.source_package import build_source_package
+
+    page = fixture_page(content=f"<p>Before</p>{hidden}<p>Required deadline: Friday</p>")
+    row = selected()
+    snapshot = asyncio.run(capture_notice_detail(page, row))
+    package = asyncio.run(
+        build_source_package(
+            page,
+            snapshot,
+            entity_id=row["entity_id"],
+            kind="notice",
+            course_id=row["course"]["id"],
+            course_label=row["course"]["label"],
+            root=tmp_path,
+        )
+    )
+    content = Path(package["content_path"]).read_text(encoding="utf-8")
+    assert package["completeness"] == "complete"
+    assert "Before" in content and "Required deadline: Friday" in content
+    assert "Fallback" not in content
+
+
+def test_unclosed_skipped_html_rejects_notice_instead_of_publishing_incomplete_content() -> None:
+    page = fixture_page(content="<p>Before</p><noscript>Fallback<wbr><p>Required deadline: Friday</p>")
+    with pytest.raises(CampusError, match="notice info HTML skipped element is unclosed"):
+        asyncio.run(capture_notice_detail(page, selected()))
+    assert not page.listeners
+
+
+@pytest.mark.parametrize(
     "href",
     [
         "../noticeDetail?no=TB_L_BOARDITEM7001&curPage=1",
