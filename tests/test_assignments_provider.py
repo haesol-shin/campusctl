@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from virtual_clock import VirtualClock, drive
 
 from campusctl.domain_catalog import domain_catalog_path, read_domain_catalog, write_domain_catalog
 from campusctl.envelope import CampusError
@@ -165,6 +166,16 @@ def test_standalone_filtered_sync_preserves_cached_other_courses(
         ([{"task_id": "TB_L_REPORT901", "title": "Fallback task"}], None, "no verified row count"),
         ([], {"body": {"list": [{"task_id": "TB_L_REPORT901"}]}}, "browser-timeout"),
         ([], {"body": {"list": [], "total": 1}}, "row count disagrees"),
+        (
+            [{"task_id": "TB_L_REPORT901", "title": "Delayed task"}],
+            {"body": {"list": [{"task_id": "TB_L_REPORT901"}]}},
+            "delayed",
+        ),
+        (
+            [{"task_id": "TB_L_REPORT901", "title": "Other course task"}],
+            {"body": {"list": [{"task_id": "TB_L_REPORT901"}]}},
+            "wrong-course",
+        ),
     ],
 )
 def test_collector_requires_response_count_and_matching_rows(
@@ -173,13 +184,18 @@ def test_collector_requires_response_count_and_matching_rows(
     from campusctl.providers.cnu import login, readiness
 
     monkeypatch.setattr(login, "MY_LECTURE_URL", "https://lms.example.invalid/std/myLecture")
-    monkeypatch.setattr(provider, "COURSE_WAIT_MS", 50)
+    monkeypatch.setattr(provider, "COURSE_WAIT_MS", 500 if failure == "delayed" else 50)
     origin = "https://lms.example.invalid"
+    extractions = 0
 
     async def evaluate(script: str) -> Any:
+        nonlocal extractions
         if script == readiness._TOPBAR_COURSE_JS:
-            return "course-a"
+            return "course-b" if failure == "wrong-course" and extractions else "course-a"
         assert script == provider.EXTRACT_ASSIGNMENT_ROWS_JS
+        extractions += 1
+        if failure == "delayed" and extractions < 3:
+            return {"row_count": 0, "rows": []}
         return {"row_count": len(rows), "rows": rows}
 
     async def settle(*_args: Any, **_kwargs: Any) -> None:
@@ -209,7 +225,10 @@ def test_collector_requires_response_count_and_matching_rows(
             with pytest.raises(CampusError) as caught:
                 await provider._collect_assignment_rows(page, COURSES[0], activity, response)
             assert caught.value.code == "browser-timeout"
-        elif failure is not None:
+        elif failure == "wrong-course":
+            with pytest.raises(ValueError, match="Task page changed"):
+                await provider._collect_assignment_rows(page, COURSES[0], activity, response)
+        elif failure not in (None, "delayed"):
             with pytest.raises(ValueError, match=failure):
                 await provider._collect_assignment_rows(page, COURSES[0], activity, response)
         else:
@@ -217,7 +236,13 @@ def test_collector_requires_response_count_and_matching_rows(
             assert [row["title"] for row in result] == [row["title"] for row in rows]
             assert all(row["course"]["id"] == "course-a" for row in result)
 
-    asyncio.run(exercise())
+    if failure == "delayed":
+        clock = VirtualClock()
+        asyncio.run(drive(exercise(), clock))
+        assert clock.now() == pytest.approx(0.1)
+        assert extractions == 3
+    else:
+        asyncio.run(exercise())
 
 
 def test_failed_task_navigation_closes_armed_capture() -> None:
