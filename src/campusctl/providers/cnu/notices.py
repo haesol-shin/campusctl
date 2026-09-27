@@ -357,7 +357,7 @@ def _todo_response_counts(payload: Any) -> tuple[int, int]:
     if not isinstance(body, dict):
         raise ValueError("To-do response has no count")
     items = next((body[key] for key in ("list", "rows", "items") if key in body), None)
-    total = next((body[key] for key in ("total", "totalCount", "total_count") if key in body), None)
+    total = next((body[key] for key in ("tot_cnt", "total", "totalCount", "total_count") if key in body), None)
     if (
         not isinstance(items, list)
         or any(not isinstance(item, dict) for item in items)

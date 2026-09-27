@@ -498,18 +498,22 @@ async def _select_page(page: Any, number: int) -> None:
 
 
 async def _post_names(
-    page: Any, activity: _RequestWindow, after: int, post_id: str
+    page: Any, activity: _RequestWindow, after: int, post_id: str, seen_files: Mapping[str, str]
 ) -> tuple[dict[str, str], list[dict[str, Any]]]:
-    """Use rendered controls before deciding whether attachment metadata is optional."""
+    """Wait for this post's controls, not controls left by the preceding modal."""
 
     async def controls() -> list[dict[str, Any]]:
         while True:
             modal = await page.evaluate(_TARGETS_JS, {"modalOnly": True, "boardItemId": post_id})
-            if isinstance(modal, list) and modal:
-                return modal
             inline = await page.evaluate(_TARGETS_JS, {"modalOnly": False, "boardItemId": post_id})
-            if isinstance(inline, list) and inline:
-                return inline
+            targets = modal or inline
+            if isinstance(targets, list) and targets and not any(
+                isinstance(target, dict)
+                and (file_id := target.get("data_id") or target.get("file_id")) in seen_files
+                and target.get("text") == seen_files[file_id]
+                for target in targets
+            ):
+                return targets
             await asyncio.sleep(0.05)
 
     with profile_span("page-readiness", wait_kind="readiness", domain="materials", page_kind="archive"):
@@ -672,6 +676,7 @@ async def enumerate_archive(page: Any, course: Mapping[str, Any]) -> list[dict[s
     results: list[dict[str, Any]] = []
     seen_posts: set[str] = set()
     seen_files: set[str] = set()
+    seen_controls: dict[str, str] = {}
     counted = 0
     for page_number in range(1, max(1, pages) + 1):
         with profile_span("archive-page", domain="materials"):
@@ -711,7 +716,7 @@ async def enumerate_archive(page: Any, course: Mapping[str, Any]) -> list[dict[s
                     await _step(page.evaluate(_CLICK_ICON_JS, post_id), "opening archive file icon")
                 try:
                     try:
-                        names, targets = await _post_names(page, activity, baseline, post_id)
+                        names, targets = await _post_names(page, activity, baseline, post_id, seen_controls)
                     except CampusError as error:
                         if error.code != "browser-timeout":
                             raise
@@ -723,6 +728,7 @@ async def enumerate_archive(page: Any, course: Mapping[str, Any]) -> list[dict[s
                         if row["file_id"] in seen_files:
                             raise _failure("item-identity-missing", course)
                         seen_files.add(row["file_id"])
+                        seen_controls[row["file_id"]] = target.get("text")
                         results.append(row)
                     requests = activity.matches(_ATTACH_LIST, "GET", after=baseline)
                     if len(requests) > 1 or any(not activity._archive_referer(request) for _, request in requests):

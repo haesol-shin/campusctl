@@ -468,6 +468,41 @@ def test_inline_controls_belong_to_selected_post_before_duplicate_check() -> Non
     ]
 
 
+def test_retained_archive_waits_for_next_modal_controls(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(materials, "_WAIT_MS", 300)
+    course = fixture()["course"]
+    posts = [
+        {"board_item_id": "board-a", "title": "First", "modal": [
+            {"data_id": "file-a", "text": "first.pdf", "official": True},
+        ]},
+        {"board_item_id": "board-b", "title": "Second", "modal": [
+            {"data_id": "file-b", "text": "second.pdf", "official": True},
+        ]},
+    ]
+
+    class DelayedModalPage(FakePage):
+        def __init__(self) -> None:
+            super().__init__({"course": course, "posts": posts}, [])
+            self.stale_reads = 0
+
+        async def evaluate(self, script: str, arg=None):
+            if (
+                "archiveMetadataTargets" in script and arg["modalOnly"]
+                and self.post is posts[1] and self.stale_reads < 2
+            ):
+                self.stale_reads += 1
+                return posts[0]["modal"]
+            return await super().evaluate(script, arg)
+
+    page = DelayedModalPage()
+    rows = asyncio.run(materials.enumerate_archive(page, course))
+    assert [(row["archive_entry"]["board_item_id"], row["file_id"]) for row in rows] == [
+        ("board-a", "file-a"), ("board-b", "file-b"),
+    ]
+    assert page.stale_reads == 2
+    assert page.events.count(materials._ARCHIVE_MENU) == 0
+
+
 def test_unresolved_inline_row_does_not_borrow_other_post_controls() -> None:
     course = fixture()["course"]
     posts = [
