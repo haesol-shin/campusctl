@@ -258,13 +258,56 @@ def test_successful_command_accepts_a_handled_wait_failure():
     assert module._accepted_profile(safe) is True
 
 
-def test_overhead_gate_reports_attribution_and_rejects_noise_as_unresolved():
+@pytest.fixture(scope="module")
+def overhead_samples():
+    samples = {
+        shape: {
+            mode: module._run([sys.executable, str(HARNESS), "--fixture-overhead", mode, shape])
+            for mode in ("off", "on")
+        }
+        for shape in ("observed", "cpu")
+    }
+    for arms in samples.values():
+        assert arms["off"]["complete"] and arms["on"]["complete"]
+        assert arms["off"]["_result"] == arms["on"]["_result"]
+        assert arms["on"]["profile"]["dropped_events"] == 0
+        assert arms["on"]["attribution"] is not None
+    return samples
+
+
+@pytest.mark.parametrize(
+    ("on_walls", "verdict", "ratio", "dispersion"),
+    [
+        ([104] * 5, "pass", 0.04, 0),
+        ([106] * 5, "fail", 0.06, 0),
+        ([90, 106, 106, 106, 120], "unresolved", 0.06, 30 / 106),
+    ],
+)
+def test_overhead_gate_reports_attribution_and_rejects_noise_as_unresolved(
+    monkeypatch, overhead_samples, on_walls, verdict, ratio, dispersion
+):
+
+    # Each shape starts a fresh sequence; the tool alternates execution order.
+    def run(argv):
+        mode, shape = argv[-2:]
+        index = calls[shape][mode]
+        calls[shape][mode] += 1
+        return {
+            **overhead_samples[shape][mode],
+            "wall_ns": (100 if mode == "off" else on_walls[index]),
+        }
+
+    calls = {shape: {"off": 0, "on": 0} for shape in ("observed", "cpu")}
+    monkeypatch.setattr(module, "_run", run)
     report = module.measure_overhead(trials=5)
     assert report["schema_version"] == 1
     assert report["host"]["browser_mode"] == "headed"
     for shape in ("observed", "cpu"):
         measured = report["shapes"][shape]
-        assert measured["off_vs_on"]["verdict"] == "pass", measured
+        gate = measured["off_vs_on"]
+        assert gate["verdict"] == verdict
+        assert gate["ratio"] == pytest.approx(ratio)
+        assert gate["dispersion"] == pytest.approx(dispersion)
         assert "previous_vs_on" not in measured
         assert measured["attribution"]["coverage"]["unattributed_ns"] >= 0
         assert measured["attribution"]["dropped_events"] == 0
