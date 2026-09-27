@@ -16,6 +16,7 @@
 - Sync lectures, assignments, notices, and materials in one combined pass: `campusctl sync` selects each course once.
 - List unfinished lectures and inspect lecture health and cached coursework: `campusctl lectures list`, `campusctl status`.
 - Refresh a particular domain with `sync --only DOMAIN` or `list --refresh`.
+- Fetch readable source packages for one selected assignment or notice by its full ID; notice reading can change view and read state.
 - Download one selected material into your OS Downloads folder under `campusctl/<course label>/`.
 - Play a lecture in CNU's official player through a visible browser, one at a time; campusctl checks the LMS state afterward.
 - JSON output for scripts and agents.
@@ -69,6 +70,8 @@ $ campusctl lectures list
 $ campusctl courses list
 $ campusctl assignments list
 $ campusctl notices list
+$ campusctl assignments fetch <ASSIGNMENT_ENTITY_ID>
+$ campusctl notices fetch <NOTICE_ENTITY_ID>
 $ campusctl materials list
 $ campusctl materials download 1
 ```
@@ -160,7 +163,7 @@ In your OS Downloads folder under `campusctl/<course label>/` (including a redir
 
 #### Can I read assignment or notice details here?
 
-The published commands list metadata only. Selected-detail fetch commands are not registered; notices come from each course board, and read state is unknown when no matching to-do row exists. A board with additional pages reports `notice-board-paginated` for that course and retains its previous rows; check the LMS for that course.
+Yes. Choose a full ID from `assignments list` or `notices list`, then run `campusctl assignments fetch <ENTITY_ID>` or `campusctl notices fetch <ENTITY_ID>`. Fetch writes `content.md` and `package.json` under the local data directory's `sources/` tree; `--out DIR` selects a new, nonexistent package directory. `--json` reports the path, completeness and any omitted resources. A notice detail open may add one view and change its read state, even though fetch never clicks mark-read. Notice attachments are omitted, not downloaded. Fetch requires a headed browser; it does not submit assignments. See the [assignment](docs/contracts/assignments.md#selected-detail-fetch) and [notice](docs/contracts/notices.md#selected-detail-fetch) contracts. Notices come from each course board; read state is unknown when no matching to-do row exists. A board with additional pages reports `notice-board-paginated` for that course and retains its previous rows; check the LMS for that course.
 
 ## License
 

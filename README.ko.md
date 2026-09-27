@@ -17,6 +17,7 @@
 - `campusctl sync` 한 번으로 네 영역의 자료를 함께 동기화하며 과목당 한 번 선택합니다.
 - `campusctl lectures list`로 미완료 강의를, `campusctl status`로 과제·공지·강의 현황을 확인합니다.
 - `sync --only DOMAIN`으로 영역을 좁히거나 목록의 `--refresh`로 해당 영역만 새로 고칩니다.
+- 전체 ID로 선택한 과제 또는 공지 하나의 본문을 읽기 쉬운 패키지로 가져옵니다. 공지를 열면 조회수와 읽음 상태가 바뀔 수 있습니다.
 - 선택한 자료 하나를 운영체제의 다운로드 폴더 아래 `campusctl/<과목 이름>/`에 저장합니다.
 - 한 번에 하나씩 화면이 표시되는 브라우저에서 CNU 공식 플레이어로 강의를 재생하고, 이후 LMS 상태를 확인합니다.
 - 스크립트와 에이전트에서 사용할 수 있는 JSON 출력을 제공합니다.
@@ -70,6 +71,8 @@ $ campusctl lectures list
 $ campusctl courses list
 $ campusctl assignments list
 $ campusctl notices list
+$ campusctl assignments fetch <ASSIGNMENT_ENTITY_ID>
+$ campusctl notices fetch <NOTICE_ENTITY_ID>
 $ campusctl materials list
 $ campusctl materials download 1
 ```
@@ -157,7 +160,7 @@ campusctl은 공식 플레이어로 강의를 재생한 뒤 LMS 강의 상태를
 
 #### 과제나 공지의 본문도 볼 수 있나요?
 
-공개된 명령은 목록 정보만 제공합니다. 선택한 본문을 가져오는 fetch 명령은 아직 등록되지 않았습니다. 공지는 각 과목 게시판에서 가져오고, 읽음 여부는 할 일 목록과 일치할 때만 표시합니다. 게시판에 다음 페이지가 있으면 `notice-board-paginated` 오류와 함께 그 과목의 이전 목록이 유지됩니다. 해당 과목은 LMS에서 확인하세요.
+네. `assignments list` 또는 `notices list`에서 전체 ID를 고른 뒤 `campusctl assignments fetch <ENTITY_ID>`나 `campusctl notices fetch <ENTITY_ID>`를 실행하세요. 로컬 데이터 디렉터리의 `sources/` 아래에 `content.md`와 `package.json`이 생성됩니다. `--out DIR`은 아직 존재하지 않는 패키지 디렉터리를 지정합니다. `--json`으로 경로, 완전성 및 생략된 리소스를 확인할 수 있습니다. 공지 상세를 열면 조회수가 한 번 증가하거나 읽음 상태가 바뀔 수 있지만, fetch는 읽음 처리 버튼을 누르지 않습니다. 공지 첨부파일은 내려받지 않고 생략합니다. Fetch는 화면 표시 브라우저가 필요하며 과제를 제출하지 않습니다. 자세한 내용은 [과제](docs/contracts/assignments.md#selected-detail-fetch) 및 [공지](docs/contracts/notices.md#selected-detail-fetch) 계약을 참조하세요. 공지는 각 과목 게시판에서 가져오고, 읽음 여부는 할 일 목록과 일치할 때만 표시합니다. 게시판에 다음 페이지가 있으면 `notice-board-paginated` 오류와 함께 그 과목의 이전 목록이 유지됩니다. 해당 과목은 LMS에서 확인하세요.
 
 ## 라이선스
 

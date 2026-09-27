@@ -1,4 +1,4 @@
-"""Assignment metadata sync and cache-only listing."""
+"""Assignment metadata listing and selected-detail source packages."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from campusctl.domain_catalog import domain_catalog_path, read_domain_catalog
 from campusctl.envelope import CampusError, UsageError
 from campusctl.paths import data_dir
 
-CAPABILITY = {"commands": ["list"]}
+CAPABILITY = {"commands": ["list", "fetch"]}
 
 _DETAIL_TIMEOUT_STEPS = frozenset(
     {
@@ -61,6 +61,10 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     listing.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
     listing.add_argument("--course", help="limit results to one course ID")
     listing.add_argument("--refresh", action="store_true")
+    fetch = commands.add_parser("fetch", help="package one selected assignment detail")
+    fetch.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
+    fetch.add_argument("entity_id", metavar="ENTITY_ID", help="full ID from assignments list")
+    fetch.add_argument("--out", type=Path, metavar="DIR", help="new package directory")
 
 
 def dispatch(args: argparse.Namespace) -> tuple[dict[str, Any], CampusError | list[CampusError] | None]:
