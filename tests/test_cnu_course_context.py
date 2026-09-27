@@ -11,7 +11,7 @@ import pytest
 from campusctl.browser import profile_context
 from campusctl.envelope import CampusError
 from campusctl.profiling import SpanRecorder
-from campusctl.providers.cnu import course_context
+from campusctl.providers.cnu import course_context, readiness
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "lms_sources" / "course_navigation.json"
 
@@ -129,3 +129,31 @@ def test_readiness_origin_failure_records_sanitized_route_state(navigation_fixtu
     assert profile["diagnostics"][0]["counts"] == {}
     assert profile["diagnostics"][0]["elapsed_ns"] >= 0
     assert profile["diagnostics"][0]["bound_ns"] > 0
+
+
+def test_readiness_missing_route_records_false_state_and_wait_bound(
+    navigation_fixture: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class MissingRoutePage(FakePage):
+        async def click(self, selector: str) -> None:
+            await super().click(selector)
+            self.main_frame.url = "https://lms.example.invalid/std/other"
+
+    page = MissingRoutePage(
+        expected_row=navigation_fixture["selectors"]["course_row"],
+        section_link=navigation_fixture["selectors"]["section_link"],
+        course_id=navigation_fixture["course_id"],
+    )
+    monkeypatch.setattr(readiness, "READINESS_TIMEOUT_S", 0.05)
+    recorder = SpanRecorder(enabled=True)
+    with profile_context(recorder), pytest.raises(CampusError) as caught:
+        asyncio.run(
+            course_context.prepare_course_section(
+                page, {}, navigation_fixture["course_id"], navigation_fixture["section"]
+            )
+        )
+    assert caught.value.code == "browser-timeout"
+    diagnostic = recorder.finish(stderr=io.StringIO())["diagnostics"][0]
+    assert diagnostic["check"] == "page-readiness"
+    assert diagnostic["states"] == {"route_match": False}
+    assert diagnostic["elapsed_ns"] > 0 and diagnostic["bound_ns"] == 50_000_000

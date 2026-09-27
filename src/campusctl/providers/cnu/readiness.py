@@ -151,8 +151,8 @@ async def wait_page_ready(
                 route_match = False
                 raise ValueError("page origin does not match the provider")
             if not _route_matches(url, path):
+                route_match = False
                 if entered_route:
-                    route_match = False
                     raise ValueError("page route changed before readiness")
                 await asyncio.sleep(0.05)
                 continue
