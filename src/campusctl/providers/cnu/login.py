@@ -6,7 +6,14 @@ from contextlib import contextmanager, suppress
 from typing import Any
 from urllib.parse import urlsplit
 
-from campusctl.browser import CLEANUP_TIMEOUT_SECONDS, PROTOCOL_TIMEOUT_SECONDS, current_profile, profile_labels
+from campusctl.browser import (
+    _SESSION_LABELS,
+    CLEANUP_TIMEOUT_SECONDS,
+    PROTOCOL_TIMEOUT_SECONDS,
+    current_profile,
+    profile_labels,
+    profile_span,
+)
 from campusctl.credentials import get_credentials
 from campusctl.envelope import CampusError
 
@@ -32,12 +39,13 @@ def _target_kind(url: str) -> str:
 
 
 @contextmanager
-def _timed(phase: str, wait_kind: str, page_kind: str, recorder: Any = None):
-    target = current_profile() if recorder is None else recorder
-    if target is None:
-        yield
+def _timed(phase: str, wait_kind: str, page_kind: str, recorder: Any = None, labels: Any = None):
+    if recorder is None:
+        with profile_span(phase, wait_kind=wait_kind, page_kind=page_kind):
+            yield
         return
-    with target.span(phase, wait_kind=wait_kind, page_kind=page_kind):
+    document = None if labels is None else labels.active_document
+    with recorder.span(phase, wait_kind=wait_kind, page_kind=page_kind, document=document):
         yield
 
 
@@ -159,13 +167,14 @@ async def ensure_logged_in(
     response_deadline: float | None = None
     handler_tasks: set[asyncio.Task[Any]] = set()
     bound = current_profile()
+    labels = _SESSION_LABELS.get()
 
     def settle(data: dict[str, Any] | None, error: CampusError | None) -> None:
         if not login_result.done():
             login_result.set_result((data, error))
 
     async def abort_route(route: Any) -> None:
-        with suppress(BaseException), _timed("wait", "timeout", "login", bound):
+        with suppress(BaseException), _timed("wait", "timeout", "login", bound, labels):
             await asyncio.wait_for(route.abort(), timeout=CLEANUP_TIMEOUT_SECONDS)
 
     async def capture_login_response(route: Any) -> None:
@@ -176,13 +185,13 @@ async def ensure_logged_in(
             deadline = response_deadline
             if deadline is None:
                 raise TimeoutError
-            with _timed("response-completion", "response", "login", bound):
+            with _timed("response-completion", "response", "login", bound, labels):
                 response = await asyncio.wait_for(route.fetch(), timeout=_remaining(deadline))
                 body = await asyncio.wait_for(response.body(), timeout=_remaining(deadline))
             data = json.loads(body)
             if not isinstance(data, dict):
                 raise ValueError
-            with _timed("wait", "action", "login", bound):
+            with _timed("wait", "action", "login", bound, labels):
                 await asyncio.wait_for(
                     route.fulfill(response=response),
                     timeout=PROTOCOL_TIMEOUT_SECONDS,
