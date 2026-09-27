@@ -265,6 +265,8 @@ class FakePage:
             raise PlaywrightError("Execution context was destroyed")
         if self.mutation == "proof-timeout":
             raise CampusError("browser-timeout", "Timed out while observing archive table.", "Retry.", "error")
+        if self.mutation == "proof-campus-error":
+            raise CampusError("course-sync-failed", "Observation failed.", "Retry.", "error")
         if arg is not None and self.case.get("pre_observation_error"):
             raise CampusError("course-sync-failed", "Observation failed.", "Retry.", "error")
         clicks = self.events.count(materials._ARCHIVE_MENU)
@@ -854,5 +856,16 @@ def test_unrelated_request_inspection_error_propagates() -> None:
     page = FakePage({"course": course, "posts": _sample_posts("board-a"), "after_close": "request-runtime"}, [])
     with pytest.raises(RuntimeError, match="request inspection failed"):
         asyncio.run(materials.enumerate_archive(page, course))
+    assert page.listeners["request"] == []
+    assert all(handle.disposed for handle in page.handles)
+
+
+def test_non_timeout_proof_error_does_not_turn_into_fallback() -> None:
+    course = fixture()["course"]
+    page = FakePage({"course": course, "posts": _sample_posts("board-a"), "after_close": "proof-campus-error"}, [])
+    with pytest.raises(CampusError) as exc:
+        asyncio.run(materials.enumerate_archive(page, course))
+    assert exc.value.code == "course-sync-failed"
+    assert page.events.count(materials._ARCHIVE_MENU) == 0
     assert page.listeners["request"] == []
     assert all(handle.disposed for handle in page.handles)
