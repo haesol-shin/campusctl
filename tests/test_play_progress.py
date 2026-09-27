@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -133,8 +134,9 @@ def test_position_events_are_throttled_to_thirty_seconds(tmp_path: Any, monkeypa
             "playbackRate": 1.0,
         }
 
-    monkeypatch.setattr(player.time, "monotonic", lambda: clock[0])
-    monkeypatch.setattr(player.asyncio, "sleep", advance_clock)
+    monkeypatch.setattr(
+        player, "current_clock", lambda: SimpleNamespace(monotonic=lambda: clock[0], sleep=advance_clock)
+    )
     monkeypatch.setattr(player, "_read_video_state", read_video_state)
     events: list[dict[str, Any]] = []
 

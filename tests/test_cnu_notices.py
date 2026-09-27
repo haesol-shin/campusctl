@@ -7,12 +7,12 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from virtual_clock import VirtualClock, drive
 
 from campusctl.browser import profile_context
 from campusctl.envelope import CampusError
 from campusctl.profiling import SpanRecorder
 from campusctl.providers.cnu import notices, readiness
-from virtual_clock import VirtualClock, drive
 
 L = "https://lms.example.invalid"
 

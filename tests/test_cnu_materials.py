@@ -11,10 +11,10 @@ from urllib.parse import urlsplit
 
 import pytest
 from playwright.async_api import Error as PlaywrightError
+from virtual_clock import VirtualClock, drive
 
 from campusctl.envelope import CampusError
 from campusctl.providers.cnu import materials, readiness
-from virtual_clock import VirtualClock, drive
 
 _FIXTURE = Path(__file__).parent / "fixtures/lms_sources/materials_archive.json"
 
@@ -46,8 +46,6 @@ def test_archive_response_uses_same_virtual_deadline_for_arrival_and_completion(
         asyncio.run(drive(window.wait_response("/std/archive", "GET"), clock))
     assert caught.value.code == "browser-timeout"
     assert clock.now() == pytest.approx(0.2)
-
-
 
 
 class FakeRequest:
@@ -1040,7 +1038,9 @@ def test_incomplete_archive_state_records_compared_counts_without_identity() -> 
     page = FakePage({"course": course, "posts": _sample_posts("board-a", "board-b"), "table_ready": False}, [])
     recorder = SpanRecorder(enabled=True, scope=("materials",))
     with profile_context(recorder), pytest.raises(CampusError) as caught:
-        asyncio.run(drive(materials._wait_archive_state(page, 1, expected_course_id=course["course_id"]), VirtualClock()))
+        asyncio.run(
+            drive(materials._wait_archive_state(page, 1, expected_course_id=course["course_id"]), VirtualClock())
+        )
     assert caught.value.code == "course-sync-failed"
     profile = recorder.finish(stderr=io.StringIO())
     diagnostic = next(row for row in profile["diagnostics"] if row["check"] == "archive-state")

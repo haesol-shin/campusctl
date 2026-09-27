@@ -486,6 +486,7 @@ async def _grid_snapshot(page: Any, capture: _TodoCapture) -> list[dict[str, Any
             await clock.sleep(0.05)
 
     try:
+
         async def extract() -> list[dict[str, Any]]:
             nonlocal started, bound_ns, response_items, response_total
             if capture.committed_sequence is None:
@@ -553,6 +554,7 @@ async def _grid_snapshot(page: Any, capture: _TodoCapture) -> list[dict[str, Any
                 bound_ns = int(PROTOCOL_TIMEOUT_SECONDS * 1_000_000_000)
                 with profile_span("wait", wait_kind="action", domain="notices", page_kind="todo"):
                     await bounded(page.click(next_page), PROTOCOL_TIMEOUT_SECONDS, "opening next notice page")
+
         return await current_clock().wait_for(extract(), 120)
     except Exception:
         if started is not None:

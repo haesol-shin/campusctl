@@ -3,85 +3,18 @@ from __future__ import annotations
 import asyncio
 import json
 import socket
-from collections.abc import Awaitable
 from contextlib import suppress
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any
 
 import pytest
+from virtual_clock import VirtualClock, settle
 
 from campusctl import browser
 from campusctl.envelope import CampusError
 from campusctl.lock import exclusive_lock
 from campusctl.profiling import SpanRecorder
 from campusctl.wait_clock import current_clock, use_clock
-
-T = TypeVar("T")
-
-
-class VirtualClock:
-    def __init__(self) -> None:
-        self.timestamp = 0.0
-        self.sleepers: list[tuple[float, asyncio.Future[None]]] = []
-
-    def now(self) -> float:
-        return self.timestamp
-
-    def monotonic(self) -> float:
-        return self.timestamp
-
-    async def sleep(self, seconds: float) -> None:
-        if seconds <= 0:
-            await asyncio.sleep(0)
-            return
-        future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
-        deadline = self.timestamp + seconds
-        self.sleepers.append((deadline, future))
-        try:
-            await future
-        finally:
-            self.sleepers.remove((deadline, future))
-
-    def sleep_sync(self, seconds: float) -> None:
-        self.advance(seconds)
-
-    def advance(self, seconds: float) -> None:
-        if seconds < 0:
-            raise ValueError("Virtual time cannot move backwards")
-        self.timestamp += seconds
-        for deadline, future in tuple(self.sleepers):
-            if deadline <= self.timestamp and not future.done():
-                future.set_result(None)
-
-    async def wait_for(self, awaitable: Awaitable[T], seconds: float) -> T:
-        task = asyncio.ensure_future(awaitable)
-        if seconds <= 0:
-            if task.done():
-                return await task
-            task.cancel()
-            with suppress(asyncio.CancelledError):
-                await task
-            raise TimeoutError
-        timer = asyncio.create_task(self.sleep(seconds))
-        try:
-            done, _ = await asyncio.wait((task, timer), return_when=asyncio.FIRST_COMPLETED)
-            if task in done:
-                return await task
-            task.cancel()
-            with suppress(asyncio.CancelledError):
-                await task
-            raise TimeoutError
-        finally:
-            timer.cancel()
-            if not task.done():
-                task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await task
-
-
-async def settle() -> None:
-    for _ in range(4):
-        await asyncio.sleep(0)
 
 
 class FakeCdpSession:
@@ -318,8 +251,11 @@ def test_bounded_virtual_external_cancellation_propagates_to_operation() -> None
         clock = VirtualClock()
         started = asyncio.Event()
         cancelled = asyncio.Event()
+        wrapped: asyncio.Task[None] | None = None
 
         async def pending() -> None:
+            nonlocal wrapped
+            wrapped = asyncio.current_task()
             started.set()
             try:
                 await asyncio.Event().wait()
@@ -334,6 +270,7 @@ def test_bounded_virtual_external_cancellation_propagates_to_operation() -> None
             with pytest.raises(asyncio.CancelledError):
                 await operation
             assert cancelled.is_set()
+            assert wrapped is not None and wrapped.done() and wrapped.cancelled()
             assert not clock.sleepers
 
     _run(scenario())

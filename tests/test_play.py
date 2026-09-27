@@ -9,13 +9,13 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from virtual_clock import VirtualClock, drive
 
 from campusctl import browser as browser_module
 from campusctl import cli
 from campusctl.lock import exclusive_lock
 from campusctl.providers.cnu import player
 from campusctl.wait_clock import current_clock
-from virtual_clock import VirtualClock, drive
 
 GENERATED_AT = "2026-10-01T12:00:00Z"
 FIRST_ID = "cnu_lecture:course-a:row-1"
@@ -1036,7 +1036,6 @@ def test_youtube_stall_after_two_minutes_fails_and_closes_modal(
         clock[0] += seconds
 
     monkeypatch.setattr(player, "current_clock", lambda: SimpleNamespace(monotonic=lambda: clock[0], sleep=advance))
-
 
     exit_code, response = _invoke(capsys, [FIRST_ID])
 

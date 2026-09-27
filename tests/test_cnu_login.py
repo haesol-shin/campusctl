@@ -6,11 +6,11 @@ from contextlib import suppress
 from typing import Any
 
 import pytest
+from virtual_clock import VirtualClock, drive
 
 from campusctl.envelope import CampusError
 from campusctl.providers.cnu import courses, login
 from campusctl.wait_clock import current_clock
-from virtual_clock import VirtualClock, drive
 
 SENTINEL = "secret-sentinel-9462"
 USERNAME = "authorized-user"

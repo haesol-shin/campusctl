@@ -72,6 +72,10 @@ class VirtualClock:
             raise TimeoutError
         finally:
             timer.cancel()
+            if not task.done():
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
 
 
 async def settle() -> None:

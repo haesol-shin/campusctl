@@ -5,10 +5,10 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from virtual_clock import VirtualClock, drive
 
 from campusctl.envelope import CampusError
 from campusctl.providers.cnu import login, readiness
-from virtual_clock import VirtualClock, drive
 
 ORIGIN = "https://lms.example.invalid"
 
