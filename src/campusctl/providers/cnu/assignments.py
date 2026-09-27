@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 from campusctl.browser import PROTOCOL_TIMEOUT_SECONDS, bounded, profile_span
 from campusctl.envelope import CampusError
 from campusctl.identity import assignment_entity_id
+from campusctl.wait_clock import current_clock
 
 from .course_context import _TOPBAR_COURSE_JS, SECTION_RESPONSE_TIMEOUT_MS
 from .readiness import _route_matches, wait_page_ready
@@ -294,7 +295,7 @@ async def _collect_assignment_rows(
                 and len(extracted["rows"]) == count
             ):
                 return extracted
-            await asyncio.sleep(0.05)
+            await current_clock().sleep(0.05)
 
     with profile_span("page-readiness", wait_kind="readiness", domain="assignments", page_kind="assignments"):
         extracted = await bounded(matching_rows(), COURSE_WAIT_MS / 1000, "waiting for CNU task rows")

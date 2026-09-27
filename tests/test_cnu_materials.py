@@ -11,6 +11,7 @@ from urllib.parse import urlsplit
 
 import pytest
 from playwright.async_api import Error as PlaywrightError
+from virtual_clock import VirtualClock, drive
 
 from campusctl.envelope import CampusError
 from campusctl.providers.cnu import materials, readiness
@@ -21,6 +22,30 @@ _FIXTURE = Path(__file__).parent / "fixtures/lms_sources/materials_archive.json"
 @pytest.fixture(autouse=True)
 def short_render_wait(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(materials, "_WAIT_MS", 50)
+
+
+def test_archive_response_uses_same_virtual_deadline_for_arrival_and_completion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(materials, "SECTION_RESPONSE_TIMEOUT_MS", 200)
+    frame = object()
+    request = SimpleNamespace(frame=frame, method="GET", url="https://lms.example.invalid/std/archive")
+
+    class Response:
+        status = 200
+
+        async def finished(self) -> None:
+            await clock.sleep(0.1)
+
+    clock = VirtualClock()
+    window = materials._RequestWindow(SimpleNamespace(main_frame=frame))
+    response = Response()
+    response.request = request
+    clock.call_at(0.15, lambda: (window._started(request), window._received(response)))
+    with pytest.raises(CampusError) as caught:
+        asyncio.run(drive(window.wait_response("/std/archive", "GET"), clock))
+    assert caught.value.code == "browser-timeout"
+    assert clock.now() == pytest.approx(0.2)
 
 
 class FakeRequest:
@@ -997,7 +1022,7 @@ def test_initial_archive_state_waits_for_completed_rows(monkeypatch: pytest.Monk
         {"course": course, "posts": _sample_posts("board-a"), "initial_incomplete_observations": 2},
         [],
     )
-    rows = asyncio.run(materials.enumerate_archive(page, course))
+    rows = asyncio.run(drive(materials.enumerate_archive(page, course), VirtualClock()))
     assert _associated(rows) == [("board-a", "file-board-a", "board-a.pdf")]
     assert page.state_observations >= 3
     assert page.events.count(materials._ARCHIVE_MENU) == 0
@@ -1013,7 +1038,9 @@ def test_incomplete_archive_state_records_compared_counts_without_identity() -> 
     page = FakePage({"course": course, "posts": _sample_posts("board-a", "board-b"), "table_ready": False}, [])
     recorder = SpanRecorder(enabled=True, scope=("materials",))
     with profile_context(recorder), pytest.raises(CampusError) as caught:
-        asyncio.run(materials._wait_archive_state(page, 1, expected_course_id=course["course_id"]))
+        asyncio.run(
+            drive(materials._wait_archive_state(page, 1, expected_course_id=course["course_id"]), VirtualClock())
+        )
     assert caught.value.code == "course-sync-failed"
     profile = recorder.finish(stderr=io.StringIO())
     diagnostic = next(row for row in profile["diagnostics"] if row["check"] == "archive-state")

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import math
-import time
 from collections.abc import Callable
 from contextlib import suppress
 from typing import Any
@@ -13,6 +12,7 @@ from urllib.parse import urlsplit
 from campusctl.browser import PROTOCOL_TIMEOUT_SECONDS, bounded
 from campusctl.catalog import catalog_path, read_catalog, write_catalog
 from campusctl.envelope import CampusError
+from campusctl.wait_clock import current_clock
 
 from .courses import COURSE_LINK_SELECTOR
 from .lectures import LEARNING_ROW_SELECTOR, progress_is_full
@@ -251,15 +251,16 @@ async def _ensure_panopto_session(page: Any, config: dict[str, Any]) -> None:
         return
     with suppress(Exception):
         await bounded(page.evaluate(PANOPTO_LOGIN_JS), PROTOCOL_TIMEOUT_SECONDS, "starting Panopto sign-in")
-    deadline = time.monotonic() + PANOPTO_SESSION_WAIT_SECONDS
+    clock = current_clock()
+    deadline = clock.monotonic() + PANOPTO_SESSION_WAIT_SECONDS
     authenticated = False
-    while time.monotonic() < deadline:
+    while clock.monotonic() < deadline:
         if await _has_panopto_session(page):
             authenticated = True
             break
-        remaining = deadline - time.monotonic()
+        remaining = deadline - clock.monotonic()
         if remaining > 0:
-            await asyncio.sleep(min(1.0, remaining))
+            await clock.sleep(min(1.0, remaining))
     if not authenticated:
         raise CampusError(
             "lms-unavailable",
@@ -393,9 +394,10 @@ async def _close_player(page: Any) -> None:
 
 
 async def _player_frame(page: Any) -> Any:
-    deadline = time.monotonic() + PLAYER_FRAME_WAIT_SECONDS
+    clock = current_clock()
+    deadline = clock.monotonic() + PLAYER_FRAME_WAIT_SECONDS
     frame = None
-    while time.monotonic() < deadline:
+    while clock.monotonic() < deadline:
         iframe = await bounded(
             page.query_selector(PLAYER_FRAME_SELECTOR),
             PROTOCOL_TIMEOUT_SECONDS,
@@ -427,7 +429,7 @@ async def _player_frame(page: Any) -> Any:
                             PROTOCOL_TIMEOUT_SECONDS,
                             "starting the Panopto player",
                         )
-        await asyncio.sleep(min(PLAYER_POLL_INTERVAL_SECONDS, max(0.0, deadline - time.monotonic())))
+        await clock.sleep(min(PLAYER_POLL_INTERVAL_SECONDS, max(0.0, deadline - clock.monotonic())))
     if frame is None:
         raise _PlaybackFailure()
     await bounded(
@@ -462,15 +464,16 @@ def _youtube_embed_frame(frame: Any) -> bool:
 
 
 async def _youtube_frame(page: Any) -> Any:
-    deadline = time.monotonic() + PLAYER_FRAME_WAIT_SECONDS
+    clock = current_clock()
+    deadline = clock.monotonic() + PLAYER_FRAME_WAIT_SECONDS
     while True:
         for candidate in page.frames:
             if getattr(candidate, "parent_frame", None) is not None and _youtube_embed_frame(candidate):
                 return candidate
-        remaining = deadline - time.monotonic()
+        remaining = deadline - clock.monotonic()
         if remaining <= 0:
             raise _PlaybackFailure(message="The YouTube embed frame did not appear.")
-        await asyncio.sleep(min(PLAYER_POLL_INTERVAL_SECONDS, remaining))
+        await clock.sleep(min(PLAYER_POLL_INTERVAL_SECONDS, remaining))
 
 
 async def _read_youtube_state(frame: Any, timeout: float = PROTOCOL_TIMEOUT_SECONDS) -> dict[str, Any]:
@@ -499,7 +502,8 @@ async def _play_youtube_video(
     on_started: Callable[[], None] | None = None,
     on_position: Callable[[float, float], None] | None = None,
 ) -> tuple[float, str]:
-    deadline = time.monotonic() + YOUTUBE_AUTOPLAY_WAIT_SECONDS
+    clock = current_clock()
+    deadline = clock.monotonic() + YOUTUBE_AUTOPLAY_WAIT_SECONDS
     try:
         first = await _read_youtube_state(
             frame,
@@ -519,14 +523,14 @@ async def _play_youtube_video(
     status = first
     current_time = initial_time
     while not (status.get("exists") is True and status.get("paused") is False and current_time > initial_time + 0.05):
-        remaining = deadline - time.monotonic()
+        remaining = deadline - clock.monotonic()
         if remaining <= 0:
             raise _PlaybackFailure(
                 code="youtube-autoplay-blocked",
                 message="YouTube playback did not start through native autoplay.",
             )
-        await asyncio.sleep(min(PLAYER_POLL_INTERVAL_SECONDS, remaining))
-        remaining = deadline - time.monotonic()
+        await clock.sleep(min(PLAYER_POLL_INTERVAL_SECONDS, remaining))
+        remaining = deadline - clock.monotonic()
         if remaining <= 0:
             raise _PlaybackFailure(
                 code="youtube-autoplay-blocked",
@@ -546,7 +550,7 @@ async def _play_youtube_video(
             )
         current_time = _video_number(status, "currentTime")
 
-    started_at = time.monotonic()
+    started_at = clock.monotonic()
     if on_started is not None:
         on_started()
     previous_time = current_time
@@ -555,7 +559,7 @@ async def _play_youtube_video(
     last_position_event_at: float | None = None
     while True:
         status = await _read_youtube_state(frame)
-        now = time.monotonic()
+        now = clock.monotonic()
         current_time = _video_number(status, "currentTime")
         duration = _video_number(status, "duration")
         elapsed = now - started_at
@@ -573,7 +577,7 @@ async def _play_youtube_video(
             on_position(current_time, duration)
             last_position_event_at = now
         if status.get("ended") or (not replay and duration > 0 and current_time >= duration - 1.0):
-            await asyncio.sleep(YOUTUBE_AFTER_END_SECONDS)
+            await clock.sleep(YOUTUBE_AFTER_END_SECONDS)
             return elapsed, _watch_time(elapsed)
         if status.get("paused"):
             paused_since = now if paused_since is None else paused_since
@@ -591,7 +595,7 @@ async def _play_youtube_video(
         )
         if elapsed >= watch_limit:
             raise _PlaybackFailure(elapsed)
-        await asyncio.sleep(YOUTUBE_POLL_INTERVAL_SECONDS)
+        await clock.sleep(YOUTUBE_POLL_INTERVAL_SECONDS)
 
 
 async def _visible_locator(page: Any, selector: str, what: str) -> Any | None:
@@ -605,9 +609,10 @@ async def _visible_locator(page: Any, selector: str, what: str) -> Any | None:
 
 
 async def _wait_for_speed(frame: Any, speed: float) -> bool:
-    deadline = time.monotonic() + SPEED_CHANGE_TIMEOUT_SECONDS
+    clock = current_clock()
+    deadline = clock.monotonic() + SPEED_CHANGE_TIMEOUT_SECONDS
     while True:
-        remaining = deadline - time.monotonic()
+        remaining = deadline - clock.monotonic()
         if remaining <= 0:
             return False
         try:
@@ -626,10 +631,10 @@ async def _wait_for_speed(frame: Any, speed: float) -> bool:
             and math.isclose(float(rate), speed)
         ):
             return True
-        remaining = deadline - time.monotonic()
+        remaining = deadline - clock.monotonic()
         if remaining <= 0:
             return False
-        await asyncio.sleep(min(PLAYER_POLL_INTERVAL_SECONDS, remaining))
+        await clock.sleep(min(PLAYER_POLL_INTERVAL_SECONDS, remaining))
 
 
 async def _play_visible_lecture(
@@ -674,7 +679,7 @@ async def _play_visible_lecture(
 
             def on_youtube_started() -> None:
                 nonlocal started_at
-                started_at = time.monotonic()
+                started_at = current_clock().monotonic()
                 if on_started is not None:
                     on_started()
 
@@ -714,7 +719,7 @@ async def _play_visible_lecture(
             if already_ended and (await _read_video_state(frame)).get("ended"):
                 raise _PlaybackFailure(message="The official player did not restart playback.")
 
-        started_at = time.monotonic()
+        started_at = current_clock().monotonic()
         if on_started is not None:
             on_started()
         last_progress_at = started_at
@@ -722,7 +727,7 @@ async def _play_visible_lecture(
         last_position_event_at: float | None = None
         while True:
             status = await _read_video_state(frame)
-            now = time.monotonic()
+            now = current_clock().monotonic()
             current = status.get("currentTime")
             duration_value = status.get("duration")
             current_time = float(current) if isinstance(current, int | float) and math.isfinite(float(current)) else 0.0
@@ -769,12 +774,12 @@ async def _play_visible_lecture(
             )
             if elapsed >= watch_limit:
                 raise _PlaybackFailure(elapsed)
-            await asyncio.sleep(PLAYER_POLL_INTERVAL_SECONDS)
+            await current_clock().sleep(PLAYER_POLL_INTERVAL_SECONDS)
     except _PlaybackFailure as error:
         primary_error = error
         raise
     except Exception:
-        elapsed = time.monotonic() - started_at if started_at is not None else 0.0
+        elapsed = current_clock().monotonic() - started_at if started_at is not None else 0.0
         primary_error = _PlaybackFailure(elapsed)
         raise primary_error from None
     except BaseException as error:
@@ -789,7 +794,7 @@ async def _play_visible_lecture(
                     raise
             except BaseException:
                 if primary_error is None:
-                    elapsed = time.monotonic() - started_at if started_at is not None else 0.0
+                    elapsed = current_clock().monotonic() - started_at if started_at is not None else 0.0
                     raise _PlaybackFailure(elapsed) from None
 
 
@@ -837,16 +842,17 @@ def _completed_item(
 
 
 async def _poll_completion(page: Any, row_id: str) -> dict[str, Any] | None:
-    deadline = time.monotonic() + COMPLETION_POLL_SECONDS
+    clock = current_clock()
+    deadline = clock.monotonic() + COMPLETION_POLL_SECONDS
     last_row: dict[str, Any] | None = None
     while True:
-        remaining = deadline - time.monotonic()
+        remaining = deadline - clock.monotonic()
         if remaining <= 0:
             return last_row
         try:
             row = await _read_row(page, row_id, timeout=min(PROTOCOL_TIMEOUT_SECONDS, remaining))
         except CampusError as error:
-            if error.code == "browser-timeout" and time.monotonic() >= deadline:
+            if error.code == "browser-timeout" and clock.monotonic() >= deadline:
                 return last_row
             raise
         last_row = row
@@ -856,10 +862,10 @@ async def _poll_completion(page: Any, row_id: str) -> dict[str, Any] | None:
             and progress_is_full(row.get("progress_text"))
         ):
             return row
-        remaining = deadline - time.monotonic()
+        remaining = deadline - clock.monotonic()
         if remaining <= 0:
             return last_row
-        await asyncio.sleep(min(COMPLETION_POLL_INTERVAL_SECONDS, remaining))
+        await clock.sleep(min(COMPLETION_POLL_INTERVAL_SECONDS, remaining))
 
 
 def _partial_error(code: str, message: str, remediation: str) -> CampusError:

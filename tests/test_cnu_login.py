@@ -6,9 +6,11 @@ from contextlib import suppress
 from typing import Any
 
 import pytest
+from virtual_clock import VirtualClock, drive
 
 from campusctl.envelope import CampusError
 from campusctl.providers.cnu import courses, login
+from campusctl.wait_clock import current_clock
 
 SENTINEL = "secret-sentinel-9462"
 USERNAME = "authorized-user"
@@ -22,7 +24,7 @@ class FakeResponse:
 
     async def body(self) -> bytes:
         if self.body_delay:
-            await asyncio.sleep(self.body_delay)
+            await current_clock().sleep(self.body_delay)
         if self.body_error is not None:
             raise self.body_error
         return json.dumps(self.data).encode()
@@ -50,7 +52,7 @@ class FakeRoute:
     async def fetch(self) -> FakeResponse:
         self.fetch_count += 1
         if self.fetch_delay:
-            await asyncio.sleep(self.fetch_delay)
+            await current_clock().sleep(self.fetch_delay)
         if self.fetch_error is not None:
             raise self.fetch_error
         return self.response
@@ -289,7 +291,7 @@ def test_fetch_and_body_use_one_response_budget(monkeypatch: pytest.MonkeyPatch)
     page = FakePage(route=route)
     monkeypatch.setattr(login, "get_credentials", lambda _: (USERNAME, SENTINEL))
 
-    _run(_ensure(page, timeout_ms=2000))
+    asyncio.run(drive(_ensure(page, timeout_ms=2000), VirtualClock()))
     assert route.fetch_count == route.fulfill_count == 1
     assert page.landing_visible
 
@@ -304,16 +306,18 @@ def test_fetch_and_body_exceed_shared_response_budget(monkeypatch: pytest.Monkey
             await _ensure(page, timeout_ms=1000)
         assert page.route_task is not None
         with suppress(asyncio.CancelledError):
-            await asyncio.wait_for(page.route_task, timeout=5)
+            await page.route_task
         return caught.value
 
-    error = _run(exercise())
+    clock = VirtualClock()
+    error = asyncio.run(drive(exercise(), clock))
 
     assert error.code == "lms-unavailable"
     _assert_redacted(error)
     assert route.fulfill_count == 0
     assert route.abort_count == 1
     assert page.unroutes == 1
+    assert clock.now() == pytest.approx(1.0)
 
 
 def test_hanging_fulfill_is_bounded_and_route_is_removed(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -324,7 +328,7 @@ def test_hanging_fulfill_is_bounded_and_route_is_removed(monkeypatch: pytest.Mon
     monkeypatch.setattr(login, "get_credentials", lambda _: (USERNAME, SENTINEL))
 
     with pytest.raises(CampusError) as caught:
-        _run(_ensure(page, timeout_ms=500))
+        asyncio.run(drive(_ensure(page, timeout_ms=500), VirtualClock()))
 
     assert caught.value.code == "lms-unavailable"
     _assert_redacted(caught.value)

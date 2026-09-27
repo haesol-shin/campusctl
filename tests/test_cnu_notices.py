@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from virtual_clock import VirtualClock, drive
 
 from campusctl.browser import profile_context
 from campusctl.envelope import CampusError
@@ -408,7 +409,7 @@ def collect_board(
         await page.click('a[href="/std/notice"]')
         return await notices.collect_notice_rows(page, COURSES[0], capture=capture, courses=courses, todo_rows=[])
 
-    return asyncio.run(exercise())
+    return asyncio.run(drive(exercise(), VirtualClock()))
 
 
 def test_verified_empty_board_requires_complete_matching_list(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -646,7 +647,7 @@ def test_todo_paginates_by_rendered_next_when_response_has_more_rows(
         capture = await notices.open_notice_todo(page)
         return await notices.collect_notice_todo(page, COURSES, capture=capture)
 
-    rows, failures = asyncio.run(collect())
+    rows, failures = asyncio.run(drive(collect(), VirtualClock()))
     assert failures == set()
     assert [item["title"] for item in rows["course-a"]] == ["First", "Second"]
     assert [item["title"] for item in rows["course-b"]] == ["Third"]
@@ -683,12 +684,15 @@ def test_todo_accepts_filtered_grid_when_response_covers_total(
 
     recorder = SpanRecorder(enabled=True, scope=("notices",))
     with profile_context(recorder):
-        rows, failures = asyncio.run(collect())
+        clock = VirtualClock()
+        rows, failures = asyncio.run(drive(collect(), clock))
     assert failures == set()
     assert [item["title"] for item in rows["course-a"]] == ["Visible notice"]
     assert rows["course-b"] == []
     assert not page.listeners
     assert recorder.finish(stderr=io.StringIO())["diagnostics"] == []
+    minimum = 0.5 if has_disabled_next else 1.5
+    assert minimum <= clock.now() < minimum + 0.1
 
 
 def test_todo_waits_for_late_rows_and_next_before_collecting(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -753,7 +757,7 @@ def test_todo_waits_for_late_rows_and_next_before_collecting(monkeypatch: pytest
         capture = await notices.open_notice_todo(page)
         return await notices.collect_notice_todo(page, COURSES, capture=capture)
 
-    rows, failures = asyncio.run(collect())
+    rows, failures = asyncio.run(drive(collect(), VirtualClock()))
     assert failures == set()
     assert [item["title"] for item in rows["course-a"]] == ["First", "Second"]
     assert [item["title"] for item in rows["course-b"]] == ["Third"]
@@ -788,17 +792,14 @@ def test_todo_waits_for_late_next_after_response_settles(
                 }
             }
             self.page_index = 0
-            self.started: float | None = None
+            self.next_visible = False
             self.clicked_at: float | None = None
 
         async def evaluate(self, expression: str) -> Any:
             if expression == notices._EXTRACT_GRID_JS:
                 if self.page_index:
                     return {"rendered": True, "empty": False, "rows": [second], "next": None}
-                now = asyncio.get_running_loop().time()
-                if self.started is None:
-                    self.started = now
-                next_page = '.tabulator-page[data-page="next"]' if now - self.started >= 0.6 else None
+                next_page = '.tabulator-page[data-page="next"]' if self.next_visible else None
                 return {
                     "rendered": True,
                     "empty": False,
@@ -812,7 +813,7 @@ def test_todo_waits_for_late_next_after_response_settles(
 
         async def click(self, selector: str) -> None:
             if selector == '.tabulator-page[data-page="next"]':
-                self.clicked_at = asyncio.get_running_loop().time()
+                self.clicked_at = clock.now()
                 self.page_index = 1
                 self.todo_response = {"body": {"list": [{"row_idx": 2}], "tot_cnt": 2}}
                 await self.request("/api/v1/board/std/notice/list", "POST")
@@ -821,6 +822,8 @@ def test_todo_waits_for_late_next_after_response_settles(
 
     monkeypatch.setattr(notices, "COURSE_MENU_TIMEOUT_MS", 2500)
     page = LateNextTodoPage()
+    clock = VirtualClock()
+    clock.call_at(0.6, lambda: setattr(page, "next_visible", True))
     page.handler = lambda route: route.continue_()
     monkeypatch.setattr(notices, "_ORIGIN", L)
     monkeypatch.setattr(notices, "_TODO_URL", L + "/std/todo")
@@ -829,11 +832,31 @@ def test_todo_waits_for_late_next_after_response_settles(
         capture = await notices.open_notice_todo(page)
         return await notices.collect_notice_todo(page, COURSES, capture=capture)
 
-    rows, failures = asyncio.run(collect())
+    rows, failures = asyncio.run(drive(collect(), clock))
     assert failures == set()
     assert [item["title"] for item in rows["course-a"]] == ["First", "Second"]
-    assert page.started is not None and page.clicked_at is not None
-    assert page.clicked_at - page.started >= 0.6
+    assert page.clicked_at is not None and 0.6 <= page.clicked_at < 1.5
+    assert not page.listeners
+
+
+def test_todo_outer_timeout_cancels_pending_response_and_closes_capture(monkeypatch: pytest.MonkeyPatch) -> None:
+    page = FakePage()
+    page.handler = lambda route: route.continue_()
+    monkeypatch.setattr(notices, "_ORIGIN", L)
+    monkeypatch.setattr(notices, "_TODO_URL", L + "/std/todo")
+    monkeypatch.setattr(notices, "SECTION_RESPONSE_TIMEOUT_MS", 200_000)
+    clock = VirtualClock()
+
+    async def collect() -> None:
+        capture = await notices.open_notice_todo(page)
+        capture.requests.clear()
+        capture.changed.clear()
+        await notices.collect_notice_todo(page, COURSES, capture=capture)
+
+    with pytest.raises(TimeoutError):
+        asyncio.run(drive(collect(), clock))
+    assert clock.now() == 120
+    assert not clock.sleepers
     assert not page.listeners
 
 
@@ -872,7 +895,7 @@ def test_todo_missing_terminal_proof_times_out(
 
     recorder = SpanRecorder(enabled=True, scope=("notices",))
     with profile_context(recorder), pytest.raises(CampusError) as error:
-        asyncio.run(collect())
+        asyncio.run(drive(collect(), VirtualClock()))
     assert error.value.code == "browser-timeout"
     assert not page.listeners
     profile = recorder.finish(stderr=io.StringIO())
@@ -918,7 +941,7 @@ def test_hidden_next_is_absent_in_failed_grid_diagnostic(monkeypatch: pytest.Mon
 
     recorder = SpanRecorder(enabled=True, scope=("notices",))
     with profile_context(recorder), pytest.raises(CampusError) as caught:
-        asyncio.run(collect())
+        asyncio.run(drive(collect(), VirtualClock()))
     assert caught.value.code == "browser-timeout"
     diagnostic = next(
         row for row in recorder.finish(stderr=io.StringIO())["diagnostics"] if row["check"] == "todo-grid"
@@ -965,7 +988,7 @@ def test_todo_unstable_grid_fails_without_publishing_rows(monkeypatch: pytest.Mo
         await notices.collect_notice_todo(page, COURSES, capture=capture)
 
     with pytest.raises(CampusError) as error:
-        asyncio.run(collect())
+        asyncio.run(drive(collect(), VirtualClock()))
     assert error.value.code == "browser-timeout"
     assert not page.listeners
 

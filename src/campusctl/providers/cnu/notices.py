@@ -13,6 +13,7 @@ from urllib.parse import urlsplit
 from campusctl.browser import PROTOCOL_TIMEOUT_SECONDS, bounded, profile_check_start, profile_diagnostic, profile_span
 from campusctl.envelope import CampusError
 from campusctl.identity import notice_entity_id
+from campusctl.wait_clock import current_clock
 
 from .course_context import _TOPBAR_COURSE_JS, COURSE_MENU_TIMEOUT_MS, SECTION_RESPONSE_TIMEOUT_MS
 from .readiness import _route_matches, wait_page_ready
@@ -430,13 +431,13 @@ async def _grid_snapshot(page: Any, capture: _TodoCapture) -> list[dict[str, Any
                     fingerprint = tuple(str(item) for item in snapshot["rows"])
                     if fingerprint != previous and (fingerprint or snapshot.get("empty") is True):
                         return
-                await asyncio.sleep(0.05)
+                await current_clock().sleep(0.05)
 
         with profile_span("page-readiness", wait_kind="readiness", domain="notices", page_kind="todo"):
             await bounded(changed(), COURSE_MENU_TIMEOUT_MS / 1000, "waiting for the next notice page")
 
     async def stable_grid(*, require_next: bool) -> dict[str, Any]:
-        loop = asyncio.get_running_loop()
+        clock = current_clock()
         signature: tuple[Any, ...] | None = None
         unchanged_since = 0.0
         while True:
@@ -464,7 +465,7 @@ async def _grid_snapshot(page: Any, capture: _TodoCapture) -> list[dict[str, Any
                         snapshot.get("next_disabled") is True,
                         pagination_present,
                     )
-                    now = loop.time()
+                    now = clock.now()
                     if current != signature:
                         signature, unchanged_since = current, now
                     elif now - unchanged_since >= _GRID_QUIET_SECONDS:
@@ -482,10 +483,12 @@ async def _grid_snapshot(page: Any, capture: _TodoCapture) -> list[dict[str, Any
                     signature = None
             else:
                 signature = None
-            await asyncio.sleep(0.05)
+            await clock.sleep(0.05)
 
     try:
-        async with asyncio.timeout(120):
+
+        async def extract() -> list[dict[str, Any]]:
+            nonlocal started, bound_ns, response_items, response_total
             if capture.committed_sequence is None:
                 raise ValueError("To-do document navigation did not commit")
             window_start = capture.committed_sequence
@@ -515,13 +518,13 @@ async def _grid_snapshot(page: Any, capture: _TodoCapture) -> list[dict[str, Any
                         response_items += count
                 started = profile_check_start()
                 bound_ns = COURSE_MENU_TIMEOUT_MS * 1_000_000
-                loop = asyncio.get_running_loop()
-                deadline = loop.time() + COURSE_MENU_TIMEOUT_MS / 1000
+                clock = current_clock()
+                deadline = clock.now() + COURSE_MENU_TIMEOUT_MS / 1000
                 await wait_page_ready(page, "todo", domain="notices")
                 with profile_span("page-readiness", wait_kind="readiness", domain="notices", page_kind="todo"):
                     snapshot = await bounded(
                         stable_grid(require_next=response_total is not None and response_items < response_total),
-                        max(0, deadline - loop.time()),
+                        max(0, deadline - clock.now()),
                         "waiting for stable notice grid",
                     )
                 if page.main_frame.url != _TODO_URL:
@@ -551,6 +554,8 @@ async def _grid_snapshot(page: Any, capture: _TodoCapture) -> list[dict[str, Any
                 bound_ns = int(PROTOCOL_TIMEOUT_SECONDS * 1_000_000_000)
                 with profile_span("wait", wait_kind="action", domain="notices", page_kind="todo"):
                     await bounded(page.click(next_page), PROTOCOL_TIMEOUT_SECONDS, "opening next notice page")
+
+        return await current_clock().wait_for(extract(), 120)
     except Exception:
         if started is not None:
             counts = {"response_items": response_items}
@@ -781,7 +786,7 @@ class _NoticeCapture:
                     and Counter(snapshot["row_ids"]) == response_ids
                 ):
                     return snapshot
-                await asyncio.sleep(0.05)
+                await current_clock().sleep(0.05)
 
         with profile_span("page-readiness", wait_kind="readiness", domain="notices", page_kind="notices"):
             snapshot = await bounded(matching_rows(), COURSE_MENU_TIMEOUT_MS / 1000, "waiting for notice board rows")

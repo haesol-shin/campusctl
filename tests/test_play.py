@@ -9,11 +9,13 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from virtual_clock import VirtualClock, drive
 
 from campusctl import browser as browser_module
 from campusctl import cli
 from campusctl.lock import exclusive_lock
 from campusctl.providers.cnu import player
+from campusctl.wait_clock import current_clock
 
 GENERATED_AT = "2026-10-01T12:00:00Z"
 FIRST_ID = "cnu_lecture:course-a:row-1"
@@ -573,7 +575,9 @@ def _fast_player_sleeps(monkeypatch: pytest.MonkeyPatch, page: FakePage) -> None
         page.calls.append(("sleep", seconds))
         await real_sleep(min(seconds, 0.001))
 
-    monkeypatch.setattr(player.asyncio, "sleep", fast_sleep)
+    monkeypatch.setattr(
+        player, "current_clock", lambda: SimpleNamespace(monotonic=current_clock().monotonic, sleep=fast_sleep)
+    )
 
 
 def _assert_no_dom_visibility_mutations(page: FakePage) -> None:
@@ -1026,17 +1030,12 @@ def test_youtube_stall_after_two_minutes_fails_and_closes_modal(
     page = FakePage(youtube_rows={"row-1"}, youtube_mode="stalled")
     _prepare(tmp_path, monkeypatch, page, lectures=[_lecture(FIRST_ID, media="youtube")], default_speed=1.0)
     clock = [0.0]
-    monkeypatch.setattr(player, "time", SimpleNamespace(monotonic=lambda: clock[0]))
 
     async def advance(seconds: float) -> None:
         page.calls.append(("sleep", seconds))
         clock[0] += seconds
 
-    monkeypatch.setattr(
-        player,
-        "asyncio",
-        SimpleNamespace(sleep=advance, CancelledError=asyncio.CancelledError),
-    )
+    monkeypatch.setattr(player, "current_clock", lambda: SimpleNamespace(monotonic=lambda: clock[0], sleep=advance))
 
     exit_code, response = _invoke(capsys, [FIRST_ID])
 
@@ -1175,6 +1174,15 @@ def test_player_close_failure_preserves_failed_item_and_pauses_queue(
     assert ("close-attempt", "row-1") in page.calls
     catalog = json.loads((tmp_path / "catalog" / "lectures.json").read_text(encoding="utf-8"))
     assert next(item for item in catalog["lectures"] if item["entity_id"] == FIRST_ID)["completion"] == "incomplete"
+
+
+def test_missing_youtube_frame_reaches_virtual_deadline() -> None:
+    clock = VirtualClock()
+    with pytest.raises(player._PlaybackFailure) as caught:
+        asyncio.run(drive(player._youtube_frame(SimpleNamespace(frames=[])), clock))
+    assert caught.value.message == "The YouTube embed frame did not appear."
+    assert clock.now() == player.PLAYER_FRAME_WAIT_SECONDS
+    assert not clock.sleepers
 
 
 def test_panopto_splash_control_creates_video_before_waiting_for_it(monkeypatch: pytest.MonkeyPatch) -> None:
