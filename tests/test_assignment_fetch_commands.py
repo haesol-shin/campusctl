@@ -1,8 +1,7 @@
-"""Tests for unpublished assignments fetch command, dispatch, and render."""
+"""Tests for selected assignment fetch, dispatch, and render."""
 
 from __future__ import annotations
 
-import argparse
 import asyncio
 import contextlib
 from pathlib import Path
@@ -46,15 +45,7 @@ def test_assignment_fetch_json_and_human(tmp_path: Path, monkeypatch: pytest.Mon
     monkeypatch.setattr("campusctl.config.load_config", lambda: {})
     _setup_catalog(tmp_path)
 
-    # 1. Verify fetch is UNPUBLISHED
-    assert "fetch" not in assignments.CAPABILITY["commands"]
-    parser = argparse.ArgumentParser()
-    subparsers = parser.add_subparsers()
-    assignments.register(subparsers)
-    with pytest.raises(SystemExit):
-        parser.parse_args(["assignments", "fetch", "cnu_assignment:course-1:task-101"])
-
-    # 2. Test successful dispatch (complete package)
+    # Complete package
     fake_pkg_complete = {
         "entity_id": "cnu_assignment:course-1:task-101",
         "completeness": "complete",
@@ -113,7 +104,7 @@ def test_assignment_fetch_json_and_human(tmp_path: Path, monkeypatch: pytest.Mon
     assert any("Completeness: complete" in line for line in human_lines)
     assert not any("Omitted:" in line for line in human_lines)
 
-    # 3. Test unsupported-resource partial result
+    # Unsupported-resource partial result
     fake_pkg_partial = dict(fake_pkg_complete)
     fake_pkg_partial["completeness"] = "partial"
     fake_pkg_partial["omitted_resources"] = [
@@ -142,7 +133,7 @@ def test_assignment_fetch_json_and_human(tmp_path: Path, monkeypatch: pytest.Mon
     assert any("Completeness: partial" in line for line in human_lines_p)
     assert any("Omitted: unsupported-media-type — lecture.mp4" in line for line in human_lines_p)
 
-    # 4. Error: catalog-missing
+    # Missing catalog
     monkeypatch.setattr(assignments, "data_dir", lambda: tmp_path / "nonexistent")
     with pytest.raises(CampusError) as exc_cat:
         assignments.dispatch(args)
@@ -150,7 +141,7 @@ def test_assignment_fetch_json_and_human(tmp_path: Path, monkeypatch: pytest.Mon
     assert "Assignments fetch catalog lookup" in exc_cat.value.message
     monkeypatch.setattr(assignments, "data_dir", lambda: tmp_path)
 
-    # 5. Error: entity-unknown (including numeric material selection)
+    # Unknown ID, including numeric material selection
     args_unknown = SimpleNamespace(
         assignments_command="fetch", entity_id="cnu_assignment:course-1:task-999", out=None, headless_override=None
     )
@@ -165,7 +156,7 @@ def test_assignment_fetch_json_and_human(tmp_path: Path, monkeypatch: pytest.Mon
         assignments.dispatch(args_num)
     assert exc_num.value.code == "entity-unknown"
 
-    # 6. Error: output-path-conflict
+    # Existing output path
     existing_file = tmp_path / "already_exists"
     existing_file.write_text("exists")
     args_conflict = SimpleNamespace(
@@ -180,7 +171,7 @@ def test_assignment_fetch_json_and_human(tmp_path: Path, monkeypatch: pytest.Mon
     assert "Assignments fetch output selection" in exc_conf.value.message
     assert str(existing_file) not in exc_conf.value.message
 
-    # 7. Error: headless-unavailable (unsupported effective headless fails before navigation)
+    # Unsupported effective headless fails before navigation
     args_headless = SimpleNamespace(
         assignments_command="fetch", entity_id="cnu_assignment:course-1:task-101", out=None, headless_override=True
     )
@@ -189,7 +180,7 @@ def test_assignment_fetch_json_and_human(tmp_path: Path, monkeypatch: pytest.Mon
     assert exc_hl.value.code == "headless-unavailable"
     assert "Assignments fetch browser preflight" in exc_hl.value.message
 
-    # 8. Error: session-busy
+    # Busy session
     async def mock_fetch_busy(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
         raise CampusError("session-busy", "Browser session lock is occupied.", status="busy")
 

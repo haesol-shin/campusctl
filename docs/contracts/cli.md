@@ -1,6 +1,6 @@
 # campusctl v0.3 command-line contract
 
-`campusctl` is a local CLI for the CNU LMS. `sync` collects lectures, assignments, notices, and materials by default in one session, with one verified course selection per course. `--only` narrows the domains; list and status commands use local catalogs. Playback and download require an explicitly selected item. Assignment/notice detail fetch is not registered.
+`campusctl` is a local CLI for the CNU LMS. `sync` collects lectures, assignments, notices, and materials by default in one session, with one verified course selection per course. `--only` narrows the domains; list and status commands use local catalogs. Playback, download and assignment/notice detail fetch require an explicitly selected item.
 
 For installation and browser setup, see the [installation guide](../installation.md).
 Domain-specific commands and cache/error behavior: [assignments](assignments.md), [notices](notices.md), [materials](materials.md).
@@ -21,7 +21,9 @@ campusctl courses list [--refresh] [--json]
 campusctl lectures list [--all] [--course ID] [--refresh] [--json]
 campusctl lectures play ENTITY_ID... [--speed 1.0|1.25|1.5] [--replay] [--json]
 campusctl assignments list [--course ID] [--refresh] [--json]
+campusctl assignments fetch ENTITY_ID [--out DIR] [--json]
 campusctl notices list [--course ID] [--refresh] [--json]
+campusctl notices fetch ENTITY_ID [--out DIR] [--json]
 campusctl materials list [--course ID] [--refresh] [--json]
 campusctl materials download [ENTITY_ID|NUMBER] [--out DIRECTORY] [--json]
 ```
@@ -66,13 +68,15 @@ In JSON mode, successful configuration creation has status `ok` and returns `{"c
   "display_available": true,
   "playback": {"default_speed": 1.0, "supported_speeds": [1.0, 1.25, 1.5]},
   "catalog": {"present": false, "generated_at": null},
-  "capabilities": {"sync": ["lectures", "assignments", "notices", "materials"], "lectures": ["list", "play"], "status": ["local"], "assignments": ["list"], "materials": ["list", "download"], "notices": ["list"]}
+  "capabilities": {"sync": ["lectures", "assignments", "notices", "materials"], "lectures": ["list", "play"], "status": ["local"], "assignments": ["list", "fetch"], "materials": ["list", "download"], "notices": ["list", "fetch"]}
 }
 ```
 
 `auth set` returns `{"provider":"keyring","configured":true}` after storing a password. `auth status` returns provider and configured state, plus the keyring backend class or helper executable basename. Without `--check`, a keyring with no saved password returns status `ok` and `configured: false`; with `--check`, it returns `user-action` code `credentials-not-configured` with provider, backend, and configured fields in `result`. A keyring backend failure returns its `user-action` error with provider and `configured: null`, since password presence could not be determined. For the command provider, status includes the helper basename; `--check` adds `check: "ok"` or `"failed"`. `configured` records that the helper command is set, regardless of whether its check succeeds. When the helper check fails, the envelope has status `error` and exit code 1 with code `credential-helper-failed`, while retaining the `provider`, `helper`, `configured`, and `check` fields in `result`.
 
 For `sync --only lectures`, the result returns `courses`, `lectures`, `incomplete`, `failed_courses`, and `catalog.generated_at`. For multi-domain sync, `result.domains` contains each requested domain's corresponding result and status; completed domains and failed courses are distinguishable. Counts exclude retained stale rows. Course failures produce `partial`/1 with errors naming the domain and step. Domain contracts describe their fields and errors.
+
+`assignments fetch` and `notices fetch` each require exactly one full `entity_id` from their matching cached list; numeric selection is not supported. They open only the selected detail in a headed browser under the exclusive session lock, verify identity, and write `package.json`, `content.md` and any included resources to a source package; `--out DIR` must name a nonexistent destination. JSON returns `result.source_package` (paths, completeness, resources, omissions, provenance); human output shows source ID, package/content paths, completeness and omissions. Omissions produce `partial`/1 with `resource-omitted` and a usable package; `entity-unknown`, missing catalog, output conflict and unsupported headless mode return `user-action`/2; operational failures return `error`/1; session contention returns `busy`/75. Notice detail opening can add one view and may flip read state, though fetch never clicks mark-read. Notice attachments are omitted rather than transferred. See the [assignment](assignments.md#selected-detail-fetch) and [notice](notices.md#selected-detail-fetch) contracts for layout and omissions.
 
 `courses list` returns the cache metadata and course records:
 
@@ -149,7 +153,7 @@ In JSON mode, unknown exceptions are returned with code `internal` and their exc
 - `catalog-missing`, `catalog-invalid`, `catalog-schema-unsupported`, `catalog-outdated`, `catalog-write-failed`
 - `browser-not-installed` remediation is `Run 'campusctl setup' to install the browser.`; `browser-install-failed` reports installer failure with status `error`, exit 1.
 - `browser-endpoint-unreachable`, `lecture-unknown`, `lecture-not-open`, `lecture-complete`, `lecture-unsupported`, `lecture-not-playable`, `login-failed`, `login-action-required`, `lms-unavailable`, `playback-failed`, `playback-unverified`, `youtube-autoplay-blocked`, `playback-speed-unavailable`
-- `headless-unavailable`, `entity-unknown`, `unsupported-media-type`, `file-too-large`, `download-failed`, `output-path-conflict`; `policy-blocked` applies only to rejected selected-file transfers, not page requests
+- `headless-unavailable`, `entity-unknown`, `resource-omitted`, `fetch-failed`, `unsupported-media-type`, `file-too-large`, `download-failed`, `output-path-conflict`; `policy-blocked` applies only to rejected selected-file transfers, not page requests
 - `internal`
 
 ## Paths and configuration

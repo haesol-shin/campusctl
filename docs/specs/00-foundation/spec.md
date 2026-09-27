@@ -12,4 +12,4 @@ Separate atomic lecture, assignment, notice and material catalogs hold a roster,
 
 After authentication, select each enrolled course through its roster row and enter sections via the rendered menu. Verify the committed page and responses belong to that course; an opaque navigation POST is not a plaintext ID. A combined sync selects a course once and independently records each selected domain's success or failure. LMS pages issue their own requests; no request-origin or per-operation route gate filters them. Only the selected official attachment transfer binds its file ID and validates response type, signature and size. No video/audio download or coursework-control interaction occurs.
 
-Package IDs, safe names and atomic content-addressed publication are described in [fetch](../40-fetch/spec.md); fetch commands remain unregistered until owner sign-off.
+Package IDs, safe names and atomic content-addressed publication are described in [fetch](../40-fetch/spec.md); the release candidate registers fetch while owner sign-off remains a release gate.

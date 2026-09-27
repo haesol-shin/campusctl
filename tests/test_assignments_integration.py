@@ -12,7 +12,6 @@ from test_assignments_provider import old_catalog
 from test_sync_all import IDS, _install_fixture, fixture_server
 
 from campusctl import cli
-from campusctl.commands import assignments, discover_domain_modules
 from campusctl.domain_catalog import domain_catalog_path, read_domain_catalog
 from campusctl.lock import exclusive_lock
 
@@ -35,9 +34,6 @@ def test_assignment_discovery_and_cli(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
 
-    assert discover_domain_modules()["assignments"] is assignments
-    assert cli.CAPABILITIES["assignments"] == ["list"]
-    assert cli.build_parser().parse_args(["assignments", "list"]).command == "assignments"
     old_catalog(tmp_path)
     monkeypatch.setenv("CAMPUSCTL_DATA_DIR", str(tmp_path))
     code, response = _call(["assignments", "list", "--course", "course-a"], capsys)

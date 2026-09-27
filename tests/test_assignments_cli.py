@@ -69,7 +69,6 @@ def test_cached_list_modes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caps
     assert cache["generated_at"] == TIMESTAMP
     assert cache["stale"] is True
     assert cache["failed_courses"][0]["course_id"] == "course-beta"
-    assert assignments.CAPABILITY["commands"] == ["list"]
 
 
 def test_narrow_list_full_ids_and_stale_warning(

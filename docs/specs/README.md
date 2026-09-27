@@ -17,4 +17,4 @@ Start with the [constitution](constitution.md) and [live run protocol](live-run.
 
 The combined sync collects all four domains with one roster, one to-do read and one verified selection per course. Each domain can fail independently, retaining that course's old catalog rows as stale. Pages issue their ordinary requests unfiltered; selected material downloads still enforce file identity, type/signature and size. Sections open through rendered course menus, and operational errors name the failed step.
 
-The [live run protocol](live-run.md) governs LMS-facing checks. Assignment and notice fetch are implemented internally but not registered as public commands until the owner signs off on the observed detail and read-state effects; [40-fetch](40-fetch/spec.md) holds their design. Release integration owns the changelog and version change.
+The [live run protocol](live-run.md) governs LMS-facing checks. The release candidate registers assignment and notice fetch with documented reading effects; [40-fetch](40-fetch/spec.md) records the remaining notice live confirmation and owner sign-off before release. Release integration owns the version change.

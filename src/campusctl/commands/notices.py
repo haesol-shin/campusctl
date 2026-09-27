@@ -1,4 +1,4 @@
-"""Cached notices and their sync command surface."""
+"""Cached notices and selected-detail source packages."""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ _PUBLIC_ROW_KEYS = frozenset(
 )
 
 
-CAPABILITY: dict[str, Any] = {"commands": ["list"]}
+CAPABILITY: dict[str, Any] = {"commands": ["list", "fetch"]}
 
 _DETAIL_TIMEOUT_STEPS = frozenset(
     {
@@ -74,7 +74,7 @@ def _fetch_error(step: str, error: Exception) -> CampusError:
 
 
 def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    """Install the cached notice-list parser without changing shared CLI code."""
+    """Install notice listing and selected-detail fetch parsers."""
     from campusctl.cli import EnvelopeArgumentParser
 
     domain = subparsers.add_parser("notices", help="inspect cached LMS notices")
@@ -84,10 +84,14 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     listing.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
     listing.add_argument("--course", help="limit results to one course ID")
     listing.add_argument("--refresh", action="store_true")
+    fetch = commands.add_parser("fetch", help="package one selected notice detail")
+    fetch.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
+    fetch.add_argument("entity_id", metavar="ENTITY_ID", help="full ID from notices list")
+    fetch.add_argument("--out", type=Path, metavar="DIR", help="new package directory")
 
 
 def dispatch(args: argparse.Namespace) -> tuple[dict[str, Any], CampusError | list[CampusError] | None]:
-    """Dispatch cached notice listing or the internal selected fetch path."""
+    """Dispatch cached notice listing or one selected detail package."""
     command = getattr(args, "notices_command", None)
     if command == "list":
         catalog = read_domain_catalog("notices", domain_catalog_path("notices", data_dir()))

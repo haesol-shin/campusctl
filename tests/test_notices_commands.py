@@ -93,12 +93,10 @@ def test_discovered_notice_capability_and_human_cli(
     _catalog(tmp_path)
     monkeypatch.setenv("CAMPUSCTL_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("CAMPUSCTL_OUTPUT", "human")
-    assert cli.CAPABILITIES["notices"] == ["list"]
-    assert cli.CAPABILITIES["sync"].count("notices") == 1
 
     code, doctor = _invoke(["doctor", "--json"], capsys)
     assert code in (0, 2)  # doctor also checks local configuration and browser readiness
-    assert doctor["result"]["capabilities"]["notices"] == ["list"]
+    assert doctor["result"]["capabilities"]["notices"] == ["list", "fetch"]
     assert doctor["result"]["capabilities"]["sync"].count("notices") == 1
     assert "policy" not in doctor["result"]["capabilities"]
 

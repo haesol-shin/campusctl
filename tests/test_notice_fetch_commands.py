@@ -1,8 +1,7 @@
-"""Tests for unpublished notices fetch command, dispatch, and render."""
+"""Tests for selected notice fetch, dispatch, and render."""
 
 from __future__ import annotations
 
-import argparse
 import asyncio
 import json
 from contextlib import asynccontextmanager
@@ -80,15 +79,7 @@ def test_notice_fetch_json_and_human(tmp_path: Path, monkeypatch: pytest.MonkeyP
     monkeypatch.setattr("campusctl.config.load_config", lambda: {})
     _setup_catalog(tmp_path)
 
-    # 1. Verify fetch is UNPUBLISHED
-    assert "fetch" not in notices.CAPABILITY["commands"]
-    parser = argparse.ArgumentParser()
-    subparsers = parser.add_subparsers()
-    notices.register(subparsers)
-    with pytest.raises(SystemExit):
-        parser.parse_args(["notices", "fetch", "cnu_notice:course-1:2026-09-25:1"])
-
-    # 2. Test successful dispatch (complete package)
+    # Complete package
     fake_pkg_complete = {
         "entity_id": "cnu_notice:course-1:2026-09-25:1",
         "completeness": "complete",
@@ -147,7 +138,7 @@ def test_notice_fetch_json_and_human(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert any("Completeness: complete" in line for line in human_lines)
     assert not any("Omitted:" in line for line in human_lines)
 
-    # 3. Test unsupported-resource partial result
+    # Unsupported-resource partial result
     fake_pkg_partial = dict(fake_pkg_complete)
     fake_pkg_partial["completeness"] = "partial"
     fake_pkg_partial["omitted_resources"] = [
@@ -176,7 +167,7 @@ def test_notice_fetch_json_and_human(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert any("Completeness: partial" in line for line in human_lines_p)
     assert any("Omitted: unverified-notice-attachment — unsupported.bin" in line for line in human_lines_p)
 
-    # 4. Error: catalog-missing
+    # Missing catalog
     monkeypatch.setattr(notices, "data_dir", lambda: tmp_path / "nonexistent")
     with pytest.raises(CampusError) as exc_cat:
         notices.dispatch(args)
@@ -184,7 +175,7 @@ def test_notice_fetch_json_and_human(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert "Notices fetch catalog lookup" in exc_cat.value.message
     monkeypatch.setattr(notices, "data_dir", lambda: tmp_path)
 
-    # 5. Error: entity-unknown (including numeric material selection)
+    # Unknown ID, including numeric material selection
     args_unknown = SimpleNamespace(
         notices_command="fetch", entity_id="cnu_notice:course-1:2026-09-25:999", out=None, headless_override=None
     )
@@ -199,7 +190,7 @@ def test_notice_fetch_json_and_human(tmp_path: Path, monkeypatch: pytest.MonkeyP
         notices.dispatch(args_num)
     assert exc_num.value.code == "entity-unknown"
 
-    # 6. Error: output-path-conflict
+    # Existing output path
     existing_file = tmp_path / "already_exists"
     existing_file.write_text("exists")
     args_conflict = SimpleNamespace(
@@ -214,7 +205,7 @@ def test_notice_fetch_json_and_human(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert "Notices fetch output selection" in exc_conf.value.message
     assert str(existing_file) not in exc_conf.value.message
 
-    # 7. Error: headless-unavailable (unsupported effective headless fails before navigation)
+    # Unsupported effective headless fails before navigation
     args_headless = SimpleNamespace(
         notices_command="fetch", entity_id="cnu_notice:course-1:2026-09-25:1", out=None, headless_override=True
     )
@@ -223,7 +214,7 @@ def test_notice_fetch_json_and_human(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert exc_hl.value.code == "headless-unavailable"
     assert "Notices fetch browser preflight" in exc_hl.value.message
 
-    # 8. Error: session-busy
+    # Busy session
     async def mock_fetch_busy(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
         raise CampusError("session-busy", "Browser session lock is occupied.", status="busy")
 

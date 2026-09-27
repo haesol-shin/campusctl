@@ -7,6 +7,7 @@
 ```text
 campusctl [--headless|--headed] sync --only assignments [--course COURSE_ID] [--json]
 campusctl assignments list [--course COURSE_ID] [--json]
+campusctl [--headed] assignments fetch ENTITY_ID [--out DIR] [--json]
 ```
 
 Bare `sync` refreshes all four metadata domains in one combined pass; `--only assignments` limits it to assignments. The pass selects each course once, enters its task section through the rendered menu, and lets its page requests proceed normally. Assignment sync holds the single non-blocking browser lock, uses headed mode by default and supports global `--headless` with local Chromium; CDP headless returns `headless-unavailable`. `list` reads only `<data-dir>/catalog/assignments.json` without browser/network/lock; `--refresh` runs assignment sync first. Human `--course` accepts a full ID, last-printed course number or unique name fragment; JSON requires a full ID. Unknown filters return `course-not-found`.
@@ -14,6 +15,15 @@ Bare `sync` refreshes all four metadata domains in one combined pass; `--only as
 Assignment sync enters each course before arming the task-list response wait around the task-menu click. The first post-commit task list, its task-page Referer, and the active topbar course must agree; an opaque encrypted request body is not treated as a plaintext course ID.
 
 Human output is the default on a terminal; `--json` opts into the versioned JSON envelope. `CAMPUSCTL_OUTPUT=human` or `json` controls redirected output unless `--json` is supplied. The [general CLI contract](cli.md) describes output precedence and the shared envelope.
+
+## Selected detail fetch
+
+`fetch` takes exactly one full `entity_id` from the cached `assignments list`; list numbers and `--course` are not accepted. A missing/stale ID fails before browser startup. Fetch opens the selected course and assignment through the ordinary UI, verifies their identities, and packages readable text; it does not submit work or change submission state. It uses a headed browser (global `--headless` returns `headless-unavailable`) and the non-blocking session lock. `--out DIR` chooses a **nonexistent package directory**, not a parent folder; existing destinations fail with `output-path-conflict`.
+
+Without `--out`, packages live under `<data-dir>/sources/assignment/<sha256-of-entity-id>/<package-digest>/`. Each package contains `package.json` and `content.md`, plus included `images/` and `attachments/` as applicable. A verified identical package may be reused; an explicit `--out` never overwrites. `package.json` records schema version, selected ID, kind, course, query-free source reference, retrieval time, content path, completeness and included/omitted resources. Included resource records carry deterministic `resource_id`, kind, relative path, normalized source reference, original name, media type, size and SHA-256; omitted references carry ID, source reference, original name, media type and reason. Unsupported/external/media references are omitted, not fetched. Failed transfer or identity verification publishes no package.
+
+Successful JSON returns `result.source_package` with `entity_id`, `completeness`, absolute `path`, `manifest_path`, `content_path`, included `resources` (with absolute paths), `omitted_resources`, and `provenance` (`provider`, `course_id`, `source_ref`, `retrieved_at`) in the [standard envelope](cli.md). Human output prints `Assignment source`, `Package`, `Content`, `Completeness`, and one `Omitted` line per skipped reference. A complete package is `ok`/0; any omissions are `partial`/1 with `resource-omitted` and a usable package. Unknown ID, missing/invalid catalog, output conflict, unsupported headless mode or login action is `user-action`/2; operational capture/transfer failure is `error`/1; locked browser session is `busy`/75. Errors identify the failing fetch step without leaking request details.
+
 
 ## JSON results
 
