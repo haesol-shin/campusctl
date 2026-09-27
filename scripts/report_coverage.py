@@ -31,8 +31,12 @@ def summary(candidate: Path, baseline: Path) -> str:
         else:
             covered, statements = current[name]
             old_covered, old_statements = main[name]
-            delta = covered / statements - old_covered / old_statements
-            lines.append(f"| `{name}` | {covered}/{statements} | {old_covered}/{old_statements} | {delta:+.6%} |")
+            if statements and old_statements:
+                delta = covered / statements - old_covered / old_statements
+                change = f"{delta:+.6%}"
+            else:
+                change = "— (zero statements; no comparable ratio)"
+            lines.append(f"| `{name}` | {covered}/{statements} | {old_covered}/{old_statements} | {change} |")
     return "\n".join(lines) + "\n"
 
 

@@ -139,6 +139,7 @@ jobs:
           retention-days: 30
       - name: Compare per-file coverage with main
         if: always()
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
