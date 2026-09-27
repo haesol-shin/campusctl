@@ -107,13 +107,18 @@ async def classify_item_failure(
         return fetch_error(step, error), True
     if closed:
         return fetch_error("browser session", _closed_error()), True
+    # A visible login form is session expiry even when the detail reader reports
+    # a timeout, parse failure, or identity mismatch. Do not reopen that item.
+    login_visible = await _login_form_visible(page)
+    if login_visible and (
+        not isinstance(error, CampusError) or error.code in {"browser-timeout", "fetch-failed", "entity-unknown"}
+    ):
+        return fetch_error("authentication", _expired()), True
     if isinstance(error, CampusError) and error.code == "browser-timeout":
         return fetch_error("detail capture", error), False
     if isinstance(error, CampusError) and error.code in _ITEM_CODES:
         step = "package creation" if error.code in _PACKAGE_CODES else "detail capture"
         return fetch_error(step, error), False
-    if await _login_form_visible(page):
-        return fetch_error("authentication", _expired()), True
     return fetch_error("detail capture", error), False
 
 

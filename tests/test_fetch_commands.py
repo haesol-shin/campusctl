@@ -378,9 +378,9 @@ def _install_queue(monkeypatch: pytest.MonkeyPatch, script: _Script, domain: str
         entity_id = row["entity_id"]
         script.captured.append(entity_id)
         action = script.fail_at.get(entity_id)
-        if action == "login-form":
+        if action == "login-form" or (isinstance(action, tuple) and action and action[0] == "login-form"):
             script.page.login_form = True
-            raise RuntimeError("detail unavailable")
+            raise action[1] if isinstance(action, tuple) else RuntimeError("detail unavailable")
         if action == "closed":
             script.page.closed = True
             raise RuntimeError("browser closed")
@@ -551,6 +551,38 @@ def test_session_failure_stops_queue_without_retry(
     if kind == "login-failed":
         assert "rejected" not in errors[-1].message
     assert (tmp_path / "published" / ids[0].replace(":", "_") / "content.md").is_file()
+
+
+@pytest.mark.parametrize("domain", ["assignments", "notices"])
+@pytest.mark.parametrize(
+    ("code", "message"),
+    [
+        ("browser-timeout", "Timed out while opening the selected CNU task."),
+        ("fetch-failed", "Detail response could not be verified."),
+        ("entity-unknown", "Selected detail does not match."),
+    ],
+)
+def test_visible_login_form_stops_queue_after_detail_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, domain: str, code: str, message: str
+) -> None:
+    ids = _ids(domain)
+    _write_domain_catalog(tmp_path, domain, ids[:3])
+    script = _Script()
+    status = "user-action" if code == "entity-unknown" else "error"
+    script.fail_at[ids[1]] = ("login-form", CampusError(code, message, status=status))
+    _install_queue(monkeypatch, script, domain, tmp_path)
+
+    result, errors = _dispatch(domain, _fetch_args(domain, ids[:3]))
+    assert script.captured == ids[:2]
+    assert script.captured.count(ids[1]) == 1
+    assert ids[2] not in script.captured
+    assert [item["outcome"] for item in result["items"]] == ["completed", "failed", "not-started"]
+    assert result["items"][1]["reason_code"] == "lms-unavailable"
+    assert "source_package" not in result["items"][1]
+    assert errors is not None and errors[-1].code == "lms-unavailable"
+    assert "rejected" not in errors[-1].message
+    assert (tmp_path / "published" / ids[0].replace(":", "_") / "content.md").is_file()
+    assert not (tmp_path / "published" / ids[1].replace(":", "_")).exists()
 
 
 @pytest.mark.parametrize("domain", ["assignments", "notices"])
