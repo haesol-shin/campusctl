@@ -77,8 +77,6 @@ jobs:
     name: pytest (${{ matrix.os }}, Python ${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
-    env:
-      PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/empty-browsers
     strategy:
       fail-fast: false
       matrix:
@@ -104,6 +102,8 @@ jobs:
           cache-dependency-glob: uv.lock
       - run: uv sync --locked --python ${{ matrix.python-version }}
       - run: uv run pytest -q -o faulthandler_timeout=30
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/empty-browsers
 
   browser:
     name: pytest browser (ubuntu-latest, Python 3.12)
