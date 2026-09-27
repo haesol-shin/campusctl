@@ -650,6 +650,37 @@ def test_todo_waits_for_rows_and_late_next_before_paginating(
     assert not page.listeners
 
 
+def test_todo_uses_observed_tot_cnt_response_shape(monkeypatch: pytest.MonkeyPatch) -> None:
+    page = FakePage()
+    page.handler = lambda route: route.continue_()
+    page.todo = [
+        {
+            "number": "1",
+            "course_label": "Example Course",
+            "title": "Notice",
+            "date": "2026-09-01 08:00",
+            "read_yn": "읽음",
+        }
+    ]
+    page.todo_response = {
+        "header": {"code": 200},
+        "body": {
+            "list": [{"row_idx": 1, "course_id": "course-a"}],
+            "tot_cnt": 1,
+        },
+    }
+    monkeypatch.setattr(notices, "_ORIGIN", L)
+    monkeypatch.setattr(notices, "_TODO_URL", L + "/std/todo")
+
+    async def collect() -> tuple[dict[str, list[dict[str, Any]]], set[str]]:
+        capture = await notices.open_notice_todo(page)
+        return await notices.collect_notice_todo(page, COURSES, capture=capture)
+
+    rows, failures = asyncio.run(collect())
+    assert failures == set()
+    assert [item["title"] for item in rows["course-a"]] == ["Notice"]
+
+
 def test_multiple_legacy_todo_candidates_cannot_claim_one_board_notice() -> None:
     todo, failures = notices.parse_notice_rows(
         [

@@ -101,7 +101,7 @@ jobs:
           enable-cache: true
           cache-dependency-glob: uv.lock
       - run: uv sync --locked --python ${{ matrix.python-version }}
-      - run: uv run pytest -q
+      - run: uv run pytest -q -o faulthandler_timeout=30
 
   windows-smoke:
     name: Windows installation and runtime smoke

@@ -499,36 +499,87 @@ async def _select_page(page: Any, number: int) -> None:
 
 async def _post_names(
     page: Any, activity: _RequestWindow, after: int, post_id: str
-) -> tuple[dict[str, str], list[dict[str, Any]]]:
-    """Use rendered controls before deciding whether attachment metadata is optional."""
+) -> tuple[dict[str, str], list[dict[str, Any]], bool]:
+    """Bind file controls to this post's completed attachment response when available."""
 
     async def controls() -> list[dict[str, Any]]:
+        modal = await page.evaluate(_TARGETS_JS, {"modalOnly": True, "boardItemId": post_id})
+        return (
+            modal
+            if isinstance(modal, list) and modal
+            else await page.evaluate(_TARGETS_JS, {"modalOnly": False, "boardItemId": post_id})
+        )
+
+    async def matching(names: dict[str, str]) -> list[dict[str, Any]]:
         while True:
-            modal = await page.evaluate(_TARGETS_JS, {"modalOnly": True, "boardItemId": post_id})
-            if isinstance(modal, list) and modal:
-                return modal
-            inline = await page.evaluate(_TARGETS_JS, {"modalOnly": False, "boardItemId": post_id})
-            if isinstance(inline, list) and inline:
-                return inline
+            targets = await controls()
+            identities = [
+                target.get("data_id") or target.get("file_id") for target in targets if isinstance(target, dict)
+            ]
+            if (
+                len(identities) == len(targets)
+                and len(identities) == len(names)
+                and set(identities) == names.keys()
+                and len(set(identities)) == len(identities)
+            ):
+                return targets
             await asyncio.sleep(0.05)
 
-    with profile_span("page-readiness", wait_kind="readiness", domain="materials", page_kind="archive"):
-        targets = await bounded(controls(), _WAIT_MS / 1000, "waiting for archive file controls")
     if urlsplit(page.main_frame.url).path != "/std/archive":
         raise ValueError("attachment request not in the selected archive")
+    # An icon click can show the previous modal before its new XHR is dispatched.
+    if not activity.matches(_ATTACH_LIST, "GET", after=after):
+        await asyncio.sleep(0.1)
     requests = activity.matches(_ATTACH_LIST, "GET", after=after)
     if len(requests) > 1 or any(not activity._archive_referer(request) for _, request in requests):
         raise ValueError("duplicate attachment list response")
-    if not requests:
-        return {}, targets
-    response = await activity.wait_response(_ATTACH_LIST, "GET", after=after)
-    if response.request is not requests[0][1]:
-        raise ValueError("attachment list response changed")
-    with profile_span("attachment-list", domain="materials"):
-        body = await _step(response.json(), "reading attachment list metadata")
-    if isinstance(body, dict) and isinstance(body.get("header"), dict) and body["header"].get("code") != 200:
-        raise ValueError("attachment list response failed")
-    return _attachment_names(body), targets
+    if requests:
+        try:
+            response = await activity.wait_response(_ATTACH_LIST, "GET", after=after)
+            if response.request is not requests[0][1]:
+                raise ValueError("attachment list response changed")
+            with profile_span("attachment-list", domain="materials"):
+                body = await _step(response.json(), "reading attachment list metadata")
+        except CampusError as error:
+            if error.code != "browser-timeout":
+                raise
+            return {}, [], False
+        except ValueError:
+            return {}, [], False
+        if isinstance(body, dict) and isinstance(body.get("header"), dict) and body["header"].get("code") != 200:
+            return {}, [], False
+        try:
+            names = _attachment_names(body)
+        except ValueError:
+            return {}, await controls(), False
+        else:
+            with profile_span("page-readiness", wait_kind="readiness", domain="materials", page_kind="archive"):
+                try:
+                    return (
+                        names,
+                        await bounded(matching(names), _WAIT_MS / 1000, "matching archive file controls to response"),
+                        True,
+                    )
+                except CampusError as error:
+                    if error.code != "browser-timeout":
+                        raise
+        # The response did not identify the rendered controls; reload before trusting them.
+        return names, [], False
+
+    async def available() -> list[dict[str, Any]]:
+        while True:
+            targets = await controls()
+            if isinstance(targets, list) and targets:
+                return targets
+            await asyncio.sleep(0.05)
+
+    with profile_span("page-readiness", wait_kind="readiness", domain="materials", page_kind="archive"):
+        try:
+            return {}, await bounded(available(), _WAIT_MS / 1000, "waiting for archive file controls"), False
+        except CampusError as error:
+            if error.code != "browser-timeout":
+                raise
+            return {}, [], False
 
 
 def _request_navigation(request: Any) -> bool:
@@ -692,82 +743,78 @@ async def enumerate_archive(page: Any, course: Mapping[str, Any]) -> list[dict[s
                 raise _failure("course-sync-failed", course)
             seen_posts.add(post_id)
             metadata = {"board_item_id": post_id, "title": title.strip()}
-            activity = _RequestWindow(page)
-            activity.start()
-            document = None
-            try:
-                baseline = len(activity.requests)
-                document, evidence_ready = await _capture_archive_document(
-                    page,
-                    page_number,
-                    total,
-                    course["course_id"],
-                    state,
-                )
-                with (
-                    profile_span("modal", domain="materials", page_kind="archive"),
-                    profile_span("wait", wait_kind="action", domain="materials", page_kind="archive"),
-                ):
-                    await _step(page.evaluate(_CLICK_ICON_JS, post_id), "opening archive file icon")
+            for attempt in range(2):
+                activity = _RequestWindow(page)
+                activity.start()
+                document = None
+                retry = False
                 try:
-                    try:
-                        names, targets = await _post_names(page, activity, baseline, post_id)
-                    except CampusError as error:
-                        if error.code != "browser-timeout":
-                            raise
-                        raise _failure("course-sync-failed", course) from None
-                    for target in targets:
-                        if not isinstance(target, dict):
-                            raise _failure("course-sync-failed", course)
-                        row = _target_row(target, course, metadata, names)
-                        if row["file_id"] in seen_files:
-                            raise _failure("item-identity-missing", course)
-                        seen_files.add(row["file_id"])
-                        results.append(row)
-                    requests = activity.matches(_ATTACH_LIST, "GET", after=baseline)
-                    if len(requests) > 1 or any(not activity._archive_referer(request) for _, request in requests):
-                        raise ValueError("attachment list changed during extraction")
-                finally:
+                    baseline = len(activity.requests)
+                    document, evidence_ready = await _capture_archive_document(
+                        page, page_number, total, course["course_id"], state
+                    )
                     with (
                         profile_span("modal", domain="materials", page_kind="archive"),
                         profile_span("wait", wait_kind="action", domain="materials", page_kind="archive"),
                     ):
-                        await _step(page.evaluate(_CLOSE_MODAL_JS), "closing archive modal")
-                    with profile_span("archive-restore", domain="materials", page_kind="archive"):
-                        retained = False
-                        try:
-                            retained = await _archive_unchanged(
-                                page,
-                                document=document if evidence_ready else None,
-                                expected_page=page_number,
-                                expected_total=total,
-                                expected_course_id=course["course_id"],
-                                expected_state=state,
-                                activity=activity,
-                                after=baseline,
-                            )
-                        except PlaywrightError:
+                        await _step(page.evaluate(_CLICK_ICON_JS, post_id), "opening archive file icon")
+                    try:
+                        names, targets, verified = await _post_names(page, activity, baseline, post_id)
+                        if not verified and attempt == 0:
+                            retry = True
+                        elif not verified and (names or not targets):
+                            raise _failure("course-sync-failed", course)
+                        else:
+                            for target in targets:
+                                if not isinstance(target, dict):
+                                    raise _failure("course-sync-failed", course)
+                                row = _target_row(target, course, metadata, names)
+                                if row["file_id"] in seen_files:
+                                    raise _failure("item-identity-missing", course)
+                                seen_files.add(row["file_id"])
+                                results.append(row)
+                        requests = activity.matches(_ATTACH_LIST, "GET", after=baseline)
+                        if len(requests) > 1 or any(not activity._archive_referer(request) for _, request in requests):
+                            raise ValueError("attachment list changed during extraction")
+                    finally:
+                        with (
+                            profile_span("modal", domain="materials", page_kind="archive"),
+                            profile_span("wait", wait_kind="action", domain="materials", page_kind="archive"),
+                        ):
+                            await _step(page.evaluate(_CLOSE_MODAL_JS), "closing archive modal")
+                        with profile_span("archive-restore", domain="materials", page_kind="archive"):
                             retained = False
-                        except ValueError:
-                            retained = False
-                        except CampusError as error:
-                            if error.code != "browser-timeout":
-                                raise
-                        if not retained:
-                            await _restore_archive_document(page, expected_course_id=course["course_id"])
-                            if page_number > 1:
-                                await _select_page(page, page_number)
-                            restored = await _wait_archive_state(
-                                page,
-                                page_number,
-                                total,
-                                expected_course_id=course["course_id"],
-                            )
-                            if restored["posts"] != posts or restored.get("modal_clear") is not True:
-                                raise _failure("course-sync-failed", course)
-            finally:
-                activity.close()
-                await _release_document(document)
+                            if not retry:
+                                try:
+                                    retained = await _archive_unchanged(
+                                        page,
+                                        document=document if evidence_ready else None,
+                                        expected_page=page_number,
+                                        expected_total=total,
+                                        expected_course_id=course["course_id"],
+                                        expected_state=state,
+                                        activity=activity,
+                                        after=baseline,
+                                    )
+                                except (PlaywrightError, ValueError):
+                                    retained = False
+                                except CampusError as error:
+                                    if error.code != "browser-timeout":
+                                        raise
+                            if not retained:
+                                await _restore_archive_document(page, expected_course_id=course["course_id"])
+                                if page_number > 1:
+                                    await _select_page(page, page_number)
+                                restored = await _wait_archive_state(
+                                    page, page_number, total, expected_course_id=course["course_id"]
+                                )
+                                if restored["posts"] != posts or restored.get("modal_clear") is not True:
+                                    raise _failure("course-sync-failed", course)
+                finally:
+                    activity.close()
+                    await _release_document(document)
+                if not retry:
+                    break
     if counted != total:
         raise _failure("course-sync-failed", course)
     return results
