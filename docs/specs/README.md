@@ -12,6 +12,7 @@ Start with the [constitution](constitution.md) and [live run protocol](live-run.
 | [50-v040-ux](50-v040-ux/spec.md) | Full sync, shared course selection, numbered materials, status, global browser mode, guided setup |
 | [60-headless-replay](60-headless-replay/spec.md) | Headless sync and official-player replay |
 | [70-sync-performance](70-sync-performance/spec.md) | Profiling and the combined course pass |
+| [80-sync-optimization](80-sync-optimization/spec.md) | Faster combined sync: wait profiling, readiness waits, archive reload skip, course switch, session reuse |
 
 ## v0.4.0 scope
 
