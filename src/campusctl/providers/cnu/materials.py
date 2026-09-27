@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
+
+from playwright.async_api import Error as PlaywrightError
 
 from campusctl.browser import PROTOCOL_TIMEOUT_SECONDS, bounded, profile_span
 from campusctl.envelope import CampusError
@@ -47,7 +50,8 @@ _ALLOWED_EXTENSIONS = frozenset(
 _STORAGE_ORIGINS = frozenset({"https://dcs-learning.cnu.ac.kr", "https://dcs-lcms.cnu.ac.kr"})
 _TRAILING_VIEW = re.compile(r"\s*바로보기\s*$")
 
-_ARCHIVE_STATE_JS = """/* archiveMetadataState */() => {
+_ARCHIVE_STATE_JS = (
+    """/* archiveMetadataState */(expectedDocument) => {
     const table = document.querySelector('#table_list');
     const body = table && table.querySelector('#listBody');
     const counter = document.querySelector('#totalCnt strong');
@@ -59,6 +63,9 @@ _ARCHIVE_STATE_JS = """/* archiveMetadataState */() => {
     const name = current?.textContent?.replace(/\\s+/g, '').trim();
     const selected = [...document.querySelectorAll('#topbarLectureDropdown a[data-act="changeLecture"][data-courseid]')]
         .filter(link => link.textContent.replace(/\\s+/g, '').trim() === name);
+    const modal = document.querySelector("""
+    + json.dumps(_MODAL)
+    + """);
     return {
         completed: !!table && !!body && Number.isSafeInteger(count) &&
             count >= 0 && rows.length <= Number(table.getAttribute('data-page-size')) &&
@@ -72,9 +79,14 @@ _ARCHIVE_STATE_JS = """/* archiveMetadataState */() => {
             const title = row.querySelector('[data-act="detail"][data-id], [data-act="titleDetailContents"]');
             return {board_item_id: icon.getAttribute('data-boarditem_no'),
                     title: title && title.textContent};
-        }))
+        })),
+        same_document: expectedDocument != null && document === expectedDocument,
+        archive_path: location.pathname === '/std/archive',
+        modal_clear: !modal && !document.querySelector('.modal-backdrop') &&
+            !document.body.classList.contains('modal-open')
     };
 }"""
+)
 _TARGETS_JS = """/* archiveMetadataTargets */({modalOnly, boardItemId}) => {
     const icons = modalOnly ? [] : [...document.querySelectorAll('#listBody tr [data-act="file"][data-boarditem_no]')]
         .filter(el => el.getAttribute('data-boarditem_no') === boardItemId);
@@ -426,8 +438,10 @@ async def _archive_state(
     expected_page: int,
     expected_total: int | None = None,
     expected_course_id: str | None = None,
+    *,
+    expected_document: Any = None,
 ) -> dict:
-    state = await _step(page.evaluate(_ARCHIVE_STATE_JS), "observing archive table")
+    state = await _step(page.evaluate(_ARCHIVE_STATE_JS, expected_document), "observing archive table")
     if (
         not isinstance(state, dict)
         or state.get("completed") is not True
@@ -510,6 +524,129 @@ async def _post_names(
     return _attachment_names(body), targets
 
 
+def _request_navigation(request: Any) -> bool:
+    try:
+        navigation = request.is_navigation_request()
+        return navigation or request.resource_type == "document"
+    except Exception:
+        return True
+
+
+def _request_archive_list(request: Any) -> bool:
+    try:
+        method = request.method
+        path = urlsplit(request.url).path
+    except Exception:
+        return True
+    return str(method).upper() == "POST" and path == _ARCHIVE_LIST
+
+
+def _retention_blocked(activity: _RequestWindow, after: int) -> bool:
+    """Main-frame navigation or archive-list refresh disqualifies retention, even while pending."""
+    try:
+        observed = activity.requests[after:]
+    except Exception:
+        return True
+    for request in observed:
+        try:
+            main_frame = request.frame is activity.page.main_frame
+        except Exception:
+            return True
+        if not main_frame:
+            continue
+        if _request_navigation(request) or _request_archive_list(request):
+            return True
+    return False
+
+
+async def _release_document(document: Any) -> None:
+    dispose = None if document is None else getattr(document, "dispose", None)
+    if not callable(dispose):
+        return
+    try:
+        await dispose()
+    except Exception:
+        return
+
+
+async def _capture_archive_document(
+    page: Any,
+    expected_page: int,
+    expected_total: int,
+    expected_course_id: str,
+    expected_state: Mapping[str, Any],
+) -> tuple[Any, bool]:
+    """Retain this post's document. Capture or observation failure is a cache miss."""
+    try:
+        document = await _step(page.evaluate_handle("() => document"), "retaining archive document")
+    except PlaywrightError:
+        return None, False
+    except ValueError:
+        return None, False
+    except CampusError as error:
+        if error.code != "browser-timeout":
+            raise
+        return None, False
+    try:
+        try:
+            observed = await _archive_state(
+                page,
+                expected_page,
+                expected_total,
+                expected_course_id,
+                expected_document=document,
+            )
+        except (PlaywrightError, ValueError):
+            return document, False
+        except CampusError as error:
+            if error.code != "browser-timeout":
+                raise
+            return document, False
+        ready = (
+            observed.get("same_document") is True
+            and observed.get("archive_path") is True
+            and observed.get("posts") == expected_state.get("posts")
+            and observed.get("page_size") == expected_state.get("page_size")
+            and observed.get("row_count") == expected_state.get("row_count")
+        )
+        return document, ready
+    except BaseException:
+        await _release_document(document)
+        raise
+
+
+async def _archive_unchanged(
+    page: Any,
+    *,
+    document: Any,
+    expected_page: int,
+    expected_total: int,
+    expected_course_id: str,
+    expected_state: Mapping[str, Any],
+    activity: _RequestWindow,
+    after: int,
+) -> bool:
+    """Return true only when the closed modal left the validated archive list intact."""
+    if document is None:
+        return False
+    state = await _archive_state(
+        page,
+        expected_page,
+        expected_total,
+        expected_course_id,
+        expected_document=document,
+    )
+    return (
+        state.get("same_document") is True
+        and state.get("archive_path") is True
+        and state.get("modal_clear") is True
+        and state.get("posts") == expected_state.get("posts")
+        and state.get("page_size") == expected_state.get("page_size")
+        and state.get("row_count") == expected_state.get("row_count")
+        and not _retention_blocked(activity, after)
+    )
+
+
 async def _restore_archive_document(page: Any) -> None:
     """Restore the archive menu and validate its list response."""
     await _archive_navigation(page, lambda: page.click(_ARCHIVE_MENU))
@@ -550,14 +687,23 @@ async def enumerate_archive(page: Any, course: Mapping[str, Any]) -> list[dict[s
             metadata = {"board_item_id": post_id, "title": title.strip()}
             activity = _RequestWindow(page)
             activity.start()
+            document = None
             try:
                 baseline = len(activity.requests)
+                document, evidence_ready = await _capture_archive_document(
+                    page,
+                    page_number,
+                    total,
+                    course["course_id"],
+                    state,
+                )
                 with (
                     profile_span("modal", domain="materials", page_kind="archive"),
                     profile_span("wait", wait_kind="action", domain="materials", page_kind="archive"),
                 ):
                     await _step(page.evaluate(_CLICK_ICON_JS, post_id), "opening archive file icon")
                 try:
+
                     try:
                         names, targets = await _post_names(page, activity, baseline, post_id)
                     except CampusError as error:
@@ -582,19 +728,40 @@ async def enumerate_archive(page: Any, course: Mapping[str, Any]) -> list[dict[s
                     ):
                         await _step(page.evaluate(_CLOSE_MODAL_JS), "closing archive modal")
                     with profile_span("archive-restore", domain="materials", page_kind="archive"):
-                        await _restore_archive_document(page)
-                        if page_number > 1:
-                            await _select_page(page, page_number)
-                        restored = await _wait_archive_state(
-                            page,
-                            page_number,
-                            total,
-                            expected_course_id=course["course_id"],
-                        )
-                        if restored["posts"] != posts:
-                            raise _failure("course-sync-failed", course)
+                        retained = False
+                        try:
+                            retained = await _archive_unchanged(
+                                page,
+                                document=document if evidence_ready else None,
+                                expected_page=page_number,
+                                expected_total=total,
+                                expected_course_id=course["course_id"],
+                                expected_state=state,
+                                activity=activity,
+                                after=baseline,
+                            )
+                        except PlaywrightError:
+                            retained = False
+                        except ValueError:
+                            retained = False
+                        except CampusError as error:
+                            if error.code != "browser-timeout":
+                                raise
+                        if not retained:
+                            await _restore_archive_document(page, expected_course_id=course["course_id"])
+                            if page_number > 1:
+                                await _select_page(page, page_number)
+                            restored = await _wait_archive_state(
+                                page,
+                                page_number,
+                                total,
+                                expected_course_id=course["course_id"],
+                            )
+                            if restored["posts"] != posts or restored.get("modal_clear") is not True:
+                                raise _failure("course-sync-failed", course)
             finally:
                 activity.close()
+                await _release_document(document)
     if counted != total:
         raise _failure("course-sync-failed", course)
     return results

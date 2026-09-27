@@ -83,6 +83,12 @@ Migrate `failed-restore` and wrong-restore-course fixtures to **force proof fail
 
 FakePage alone cannot prove DOM identity semantics. Add or run a throwaway offline Playwright smoke scenario served on loopback: a table/topbar/pagination fixture, two attachment controls and a close button; exercise the real state JavaScript, retain/reopen a modal, then replace the document at the same URL with identical markup. Observe retention only for the first case and fallback for the replacement. Include an actual leftover hidden backdrop and a changed page/ordered-ID case. Record results; remove the temporary harness. No LMS or live credentials are needed for this smoke proof.
 
+## Offline verification outcome
+
+The targeted archive tests pass with synthetic course and attachment identities, including every retained-list fallback trigger, successful empty archives, per-page continuation, and extraction errors. The profile distinguishes the two decisions using existing spans: every inspected post contributes an `archive-restore` span, while only reloads contribute nested `document-commit` work and an additional archive document. No new profile fields are emitted.
+
+A loopback-only headless Chromium smoke exercised the real archive state JavaScript with two attachment controls. Closing a modal retained the same document and produced no extra archive document; replacing that document at the same URL invalidated the old handle and a fallback produced one new document. A leftover hidden backdrop and a changed page/ordered-ID snapshot each rejected retention and produced a fallback document. This offline proof is not a live LMS measurement. Playwright cleanup callbacks reported closed targets after the assertions; the observed decisions and document counts completed successfully.
+
 ## Next single full-path live verification
 
 Follow `docs/specs/live-run.md:3-17`: owner-authorized integrated run includes all-domain sync, both fetches and one official download; no separate speculative LMS run for this slice.

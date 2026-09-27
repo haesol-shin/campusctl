@@ -38,6 +38,6 @@
     ]}]},
     {"name": "failed-restore", "posts": [{"board_item_id": "board-restore", "title": "Restore failure", "inline": [
       {"data_id": "file-restore", "text": "example.pdf", "official": true}
-    ]}], "restore_fails": true, "fails": true}
+    ]}], "after_close": "replace-document", "restore_fails": true, "fails": true}
   ]
 }
