@@ -15,6 +15,7 @@ from playwright.async_api import Error as PlaywrightError
 from campusctl.browser import PROTOCOL_TIMEOUT_SECONDS, bounded, profile_check_start, profile_diagnostic, profile_span
 from campusctl.envelope import CampusError
 from campusctl.identity import material_entity_id
+from campusctl.wait_clock import current_clock
 
 from .course_context import _TOPBAR_COURSE_JS, SECTION_RESPONSE_TIMEOUT_MS
 from .readiness import wait_page_ready
@@ -253,8 +254,8 @@ class _RequestWindow:
 
     async def wait_response(self, path: str, method: str, *, after: int = 0) -> Any:
         """Finish exactly one matching main-frame response after the action boundary."""
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + SECTION_RESPONSE_TIMEOUT_MS / 1000
+        clock = current_clock()
+        deadline = clock.now() + SECTION_RESPONSE_TIMEOUT_MS / 1000
 
         async def completed() -> Any:
             while True:
@@ -264,7 +265,7 @@ class _RequestWindow:
                 if matches:
                     response = self.responses.get(id(matches[0][1]))
                     if response is not None:
-                        remaining = deadline - loop.time()
+                        remaining = deadline - clock.now()
                         if remaining <= 0:
                             raise TimeoutError
                         if await bounded(response.finished(), remaining, "finishing archive response") is not None:
@@ -273,10 +274,10 @@ class _RequestWindow:
                             raise ValueError("archive response failed or duplicated")
                         return response
                 self.changed.clear()
-                remaining = deadline - loop.time()
+                remaining = deadline - clock.now()
                 if remaining <= 0:
                     raise TimeoutError
-                await asyncio.wait_for(self.changed.wait(), remaining)
+                await clock.wait_for(self.changed.wait(), remaining)
 
         with profile_span("response-completion", wait_kind="response", domain="materials", page_kind="archive"):
             return await bounded(completed(), SECTION_RESPONSE_TIMEOUT_MS / 1000, "waiting for archive response")
@@ -516,7 +517,7 @@ async def _wait_archive_state(
             try:
                 return await _archive_state(page, expected_page, expected_total, expected_course_id, observed=observed)
             except ValueError:
-                await asyncio.sleep(0.05)
+                await current_clock().sleep(0.05)
 
     with profile_span("page-readiness", wait_kind="readiness", domain="materials", page_kind="archive"):
         try:
@@ -619,7 +620,7 @@ async def _post_names(
             )
             if ids_match:
                 return targets
-            await asyncio.sleep(0.05)
+            await current_clock().sleep(0.05)
 
     if urlsplit(page.main_frame.url).path != "/std/archive":
         route_match = False
@@ -628,7 +629,7 @@ async def _post_names(
     route_match = True
     # An icon click can show the previous modal before its new XHR is dispatched.
     if not activity.matches(_ATTACH_LIST, "GET", after=after):
-        await asyncio.sleep(0.1)
+        await current_clock().sleep(0.1)
     requests = activity.matches(_ATTACH_LIST, "GET", after=after)
     if len(requests) > 1 or any(not activity._archive_referer(request) for _, request in requests):
         diagnose()
@@ -685,7 +686,7 @@ async def _post_names(
             modal_controls = len(targets) if isinstance(targets, list) else None
             if isinstance(targets, list) and targets:
                 return targets
-            await asyncio.sleep(0.05)
+            await current_clock().sleep(0.05)
 
     with profile_span("page-readiness", wait_kind="readiness", domain="materials", page_kind="archive"):
         try:

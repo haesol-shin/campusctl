@@ -12,6 +12,7 @@ from urllib.parse import parse_qs, urljoin, urlsplit
 from campusctl.browser import PROTOCOL_TIMEOUT_SECONDS, bounded, profile_span
 from campusctl.envelope import CampusError
 from campusctl.source_package import DetailSnapshot, ResourceReference
+from campusctl.wait_clock import current_clock
 
 from .course_context import COURSE_MENU_TIMEOUT_MS, SECTION_RESPONSE_TIMEOUT_MS, _css_string
 from .login import MY_LECTURE_URL
@@ -396,7 +397,7 @@ async def capture_notice_detail(page: Any, selected_row: dict[str, Any]) -> Deta
                     ]
                     if None not in ids and Counter(ids) == expected:
                         return rendered
-                await asyncio.sleep(0.05)
+                await current_clock().sleep(0.05)
 
         with profile_span("page-readiness", wait_kind="readiness", domain="notices", page_kind="notices"):
             rendered = await bounded(matching_board(), COURSE_MENU_TIMEOUT_MS / 1000, "waiting for notice board rows")

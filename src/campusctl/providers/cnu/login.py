@@ -16,6 +16,7 @@ from campusctl.browser import (
 )
 from campusctl.credentials import get_credentials
 from campusctl.envelope import CampusError
+from campusctl.wait_clock import current_clock
 
 from .courses import COURSE_LINK_SELECTOR
 
@@ -90,7 +91,7 @@ def _password_change_required() -> CampusError:
 
 
 def _remaining(deadline: float) -> float:
-    return max(0.0, deadline - asyncio.get_running_loop().time())
+    return max(0.0, deadline - current_clock().now())
 
 
 async def ensure_logged_in(
@@ -107,25 +108,25 @@ async def ensure_logged_in(
     with profile_labels(domain=None, course=None, page_kind="login"):
         try:
             with _timed("document-commit", "navigation", landing_kind):
-                await asyncio.wait_for(
+                await current_clock().wait_for(
                     page.goto(target_url, wait_until="domcontentloaded", timeout=timeout_ms),
-                    timeout=timeout_seconds,
+                    timeout_seconds,
                 )
             with _timed("dom-ready", "selector", "login"):
-                await asyncio.wait_for(
+                await current_clock().wait_for(
                     page.wait_for_selector(f"{expected_selector}, {LOGIN_FORM_SELECTOR}", timeout=timeout_ms),
-                    timeout=timeout_seconds,
+                    timeout_seconds,
                 )
             with _timed("wait", "selector", landing_kind):
-                landing_visible = await asyncio.wait_for(
-                    page.is_visible(expected_selector), timeout=PROTOCOL_TIMEOUT_SECONDS
+                landing_visible = await current_clock().wait_for(
+                    page.is_visible(expected_selector), PROTOCOL_TIMEOUT_SECONDS
                 )
             if landing_visible:
                 form_visible = False
             else:
                 with _timed("wait", "selector", "login"):
-                    form_visible = await asyncio.wait_for(
-                        page.is_visible(LOGIN_FORM_SELECTOR), timeout=PROTOCOL_TIMEOUT_SECONDS
+                    form_visible = await current_clock().wait_for(
+                        page.is_visible(LOGIN_FORM_SELECTOR), PROTOCOL_TIMEOUT_SECONDS
                     )
         except Exception:
             raise _unavailable() from None
@@ -141,19 +142,19 @@ async def ensure_logged_in(
     fill_error: CampusError | None = None
     try:
         with _timed("wait", "function", "login"):
-            await asyncio.wait_for(
+            await current_clock().wait_for(
                 page.evaluate("""() => {
                     const univ = document.querySelector('input[name="univ_no"]');
                     if (univ) univ.value = 'CNU';
                     const cnuAuth = document.querySelector('#cnu_auth');
                     if (cnuAuth) cnuAuth.checked = true;
                 }"""),
-                timeout=PROTOCOL_TIMEOUT_SECONDS,
+                PROTOCOL_TIMEOUT_SECONDS,
             )
         with _timed("wait", "action", "login"):
-            await asyncio.wait_for(page.fill(LOGIN_FORM_SELECTOR, username), timeout=PROTOCOL_TIMEOUT_SECONDS)
+            await current_clock().wait_for(page.fill(LOGIN_FORM_SELECTOR, username), PROTOCOL_TIMEOUT_SECONDS)
         with _timed("wait", "action", "login"):
-            await asyncio.wait_for(page.fill(LOGIN_PASSWORD_SELECTOR, password), timeout=PROTOCOL_TIMEOUT_SECONDS)
+            await current_clock().wait_for(page.fill(LOGIN_PASSWORD_SELECTOR, password), PROTOCOL_TIMEOUT_SECONDS)
     except Exception:
         fill_error = _unavailable()
     finally:
@@ -175,7 +176,7 @@ async def ensure_logged_in(
 
     async def abort_route(route: Any) -> None:
         with suppress(BaseException), _timed("wait", "timeout", "login", bound, labels):
-            await asyncio.wait_for(route.abort(), timeout=CLEANUP_TIMEOUT_SECONDS)
+            await current_clock().wait_for(route.abort(), CLEANUP_TIMEOUT_SECONDS)
 
     async def capture_login_response(route: Any) -> None:
         handler_task = asyncio.current_task()
@@ -186,15 +187,15 @@ async def ensure_logged_in(
             if deadline is None:
                 raise TimeoutError
             with _timed("response-completion", "response", "login", bound, labels):
-                response = await asyncio.wait_for(route.fetch(), timeout=_remaining(deadline))
-                body = await asyncio.wait_for(response.body(), timeout=_remaining(deadline))
+                response = await current_clock().wait_for(route.fetch(), _remaining(deadline))
+                body = await current_clock().wait_for(response.body(), _remaining(deadline))
             data = json.loads(body)
             if not isinstance(data, dict):
                 raise ValueError
             with _timed("wait", "action", "login", bound, labels):
-                await asyncio.wait_for(
+                await current_clock().wait_for(
                     route.fulfill(response=response),
-                    timeout=PROTOCOL_TIMEOUT_SECONDS,
+                    PROTOCOL_TIMEOUT_SECONDS,
                 )
         except asyncio.CancelledError:
             settle(None, _unavailable())
@@ -217,7 +218,11 @@ async def ensure_logged_in(
         if not tasks:
             return
         with _timed("wait", "timeout", "login"):
-            done, pending = await asyncio.wait(tasks, timeout=CLEANUP_TIMEOUT_SECONDS)
+            try:
+                done, pending = await current_clock().wait_for(asyncio.wait(tasks), CLEANUP_TIMEOUT_SECONDS)
+            except TimeoutError:
+                done = {task for task in tasks if task.done()}
+                pending = set(tasks) - done
         for task in done:
             with suppress(BaseException):
                 task.result()
@@ -227,21 +232,21 @@ async def ensure_logged_in(
     try:
         try:
             with _timed("wait", "action", "login"):
-                await asyncio.wait_for(
+                await current_clock().wait_for(
                     page.route(_is_login_url, capture_login_response),
-                    timeout=PROTOCOL_TIMEOUT_SECONDS,
+                    PROTOCOL_TIMEOUT_SECONDS,
                 )
         except Exception:
             settle(None, _unavailable())
             raise _unavailable() from None
 
-        response_deadline = loop.time() + timeout_seconds
+        response_deadline = current_clock().now() + timeout_seconds
         click_failed = False
         try:
             with _timed("wait", "action", "login"):
-                await asyncio.wait_for(
+                await current_clock().wait_for(
                     page.click(LOGIN_BUTTON_SELECTOR),
-                    timeout=_remaining(response_deadline),
+                    _remaining(response_deadline),
                 )
         except Exception:
             click_failed = True
@@ -253,9 +258,9 @@ async def ensure_logged_in(
         else:
             try:
                 with _timed("response-completion", "response", "login"):
-                    data, response_error = await asyncio.wait_for(
+                    data, response_error = await current_clock().wait_for(
                         asyncio.shield(login_result),
-                        timeout=_remaining(response_deadline),
+                        _remaining(response_deadline),
                     )
             except Exception:
                 raise _unavailable() from None
@@ -283,18 +288,18 @@ async def ensure_logged_in(
             settle(None, _unavailable())
         try:
             with suppress(Exception), _timed("wait", "timeout", "login"):
-                await asyncio.wait_for(
+                await current_clock().wait_for(
                     page.unroute(_is_login_url, capture_login_response),
-                    timeout=CLEANUP_TIMEOUT_SECONDS,
+                    CLEANUP_TIMEOUT_SECONDS,
                 )
         finally:
             await drain_route_handlers()
 
     try:
         with _timed("dom-ready", "selector", landing_kind):
-            await asyncio.wait_for(
+            await current_clock().wait_for(
                 page.wait_for_selector(expected_selector, timeout=timeout_ms),
-                timeout=timeout_seconds,
+                timeout_seconds,
             )
     except Exception:
         raise _unavailable() from None

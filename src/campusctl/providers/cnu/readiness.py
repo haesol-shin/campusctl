@@ -6,12 +6,12 @@ prove response completeness and list cardinality.
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 from urllib.parse import urlsplit
 
 from campusctl.browser import bounded, profile_check_start, profile_diagnostic, profile_span
 from campusctl.envelope import CampusError
+from campusctl.wait_clock import current_clock
 
 from .course_context import _TOPBAR_COURSE_JS, COURSE_MENU_TIMEOUT_MS
 from .courses import COURSE_LINK_SELECTOR
@@ -73,7 +73,7 @@ async def _identity(page: Any) -> str | None:
 
 
 def _remaining_ms(deadline: float) -> int:
-    remaining = deadline - asyncio.get_running_loop().time()
+    remaining = deadline - current_clock().now()
     if remaining <= 0:
         raise TimeoutError
     return max(1, int(remaining * 1000))
@@ -86,9 +86,9 @@ async def _await_surface(page: Any, page_kind: str, deadline: float) -> None:
         while True:
             if (await page.evaluate(_TODO_READY_JS)) is True:
                 return
-            if asyncio.get_running_loop().time() >= deadline:
+            if current_clock().now() >= deadline:
                 raise TimeoutError
-            await asyncio.sleep(0.05)
+            await current_clock().sleep(0.05)
     if page_kind == "assignment-detail":
         await page.wait_for_selector(_DETAIL_TITLE, state="visible", timeout=_remaining_ms(deadline))
         return
@@ -111,8 +111,8 @@ async def wait_page_ready(
         raise ValueError("expected_course_id is required")
 
     path = _ROUTES[page_kind]
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + READINESS_TIMEOUT_S
+    clock = current_clock()
+    deadline = clock.now() + READINESS_TIMEOUT_S
     labels: dict[str, Any] = {"page_kind": page_kind, "wait_kind": "readiness"}
     if domain is not None:
         labels["domain"] = domain
@@ -143,7 +143,7 @@ async def wait_page_ready(
         nonlocal check, route_match, ids_match
         entered_route = False
         while True:
-            if loop.time() >= deadline:
+            if clock.now() >= deadline:
                 raise TimeoutError
             url = _page_url(page)
             current = urlsplit(url)
@@ -156,7 +156,7 @@ async def wait_page_ready(
                 route_match = False
                 if entered_route:
                     raise ValueError("page route changed before readiness")
-                await asyncio.sleep(0.05)
+                await clock.sleep(0.05)
                 continue
             entered_route = True
             route_match = True
@@ -167,7 +167,7 @@ async def wait_page_ready(
                 if course_id is not None and course_id != expected_course_id:
                     raise ValueError("page course does not match the selected course")
                 if course_id != expected_course_id:
-                    await asyncio.sleep(0.05)
+                    await clock.sleep(0.05)
                     continue
             check = "page-readiness"
             break

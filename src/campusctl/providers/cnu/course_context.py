@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any, Literal
 
 from campusctl.browser import PROTOCOL_TIMEOUT_SECONDS, bounded, profile_check_start, profile_diagnostic, profile_span
 from campusctl.envelope import CampusError
+from campusctl.wait_clock import current_clock
 
 COURSE_MENU_SELECTOR = 'a[href="/std/course"]'
 COURSE_MENU_TIMEOUT_MS = 7000
@@ -33,7 +33,7 @@ async def _wait_for_topbar_course_id(page: Any) -> str:
             course_id = await page.evaluate(_TOPBAR_COURSE_JS)
             if isinstance(course_id, str) and course_id:
                 return course_id
-            await asyncio.sleep(0.1)
+            await current_clock().sleep(0.1)
 
     started = profile_check_start()
     with profile_span("wait", wait_kind="function"):
