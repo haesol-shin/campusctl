@@ -566,9 +566,7 @@ def test_unsettled_global_todo_cannot_confirm_board_empty(monkeypatch: pytest.Mo
     asyncio.run(exercise())
 
 
-@pytest.mark.parametrize(
-    ("response_backed", "initial_total_unusable"), [(False, False), (True, False), (True, True)]
-)
+@pytest.mark.parametrize(("response_backed", "initial_total_unusable"), [(False, False), (True, False), (True, True)])
 def test_todo_paginates_by_rendered_next_when_response_has_more_rows(
     monkeypatch: pytest.MonkeyPatch, response_backed: bool, initial_total_unusable: bool
 ) -> None:
