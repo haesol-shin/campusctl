@@ -222,7 +222,7 @@ class FixtureHandler(BaseHTTPRequestHandler):
         )
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
-        with suppress(BrokenPipeError):
+        with suppress(BrokenPipeError, ConnectionResetError):
             self.wfile.write(data)
 
     def _handle(self) -> None:
@@ -312,6 +312,8 @@ class FixtureHandler(BaseHTTPRequestHandler):
                 }
             )
         elif path == "/api/v1/task/stdList":
+            if self.server.background_request:
+                assert self.server.background_started.wait(timeout=5)
             cid = json.loads(payload).get("course_id")
             if self.server.task_count_mismatch and cid == IDS[3]:
                 self._respond({"body": {"total": 2, "course_id": cid}})
