@@ -948,6 +948,7 @@ def _chromium_available() -> bool:
         return Path(manager.chromium.executable_path).is_file()
 
 
+@pytest.mark.chromium
 def test_persistent_profile_reopens_synthetic_cookie_until_server_expiry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1016,6 +1017,7 @@ def test_persistent_profile_reopens_synthetic_cookie_until_server_expiry(
     _run(scenario())
 
 
+@pytest.mark.chromium
 def test_cdp_attachment_preserves_unrelated_tabs(tmp_path: Path) -> None:
     if not _chromium_available():
         pytest.skip("local Playwright Chromium not installed")

@@ -119,6 +119,7 @@ def old_catalog(root: Path) -> None:
     )
 
 
+@pytest.mark.chromium
 def test_standalone_sync_normalizes_all_browser_courses(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from test_sync_all import COURSES as BROWSER_COURSES
     from test_sync_all import IDS, _expected_row, fixture_server
@@ -135,6 +136,7 @@ def test_standalone_sync_normalizes_all_browser_courses(tmp_path: Path, monkeypa
         assert config["_fixture_login_calls"] == ["login"]
 
 
+@pytest.mark.chromium
 def test_standalone_filtered_sync_preserves_cached_other_courses(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

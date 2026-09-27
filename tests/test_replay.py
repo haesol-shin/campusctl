@@ -225,6 +225,7 @@ def test_replay_live_closed_row_does_not_open_player(monkeypatch: pytest.MonkeyP
     assert not [call for call in page.calls if call[0] == "open-player"]
 
 
+@pytest.mark.chromium
 def test_local_official_player_controls_do_not_write_media_or_visibility(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -43,6 +43,7 @@ def test_assignment_discovery_and_cli(
     assert code == 2 and response["errors"][0]["code"] == "course-id-required"
 
 
+@pytest.mark.chromium
 def test_human_assignment_renderer_has_full_ids(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -67,6 +68,7 @@ def test_human_assignment_renderer_has_full_ids(
         assert "Synced 1 course, 1 assignment." in capsys.readouterr().out
 
 
+@pytest.mark.chromium
 def test_browser_cli_sync_list_and_lock(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

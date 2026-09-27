@@ -93,6 +93,7 @@ def _fixture_server(posts: list[str]) -> tuple[ThreadingHTTPServer, threading.Th
     return server, thread
 
 
+@pytest.mark.chromium
 def test_popup_settles_and_roster_links_render(monkeypatch: pytest.MonkeyPatch) -> None:
     posts: list[str] = []
     server, thread = _fixture_server(posts)
@@ -134,6 +135,7 @@ def test_popup_settles_and_roster_links_render(monkeypatch: pytest.MonkeyPatch) 
         thread.join()
 
 
+@pytest.mark.chromium
 def test_no_popup_timeout_and_listener_cleanup() -> None:
     async def scenario() -> None:
         manager, instance, context = await _browser_context()
