@@ -22,7 +22,9 @@ from campusctl.domain_catalog import (
 )
 from campusctl.envelope import CampusError
 from campusctl.providers.cnu import assignments, materials, notices
-from campusctl.providers.cnu.course_context import _TOPBAR_COURSE_JS, _css_string, _wait_for_topbar_course_id
+from campusctl.providers.cnu.course_context import (
+    COURSE_MENU_TIMEOUT_MS, _TOPBAR_COURSE_JS, _css_string, _wait_for_topbar_course_id,
+)
 from campusctl.providers.cnu.courses import COURSE_LINK_SELECTOR, EXTRACT_COURSES_JS, parse_courses
 from campusctl.providers.cnu.login import MY_LECTURE_URL, ensure_logged_in
 from campusctl.providers.cnu.readiness import provider_origin, wait_page_ready
@@ -172,6 +174,7 @@ async def _select_course(page: Any, course: dict[str, Any], ordinal: int, domain
                 "selecting a roster course",
             )
         browser.profile_count("course_selections")
+        proof_started = browser.profile_check_start()
         await wait_page_ready(
             page, "course-entry", expected_course_id=course["course_id"], domain=domain, ordinal=ordinal
         )
@@ -184,6 +187,20 @@ async def _select_course(page: Any, course: dict[str, Any], ordinal: int, domain
             or urlsplit(frame.url).path != "/std/lecture"
             or topbar_id != course["course_id"]
         ):
+            browser.profile_diagnostic(
+                "course-identity", started=proof_started,
+                bound_ns=browser.PROTOCOL_TIMEOUT_SECONDS * 1_000_000_000,
+                domain=domain, course=ordinal, page_kind="course-entry",
+                counts={
+                    "selection_requests": len(requests),
+                    "entry_documents": len(documents),
+                    "entry_commits": commits,
+                },
+                states={
+                    "ids_match": topbar_id == course["course_id"],
+                    "route_match": urlsplit(frame.url).path == "/std/lecture",
+                },
+            )
             raise ValueError("Course entry does not match its roster selection")
     finally:
         page.remove_listener("request", on_request)
@@ -217,6 +234,7 @@ async def _section(
             "notices": 'a[href="/std/notice"]',
             "materials": 'a[href="/std/archive"]',
         }[domain]
+        check_started = browser.profile_check_start()
         current_url = page.main_frame.url
         current = urlsplit(current_url)
         if (current.scheme, current.netloc) != provider_origin() or current.path not in {
@@ -226,6 +244,11 @@ async def _section(
             "/std/notice",
             "/std/archive",
         }:
+            browser.profile_diagnostic(
+                "page-readiness", started=check_started,
+                bound_ns=COURSE_MENU_TIMEOUT_MS * 1_000_000,
+                states={"route_match": False},
+            )
             raise ValueError("Section menu is not on a verified course page")
         with browser.profile_span("dom-ready", wait_kind="selector"):
             await browser.bounded(
@@ -233,9 +256,20 @@ async def _section(
                 browser.PROTOCOL_TIMEOUT_SECONDS,
                 "waiting for the section menu",
             )
-        if await _wait_for_topbar_course_id(page) != course["course_id"]:
+        topbar_id = await _wait_for_topbar_course_id(page)
+        if topbar_id != course["course_id"]:
+            browser.profile_diagnostic(
+                "course-identity", started=check_started,
+                bound_ns=COURSE_MENU_TIMEOUT_MS * 1_000_000,
+                states={"ids_match": False, "route_match": page.main_frame.url == current_url},
+            )
             raise ValueError("Section menu belongs to another course")
         if page.main_frame.url != current_url:
+            browser.profile_diagnostic(
+                "page-readiness", started=check_started,
+                bound_ns=COURSE_MENU_TIMEOUT_MS * 1_000_000,
+                states={"route_match": False, "ids_match": True},
+            )
             raise ValueError("Section menu left the verified course page")
         if domain == "lectures":
             with (

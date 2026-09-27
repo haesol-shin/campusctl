@@ -62,6 +62,17 @@ PAGE_KINDS = frozenset(
 WAIT_KINDS = frozenset({"selector", "function", "load", "timeout", "action", "response", "navigation", "readiness"})
 END_REASONS = frozenset({"next-document", "session-end", "failed"})
 SCHEMA_VERSION = 2
+CHECKS = frozenset({"page-readiness", "course-identity", "todo-grid", "archive-state", "modal-binding"})
+DIAGNOSTIC_COUNT_NAMES = frozenset(
+    {
+        "rendered_rows", "response_items", "tot_cnt", "expected_rows", "modal_controls", "page_size",
+        "current_page", "expected_page", "expected_total",
+        "selection_requests", "entry_documents", "entry_commits",
+    }
+)
+DIAGNOSTIC_BOOL_STATES = frozenset({"ids_match", "route_match", "same_document", "modal_clear", "completed"})
+NEXT_STATES = frozenset({"enabled", "disabled", "absent"})
+
 _SPAN_KEY = (
     "phase",
     "domain",
@@ -190,6 +201,8 @@ class SpanRecorder:
         self._started = clock() if enabled else 0
         self._spans: list[_Span] = []
         self._documents: list[_Document] = []
+        self._diagnostics: list[dict] = []
+
         self._active_document: int | None = None
         self._parent: ContextVar[int | None] = ContextVar("profile_parent", default=None)
         self._counts = dict.fromkeys(sorted(COUNT_NAMES), 0)
@@ -224,7 +237,7 @@ class SpanRecorder:
             return
         if self._finished is not None:
             raise RuntimeError("recorder finished")
-        if len(self._spans) >= self.max_events:
+        if len(self._spans) + len(self._diagnostics) >= self.max_events:
             self._dropped += 1
             yield
             return
@@ -332,6 +345,64 @@ class SpanRecorder:
             raise ValueError("event loop lag must be nonnegative nanoseconds")
         self._event_loop_lag_ns = max(self._event_loop_lag_ns or 0, lag_ns)
 
+    def check_start(self) -> int | None:
+        """Start a diagnostic clock only while profiling is active."""
+        return self._clock() if self.enabled and self._finished is None else None
+
+    def diagnostic(
+        self,
+        check: str,
+        *,
+        started: int,
+        bound_ns: int,
+        domain: str | None = None,
+        course: int | None = None,
+        page_kind: str | None = None,
+        counts: dict[str, int] | None = None,
+        states: dict[str, bool | str] | None = None,
+    ) -> None:
+        """Store only allowlisted scalar evidence for a failed check."""
+        counts = {} if counts is None else counts
+        states = {} if states is None else states
+        if check not in CHECKS or (domain is not None and domain not in DOMAINS):
+            raise ValueError("unknown diagnostic category")
+        _optional_enum(page_kind, PAGE_KINDS, "page kind")
+        _ordinal(course, "course")
+        if type(started) is not int or type(bound_ns) is not int or bound_ns < 0:
+            raise ValueError("invalid diagnostic timing")
+        if not isinstance(counts, dict) or any(
+            key not in DIAGNOSTIC_COUNT_NAMES or type(value) is not int or value < 0
+            for key, value in counts.items()
+        ):
+            raise ValueError("invalid diagnostic counts")
+        if not isinstance(states, dict) or any(
+            type(key) is not str or (
+                type(value) is not str or value not in NEXT_STATES
+                if key == "next_state"
+                else key not in DIAGNOSTIC_BOOL_STATES or type(value) is not bool
+            )
+            for key, value in states.items()
+        ):
+            raise ValueError("invalid diagnostic states")
+        if not self.enabled or self._finished is not None:
+            return
+        if len(self._spans) + len(self._diagnostics) >= self.max_events:
+            self._dropped += 1
+            return
+        self._diagnostics.append(
+            {
+                "check": check,
+                "outcome": "failed",
+                "page_kind": page_kind,
+                "domain": domain,
+                "course": course,
+                "counts": dict(counts),
+                "states": dict(states),
+                "elapsed_ns": max(0, self._clock() - started),
+                "bound_ns": bound_ns,
+            }
+        )
+
     def finish(self, *, outcome: str = "ok", stderr: TextIO | None = None) -> dict | None:
         if not self.enabled:
             return None
@@ -418,6 +489,7 @@ class SpanRecorder:
             "wall_ns": end - self._started,
             "spans": list(aggregates.values()),
             "documents": documents,
+            "diagnostics": self._diagnostics.copy(),
             "coverage": {
                 "lock_ns": lock_ns,
                 "covered_ns": covered_ns,

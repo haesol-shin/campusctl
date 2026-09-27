@@ -543,9 +543,14 @@ def test_response_identity_mismatch_reloads_then_reopens_current_post(monkeypatc
             return await super().evaluate(script, arg)
 
     page = StaleControlsPage({"course": course, "posts": [post]}, [])
-    rows = asyncio.run(materials.enumerate_archive(page, course))
+    rows, profile = _profiled(page, course)
     assert [row["file_id"] for row in rows] == ["file-current"]
     assert page.events.count(materials._ARCHIVE_MENU) == 1
+    binding = next(row for row in profile["diagnostics"] if row["check"] == "modal-binding")
+    assert binding["counts"] == {"modal_controls": 1, "response_items": 1}
+    assert binding["states"]["ids_match"] is False
+    assert binding["page_kind"] == "archive"
+    assert binding["elapsed_ns"] > 0 and binding["bound_ns"] == 120 * 1_000_000
 
 
 def test_empty_attachment_response_confirms_post_has_no_files() -> None:
@@ -931,6 +936,7 @@ def test_profile_distinguishes_retained_and_reloaded_restores() -> None:
     assert _phase_count(profile, "archive-restore") == 2
     assert _phase_count(profile, "document-commit") == 1
     assert all(handle.disposed for handle in page.handles)
+    assert profile["diagnostics"] == []
 
 
 def test_initial_archive_state_waits_for_completed_rows(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -944,6 +950,30 @@ def test_initial_archive_state_waits_for_completed_rows(monkeypatch: pytest.Monk
     assert _associated(rows) == [("board-a", "file-board-a", "board-a.pdf")]
     assert page.state_observations >= 3
     assert page.events.count(materials._ARCHIVE_MENU) == 0
+
+
+def test_incomplete_archive_state_records_compared_counts_without_identity() -> None:
+    import io
+
+    from campusctl.browser import profile_context
+    from campusctl.profiling import SpanRecorder
+
+    course = fixture()["course"]
+    page = FakePage({"course": course, "posts": _sample_posts("board-a", "board-b"), "table_ready": False}, [])
+    recorder = SpanRecorder(enabled=True, scope=("materials",))
+    with profile_context(recorder), pytest.raises(CampusError) as caught:
+        asyncio.run(materials._wait_archive_state(page, 1, expected_course_id=course["course_id"]))
+    assert caught.value.code == "course-sync-failed"
+    profile = recorder.finish(stderr=io.StringIO())
+    diagnostic = next(row for row in profile["diagnostics"] if row["check"] == "archive-state")
+    assert diagnostic["counts"] == {
+        "rendered_rows": 2, "tot_cnt": 2, "page_size": 10,
+        "expected_rows": 2, "current_page": 1, "expected_page": 1,
+    }
+    assert diagnostic["states"] == {
+        "completed": False, "ids_match": True, "route_match": True, "modal_clear": True,
+    }
+    assert diagnostic["elapsed_ns"] > 0 and diagnostic["bound_ns"] == materials._WAIT_MS * 1_000_000
 
 
 def test_unrelated_request_inspection_error_propagates() -> None:

@@ -6,6 +6,16 @@
 
 `src/campusctl/profiling.py` holds a span recorder that does nothing unless `--profile` is set. It keeps bounded in-memory aggregates and emits one stderr line at completion or failure. Phase names: lock, playwright, launch-connect, user-agent, auth, roster, todo, sso-settle, course-selection, document-commit, response-completion, idle, dom-ready, extract, archive-page, modal, attachment-list, archive-restore, merge, serialize-write, teardown. Counts include `course_selections`, documents and SSO settlements; there are no guard-decision phases or per-route disposition counts. Output never contains URLs, query values, headers, bodies, credentials or course names and IDs; `course` is an ephemeral ordinal. `tools/profile_sync.py` compares two command lines over repeated runs for local fixture benchmarking.
 
+Profile v2 includes a top-level `diagnostics` array for failed readiness, identity, to-do grid, archive-state and modal-binding checks. Passing checks add no record. Each record contains exactly:
+
+- `check`: `page-readiness`, `course-identity`, `todo-grid`, `archive-state` or `modal-binding`; `outcome`: always `failed`.
+- `page_kind` and `domain`: existing profile enums or null; `course`: a positive run-local ordinal or null.
+- `counts`: known nonnegative integers only: `rendered_rows`, `response_items`, `tot_cnt`, `expected_rows`, `modal_controls`, `page_size`, `current_page`, `expected_page`, `expected_total`, `selection_requests`, `entry_documents`, `entry_commits`.
+- `states`: Boolean `ids_match`, `route_match`, `same_document`, `modal_clear`, `completed`, or `next_state` (`enabled`, `disabled`, `absent`).
+- `elapsed_ns` and `bound_ns`: nonnegative nanoseconds for elapsed check time and its timeout bound.
+
+Unknown measurements are omitted from their maps, never filled from page text. Diagnostics and spans share the existing `max_events` budget (4096 by default); overflow increments `dropped_events`. The profile never stores identifiers, titles, URL values or page text.
+
 ## Combined course pass
 
 `src/campusctl/providers/cnu/sync_all.py` owns the browser session, login, roster and publication; `src/campusctl/sync.py` and the single-domain commands call it.

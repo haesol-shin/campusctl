@@ -142,7 +142,10 @@ def _exact_int(value: object, *, minimum: int = 0) -> bool:
 def _safe_profile(profile: object) -> dict | None:
     if not isinstance(profile, dict):
         return None
-    from campusctl.profiling import COUNT_NAMES, DOMAINS, END_REASONS, PAGE_KINDS, PHASES, WAIT_KINDS
+    from campusctl.profiling import (
+        CHECKS, COUNT_NAMES, DIAGNOSTIC_BOOL_STATES, DIAGNOSTIC_COUNT_NAMES,
+        DOMAINS, END_REASONS, NEXT_STATES, PAGE_KINDS, PHASES, WAIT_KINDS,
+    )
 
     top = {
         "schema_version",
@@ -153,6 +156,7 @@ def _safe_profile(profile: object) -> dict | None:
         "wall_ns",
         "spans",
         "documents",
+        "diagnostics",
         "coverage",
         "counts",
         "dropped_events",
@@ -175,16 +179,19 @@ def _safe_profile(profile: object) -> dict | None:
     counts = profile.get("counts")
     spans = profile.get("spans")
     documents = profile.get("documents")
+    diagnostics = profile.get("diagnostics")
     coverage = profile.get("coverage")
     if (
         not isinstance(counts, dict)
         or not isinstance(spans, list)
         or not isinstance(documents, list)
+        or not isinstance(diagnostics, list)
         or not isinstance(coverage, dict)
         or set(counts) != COUNT_NAMES
         or any(not _exact_int(value) for value in counts.values())
         or len(spans) > 4096
         or len(documents) > 4096
+        or len(spans) + len(diagnostics) > 4096
         or set(coverage) != {"lock_ns", "covered_ns", "unattributed_ns"}
         or any(not _exact_int(coverage[key]) for key in ("lock_ns", "covered_ns", "unattributed_ns"))
         or coverage["covered_ns"] + coverage["unattributed_ns"] != coverage["lock_ns"]
@@ -265,6 +272,40 @@ def _safe_profile(profile: object) -> dict | None:
         safe_documents.append({key: row[key] for key in document_order})
     if any(span["document"] is not None and span["document"] not in ordinals for span in safe_spans):
         return None
+    diagnostic_order = (
+        "check", "outcome", "page_kind", "domain", "course",
+        "counts", "states", "elapsed_ns", "bound_ns",
+    )
+    safe_diagnostics = []
+    for row in diagnostics:
+        if not isinstance(row, dict) or set(row) != set(diagnostic_order):
+            return None
+        if type(row["check"]) is not str or row["check"] not in CHECKS or row["outcome"] != "failed":
+            return None
+        if row["page_kind"] is not None and (type(row["page_kind"]) is not str or row["page_kind"] not in PAGE_KINDS):
+            return None
+        if row["domain"] is not None and (type(row["domain"]) is not str or row["domain"] not in DOMAINS):
+            return None
+        if row["course"] is not None and not _exact_int(row["course"], minimum=1):
+            return None
+        if not _exact_int(row["elapsed_ns"]) or not _exact_int(row["bound_ns"]):
+            return None
+        values, states = row["counts"], row["states"]
+        if not isinstance(values, dict) or not isinstance(states, dict):
+            return None
+        if any(type(key) is not str or key not in DIAGNOSTIC_COUNT_NAMES or not _exact_int(value)
+               for key, value in values.items()):
+            return None
+        if any(type(key) is not str or (
+            type(value) is not str or value not in NEXT_STATES if key == "next_state"
+            else key not in DIAGNOSTIC_BOOL_STATES or type(value) is not bool
+        ) for key, value in states.items()):
+            return None
+        safe_diagnostics.append({
+            **{key: row[key] for key in diagnostic_order if key not in {"counts", "states"}},
+            "counts": {key: values[key] for key in sorted(values)},
+            "states": {key: states[key] for key in sorted(states)},
+        })
     return {
         "schema_version": 2,
         "run": profile["run"],
@@ -274,6 +315,7 @@ def _safe_profile(profile: object) -> dict | None:
         "wall_ns": profile["wall_ns"],
         "spans": safe_spans,
         "documents": safe_documents,
+        "diagnostics": safe_diagnostics,
         "coverage": {key: coverage[key] for key in ("lock_ns", "covered_ns", "unattributed_ns")},
         "counts": {name: counts[name] for name in sorted(COUNT_NAMES)},
         "dropped_events": profile["dropped_events"],

@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from campusctl.browser import PROTOCOL_TIMEOUT_SECONDS, bounded, profile_span
+from campusctl.browser import PROTOCOL_TIMEOUT_SECONDS, bounded, profile_check_start, profile_diagnostic, profile_span
 from campusctl.envelope import CampusError
 from campusctl.identity import notice_entity_id
 
@@ -374,6 +374,12 @@ def _todo_response_coverage(payload: Any) -> tuple[int, int] | None:
 
 async def _grid_snapshot(page: Any, capture: _TodoCapture) -> list[dict[str, Any]]:
     """Read each committed grid page after its own response and render gate."""
+    started = profile_check_start()
+    bound_ns = 120 * 1_000_000_000
+    observed: dict[str, int | str] | None = {} if started is not None else None
+    response_items = 0
+    response_total: int | None = None
+
 
     async def completed(start: int, *, required: bool) -> tuple[bool, tuple[int, int] | None]:
         async def response_for(request: Any) -> Any:
@@ -440,6 +446,11 @@ async def _grid_snapshot(page: Any, capture: _TodoCapture) -> list[dict[str, Any
                 page_rows = snapshot["rows"]
                 if page_rows or snapshot.get("empty") is True:
                     next_present = snapshot.get("next_present") is True or snapshot.get("next") is not None
+                    if observed is not None:
+                        observed["rendered_rows"] = len(page_rows)
+                        observed["next_state"] = (
+                            "absent" if not next_present else "disabled" if snapshot.get("next_disabled") is True else "enabled"
+                        )
                     pagination_present = snapshot.get("pagination_present") is True or next_present
                     current = (
                         len(page_rows),
@@ -479,11 +490,15 @@ async def _grid_snapshot(page: Any, capture: _TodoCapture) -> list[dict[str, Any
             seen_pages: set[tuple[str, ...]] = set()
             previous: tuple[str, ...] | None = None
             response_items = 0
-            response_total: int | None = None
+            response_total = None
             coverage_available = True
             while True:
                 if previous is not None:
+                    started = profile_check_start()
+                    bound_ns = COURSE_MENU_TIMEOUT_MS * 1_000_000
                     await advanced(previous)
+                started = profile_check_start()
+                bound_ns = SECTION_RESPONSE_TIMEOUT_MS * 1_000_000
                 has_response, coverage = await completed(window_start, required=previous is None)
                 if has_response and coverage_available:
                     if coverage is None:
@@ -493,6 +508,8 @@ async def _grid_snapshot(page: Any, capture: _TodoCapture) -> list[dict[str, Any
                     else:
                         count, response_total = coverage
                         response_items += count
+                started = profile_check_start()
+                bound_ns = COURSE_MENU_TIMEOUT_MS * 1_000_000
                 loop = asyncio.get_running_loop()
                 deadline = loop.time() + COURSE_MENU_TIMEOUT_MS / 1000
                 await wait_page_ready(page, "todo", domain="notices")
@@ -525,8 +542,26 @@ async def _grid_snapshot(page: Any, capture: _TodoCapture) -> list[dict[str, Any
                     raise ValueError("Unknown notice pagination control")
                 previous = fingerprint
                 window_start = capture.sequence
+                started = profile_check_start()
+                bound_ns = int(PROTOCOL_TIMEOUT_SECONDS * 1_000_000_000)
                 with profile_span("wait", wait_kind="action", domain="notices", page_kind="todo"):
                     await bounded(page.click(next_page), PROTOCOL_TIMEOUT_SECONDS, "opening next notice page")
+    except Exception:
+        if started is not None:
+            counts = {"response_items": response_items}
+            states = {}
+            if response_total is not None:
+                counts["tot_cnt"] = response_total
+            if observed is not None:
+                if "rendered_rows" in observed:
+                    counts["rendered_rows"] = observed["rendered_rows"]
+                if "next_state" in observed:
+                    states["next_state"] = observed["next_state"]
+            profile_diagnostic(
+                "todo-grid", started=started, bound_ns=bound_ns,
+                counts=counts, states=states, domain="notices", page_kind="todo",
+            )
+        raise
     finally:
         capture.close()
 

@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import io
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+from campusctl.browser import profile_context
 from campusctl.envelope import CampusError
 from campusctl.providers.cnu import notices, readiness
+from campusctl.profiling import SpanRecorder
 
 L = "https://lms.example.invalid"
 
@@ -678,11 +681,14 @@ def test_todo_accepts_filtered_grid_when_response_covers_total(
         capture = await notices.open_notice_todo(page)
         return await notices.collect_notice_todo(page, COURSES, capture=capture)
 
-    rows, failures = asyncio.run(collect())
+    recorder = SpanRecorder(enabled=True, scope=("notices",))
+    with profile_context(recorder):
+        rows, failures = asyncio.run(collect())
     assert failures == set()
     assert [item["title"] for item in rows["course-a"]] == ["Visible notice"]
     assert rows["course-b"] == []
     assert not page.listeners
+    assert recorder.finish(stderr=io.StringIO())["diagnostics"] == []
 
 
 def test_todo_waits_for_late_rows_and_next_before_collecting(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -864,10 +870,19 @@ def test_todo_missing_terminal_proof_times_out(
         capture = await notices.open_notice_todo(page)
         await notices.collect_notice_todo(page, COURSES, capture=capture)
 
-    with pytest.raises(CampusError) as error:
+    recorder = SpanRecorder(enabled=True, scope=("notices",))
+    with profile_context(recorder), pytest.raises(CampusError) as error:
         asyncio.run(collect())
     assert error.value.code == "browser-timeout"
     assert not page.listeners
+    profile = recorder.finish(stderr=io.StringIO())
+    diagnostic = next(row for row in profile["diagnostics"] if row["check"] == "todo-grid")
+    assert diagnostic["page_kind"] == "todo" and diagnostic["course"] is None
+    assert diagnostic["counts"] == {
+        "rendered_rows": 1, "response_items": 2 if response_complete else 1, "tot_cnt": 2,
+    }
+    assert diagnostic["states"]["next_state"] == "absent"
+    assert diagnostic["elapsed_ns"] > 0 and diagnostic["bound_ns"] == 850 * 1_000_000
 
 
 def test_todo_unstable_grid_fails_without_publishing_rows(monkeypatch: pytest.MonkeyPatch) -> None:

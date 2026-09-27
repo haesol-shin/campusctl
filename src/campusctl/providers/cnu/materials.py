@@ -12,7 +12,7 @@ from urllib.parse import urlsplit
 
 from playwright.async_api import Error as PlaywrightError
 
-from campusctl.browser import PROTOCOL_TIMEOUT_SECONDS, bounded, profile_span
+from campusctl.browser import PROTOCOL_TIMEOUT_SECONDS, bounded, profile_check_start, profile_diagnostic, profile_span
 from campusctl.envelope import CampusError
 from campusctl.identity import material_entity_id
 
@@ -447,8 +447,40 @@ async def _archive_state(
     expected_course_id: str | None = None,
     *,
     expected_document: Any = None,
+    observed: dict[str, dict] | None = None,
 ) -> dict:
     state = await _step(page.evaluate(_ARCHIVE_STATE_JS, expected_document), "observing archive table")
+    if observed is not None:
+        observed.clear()
+        if isinstance(state, dict):
+            counts = {
+                name: state[source]
+                for name, source in (
+                    ("rendered_rows", "row_count"),
+                    ("tot_cnt", "total_count"),
+                    ("page_size", "page_size"),
+                    ("current_page", "current_page"),
+                )
+                if type(state.get(source)) is int and state[source] >= 0
+            }
+            counts["expected_page"] = expected_page
+            if expected_total is not None:
+                counts["expected_total"] = expected_total
+            if counts.get("page_size", 0) > 0 and "tot_cnt" in counts:
+                counts["expected_rows"] = min(
+                    counts["page_size"], max(0, counts["tot_cnt"] - (expected_page - 1) * counts["page_size"])
+                )
+            states = {}
+            if type(state.get("completed")) is bool:
+                states["completed"] = state["completed"]
+            if expected_course_id is not None:
+                states["ids_match"] = state.get("selected_course_id") == expected_course_id
+            for name in ("modal_clear", "same_document"):
+                if type(state.get(name)) is bool and (name != "same_document" or expected_document is not None):
+                    states[name] = state[name]
+            if type(state.get("archive_path")) is bool:
+                states["route_match"] = state["archive_path"]
+            observed.update(counts=counts, states=states)
     if (
         not isinstance(state, dict)
         or state.get("completed") is not True
@@ -476,11 +508,15 @@ async def _wait_archive_state(
     expected_course_id: str | None = None,
 ) -> dict:
     """Wait for the bound list response to finish rendering every expected post."""
+    started = profile_check_start()
+    observed: dict[str, dict] | None = {} if started is not None else None
 
     async def complete() -> dict:
         while True:
             try:
-                return await _archive_state(page, expected_page, expected_total, expected_course_id)
+                return await _archive_state(
+                    page, expected_page, expected_total, expected_course_id, observed=observed
+                )
             except ValueError:
                 await asyncio.sleep(0.05)
 
@@ -488,6 +524,13 @@ async def _wait_archive_state(
         try:
             return await bounded(complete(), _WAIT_MS / 1000, "waiting for complete archive rows")
         except CampusError as error:
+            if started is not None:
+                profile_diagnostic(
+                    "archive-state", started=started, bound_ns=_WAIT_MS * 1_000_000,
+                    counts=observed.get("counts") if observed else None,
+                    states=observed.get("states") if observed else None,
+                    domain="materials", page_kind="archive",
+                )
             if error.code != "browser-timeout" or expected_course_id is None:
                 raise
             raise _failure("course-sync-failed", {"course_id": expected_course_id}) from None
@@ -501,6 +544,30 @@ async def _post_names(
     page: Any, activity: _RequestWindow, after: int, post_id: str
 ) -> tuple[dict[str, str], list[dict[str, Any]], bool]:
     """Bind file controls to this post's completed attachment response when available."""
+    started = profile_check_start()
+    modal_controls: int | None = None
+    response_items: int | None = None
+    ids_match: bool | None = None
+    route_match: bool | None = None
+
+    def diagnose() -> None:
+        if started is None:
+            return
+        counts = {}
+        states = {}
+        if modal_controls is not None:
+            counts["modal_controls"] = modal_controls
+        if response_items is not None:
+            counts["response_items"] = response_items
+        if ids_match is not None:
+            states["ids_match"] = ids_match
+        if route_match is not None:
+            states["route_match"] = route_match
+        profile_diagnostic(
+            "modal-binding", started=started, bound_ns=_WAIT_MS * 1_000_000,
+            counts=counts, states=states, domain="materials", page_kind="archive",
+        )
+
 
     async def controls() -> list[dict[str, Any]]:
         modal = await page.evaluate(_TARGETS_JS, {"modalOnly": True, "boardItemId": post_id})
@@ -511,27 +578,34 @@ async def _post_names(
         )
 
     async def matching(names: dict[str, str]) -> list[dict[str, Any]]:
+        nonlocal modal_controls, ids_match
         while True:
             targets = await controls()
+            modal_controls = len(targets)
             identities = [
                 target.get("data_id") or target.get("file_id") for target in targets if isinstance(target, dict)
             ]
-            if (
+            ids_match = (
                 len(identities) == len(targets)
                 and len(identities) == len(names)
                 and set(identities) == names.keys()
                 and len(set(identities)) == len(identities)
-            ):
+            )
+            if ids_match:
                 return targets
             await asyncio.sleep(0.05)
 
     if urlsplit(page.main_frame.url).path != "/std/archive":
+        route_match = False
+        diagnose()
         raise ValueError("attachment request not in the selected archive")
+    route_match = True
     # An icon click can show the previous modal before its new XHR is dispatched.
     if not activity.matches(_ATTACH_LIST, "GET", after=after):
         await asyncio.sleep(0.1)
     requests = activity.matches(_ATTACH_LIST, "GET", after=after)
     if len(requests) > 1 or any(not activity._archive_referer(request) for _, request in requests):
+        diagnose()
         raise ValueError("duplicate attachment list response")
     if requests:
         try:
@@ -543,16 +617,23 @@ async def _post_names(
         except CampusError as error:
             if error.code != "browser-timeout":
                 raise
+            diagnose()
             return {}, [], False
         except ValueError:
+            diagnose()
             return {}, [], False
         if isinstance(body, dict) and isinstance(body.get("header"), dict) and body["header"].get("code") != 200:
+            diagnose()
             return {}, [], False
         try:
             names = _attachment_names(body)
         except ValueError:
-            return {}, await controls(), False
+            targets = await controls()
+            modal_controls = len(targets) if isinstance(targets, list) else None
+            diagnose()
+            return {}, targets, False
         else:
+            response_items = len(names)
             with profile_span("page-readiness", wait_kind="readiness", domain="materials", page_kind="archive"):
                 try:
                     return (
@@ -563,12 +644,15 @@ async def _post_names(
                 except CampusError as error:
                     if error.code != "browser-timeout":
                         raise
+                    diagnose()
         # The response did not identify the rendered controls; reload before trusting them.
         return names, [], False
 
     async def available() -> list[dict[str, Any]]:
+        nonlocal modal_controls
         while True:
             targets = await controls()
+            modal_controls = len(targets) if isinstance(targets, list) else None
             if isinstance(targets, list) and targets:
                 return targets
             await asyncio.sleep(0.05)
@@ -579,6 +663,7 @@ async def _post_names(
         except CampusError as error:
             if error.code != "browser-timeout":
                 raise
+            diagnose()
             return {}, [], False
 
 

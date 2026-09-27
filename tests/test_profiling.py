@@ -133,3 +133,45 @@ def test_disabled_document_methods_do_not_read_clock():
         recorder.count("documents")
     assert recorder.finish(stderr=io.StringIO()) is None
     assert clock.calls == 0
+
+
+def test_failed_check_is_bounded_and_contains_only_allowlisted_evidence():
+    clock = Clock()
+    recorder = SpanRecorder(enabled=True, max_events=1, clock=clock)
+    started = recorder.check_start()
+    clock.now = 7
+    recorder.diagnostic(
+        "archive-state", started=started, bound_ns=10, domain="materials", course=2, page_kind="archive",
+        counts={"rendered_rows": 1, "expected_rows": 3, "tot_cnt": 3},
+        states={"ids_match": False, "completed": True},
+    )
+    with pytest.raises(ValueError):
+        recorder.diagnostic("archive-state", started=started, bound_ns=10, counts={"course_id": 1})
+    with pytest.raises(ValueError):
+        recorder.diagnostic("archive-state", started=started, bound_ns=10, states={"ids_match": "secret.invalid"})
+    recorder.diagnostic("archive-state", started=started, bound_ns=10)
+    sink = io.StringIO()
+    profile = recorder.finish(stderr=sink)
+    assert profile["dropped_events"] == 1
+    assert profile["diagnostics"] == [{
+        "check": "archive-state", "outcome": "failed", "page_kind": "archive", "domain": "materials",
+        "course": 2, "counts": {"rendered_rows": 1, "expected_rows": 3, "tot_cnt": 3},
+        "states": {"ids_match": False, "completed": True}, "elapsed_ns": 7, "bound_ns": 10,
+    }]
+    assert "secret.invalid" not in sink.getvalue()
+    shared = SpanRecorder(enabled=True, max_events=1, clock=Clock())
+    with shared.span("extract"):
+        shared.diagnostic("todo-grid", started=shared.check_start(), bound_ns=10)
+    result = shared.finish(stderr=io.StringIO())
+    assert result["diagnostics"] == [] and result["dropped_events"] == 1
+
+
+def test_passing_check_does_not_emit_and_disabled_check_does_not_read_clock():
+    clock = Clock()
+    disabled = SpanRecorder(clock=clock)
+    assert disabled.check_start() is None
+    assert disabled.finish(stderr=io.StringIO()) is None
+    assert clock.calls == 0
+    recorder = SpanRecorder(enabled=True, clock=clock)
+    assert recorder.check_start() == 0
+    assert recorder.finish(stderr=io.StringIO())["diagnostics"] == []
