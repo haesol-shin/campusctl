@@ -13,7 +13,8 @@ from campusctl.browser import PROTOCOL_TIMEOUT_SECONDS, bounded, profile_span
 from campusctl.envelope import CampusError
 from campusctl.identity import assignment_entity_id
 
-from .course_context import SECTION_RESPONSE_TIMEOUT_MS
+from .course_context import _TOPBAR_COURSE_JS, SECTION_RESPONSE_TIMEOUT_MS
+from .readiness import _route_matches, wait_page_ready
 
 TASK_TABLE_SELECTOR = "#table_list tbody#tbody"
 TASK_RESPONSE_PATH = "/api/v1/task/stdList"
@@ -106,18 +107,25 @@ def _response_count(body: Any) -> int:
     header = body.get("header")
     if isinstance(header, dict) and str(header.get("code")) not in {"200", "0"}:
         raise ValueError("Unsuccessful task response")
+    count: int | None = None
     for key in ("list", "rows", "items", "contents", "taskList", "stdList"):
         if key in body:
             value = body[key]
             if not isinstance(value, list):
                 raise ValueError("Invalid task row list")
-            return len(value)
+            count = len(value)
+            break
     for key in ("totalCount", "total_count", "total", "count"):
         if key in body:
             value = body[key]
             if isinstance(value, bool) or not str(value).isdigit():
                 raise ValueError("Invalid task row count")
-            return int(value)
+            total = int(value)
+            if count is not None and count != total:
+                raise ValueError("Task response row count disagrees with total")
+            return total
+    if count is not None:
+        return count
     for key in ("data", "body", "result"):
         if key in body:
             return _response_count(body[key])
@@ -125,13 +133,10 @@ def _response_count(body: Any) -> int:
 
 
 class _PageActivity:
-    """Observe all page requests until the course task page is idle."""
+    """Observe the ordered requests for the committed course task page."""
 
     def __init__(self, page: Any) -> None:
         self.page = page
-        self.pending: set[int] = set()
-        self.idle = asyncio.Event()
-        self.idle.set()
         self.requests: list[Any] = []
         self.task_document_seq: int | None = None
         self.task_commit_seq: int | None = None
@@ -144,8 +149,6 @@ class _PageActivity:
 
     def start(self) -> None:
         self.page.on("request", self._started)
-        self.page.on("requestfinished", self._finished)
-        self.page.on("requestfailed", self._finished)
         self.page.on("framenavigated", self._navigated)
         self.page.on("response", self._responded)
 
@@ -154,8 +157,6 @@ class _PageActivity:
             return
         self.closed = True
         self.page.remove_listener("request", self._started)
-        self.page.remove_listener("requestfinished", self._finished)
-        self.page.remove_listener("requestfailed", self._finished)
         self.page.remove_listener("framenavigated", self._navigated)
         self.page.remove_listener("response", self._responded)
 
@@ -178,8 +179,6 @@ class _PageActivity:
                 self.std_before_document += 1
             else:
                 self.std_after_document.append((sequence, request))
-        self.pending.add(id(request))
-        self.idle.clear()
 
     def _navigated(self, frame: Any) -> None:
         if (
@@ -194,11 +193,6 @@ class _PageActivity:
         if self._path(response.request) == TASK_RESPONSE_PATH:
             self.responses.append(response)
             self.response_seen.set()
-
-    def _finished(self, request: Any) -> None:
-        self.pending.discard(id(request))
-        if not self.pending:
-            self.idle.set()
 
     def _main_frame(self, request: Any) -> bool:
         try:
@@ -248,9 +242,7 @@ async def collect_assignment_rows(
     try:
         with profile_span("response-completion", wait_kind="response", domain="assignments"):
             await bounded(
-                asyncio.wait_for(activity.response_seen.wait(), SECTION_RESPONSE_TIMEOUT_MS / 1000),
-                SECTION_RESPONSE_TIMEOUT_MS / 1000 + PROTOCOL_TIMEOUT_SECONDS,
-                "waiting for the CNU task response",
+                activity.response_seen.wait(), SECTION_RESPONSE_TIMEOUT_MS / 1000, "waiting for the CNU task response"
             )
         response = activity.responses[0]
         return await _collect_assignment_rows(page, course, activity, response)
@@ -266,7 +258,7 @@ async def _collect_assignment_rows(
         raise ValueError("Task response did not follow the committed task document")
     with profile_span("response-completion", wait_kind="response", domain="assignments"):
         completion_error = await bounded(
-            response.finished(), PROTOCOL_TIMEOUT_SECONDS, "finishing the CNU task response"
+            response.finished(), SECTION_RESPONSE_TIMEOUT_MS / 1000, "finishing the CNU task response"
         )
     if completion_error is not None or response.status != 200:
         raise ValueError("Task response failed")
@@ -284,53 +276,44 @@ async def _collect_assignment_rows(
         raise ValueError("Task response did not originate in the selected task page")
     try:
         body = await bounded(response.json(), PROTOCOL_TIMEOUT_SECONDS, "reading CNU task metadata")
-    except (ValueError, TypeError):
-        count = None  # Body inaccessible; successful response plus idle DOM is still valid.
-    else:
-        _check_response_course(body, course["course_id"])
-        count = _response_count(body)
-    with profile_span("wait", wait_kind="timeout", domain="assignments"):
-        await bounded(activity.idle.wait(), PROTOCOL_TIMEOUT_SECONDS, "waiting for the CNU task page to be idle")
-    with profile_span("idle", wait_kind="load", domain="assignments"):
-        await bounded(
-            page.wait_for_load_state("networkidle", timeout=COURSE_WAIT_MS),
-            PROTOCOL_TIMEOUT_SECONDS,
-            "waiting for all CNU task page requests to settle",
-        )
-    with profile_span("dom-ready", wait_kind="selector", domain="assignments"):
-        await bounded(
-            page.wait_for_selector(TASK_TABLE_SELECTOR, state="attached", timeout=COURSE_WAIT_MS),
-            PROTOCOL_TIMEOUT_SECONDS,
-            "waiting for the CNU task table",
-        )
-    page_course_id = await bounded(
-        page.evaluate(EXTRACT_COURSE_CONTEXT_JS), PROTOCOL_TIMEOUT_SECONDS, "checking the active CNU task course"
-    )
-    if page_course_id != course["course_id"]:
-        raise ValueError("Task page belongs to another course")
-    with profile_span("extract", domain="assignments"):
-        extracted = await bounded(
-            page.evaluate(EXTRACT_ASSIGNMENT_ROWS_JS), PROTOCOL_TIMEOUT_SECONDS, "extracting CNU tasks"
-        )
+    except (ValueError, TypeError) as error:
+        raise ValueError("Task response has no verified row count") from error
+    _check_response_course(body, course["course_id"])
+    count = _response_count(body)
+    await wait_page_ready(page, "assignments", expected_course_id=course["course_id"], domain="assignments")
+
+    async def matching_rows() -> dict[str, Any]:
+        while True:
+            with profile_span("extract", domain="assignments"):
+                extracted = await page.evaluate(EXTRACT_ASSIGNMENT_ROWS_JS)
+            if (
+                isinstance(extracted, dict)
+                and type(extracted.get("row_count")) is int
+                and isinstance(extracted.get("rows"), list)
+                and extracted["row_count"] == count
+                and len(extracted["rows"]) == count
+            ):
+                return extracted
+            await asyncio.sleep(0.05)
+
+    with profile_span("page-readiness", wait_kind="readiness", domain="assignments", page_kind="assignments"):
+        extracted = await bounded(matching_rows(), COURSE_WAIT_MS / 1000, "waiting for CNU task rows")
     if (
-        not isinstance(extracted, dict)
-        or type(extracted.get("row_count")) is not int
-        or not isinstance(extracted.get("rows"), list)
-        or activity.pending
-        or activity.std_before_document
+        not _route_matches(page.main_frame.url, "/std/task")
+        or await page.evaluate(_TOPBAR_COURSE_JS) != course["course_id"]
+    ):
+        raise ValueError("Task page changed before extraction completed")
+    if (
+        activity.std_before_document
         or len(activity.std_after_document) != 1
         or activity.document_count != 1
         or activity.task_commit_seq is None
-        or (activity.responses and (len(activity.responses) != 1 or activity.responses[0] is not response))
+        or not activity.own_task_response(response)
+        or len(activity.responses) != 1
+        or activity.responses[0] is not response
     ):
         raise ValueError("Task page not fully rendered")
-    raw = extracted["rows"]
-    row_count = extracted["row_count"]
-    if not raw and (row_count != 0 or count not in (None, 0)):
-        raise ValueError("Task page is not an observed empty course")
-    if count is not None and count != len(raw):
-        raise ValueError("Task response and task page disagree")
-    return parse_assignment_rows(raw, course)
+    return parse_assignment_rows(extracted["rows"], course)
 
 
 async def sync_assignments(

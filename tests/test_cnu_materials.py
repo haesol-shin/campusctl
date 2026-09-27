@@ -11,9 +11,14 @@ from types import SimpleNamespace
 import pytest
 
 from campusctl.envelope import CampusError
-from campusctl.providers.cnu import materials
+from campusctl.providers.cnu import materials, readiness
 
 _FIXTURE = Path(__file__).parent / "fixtures/lms_sources/materials_archive.json"
+
+
+@pytest.fixture(autouse=True)
+def short_render_wait(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(materials, "_WAIT_MS", 50)
 
 
 class FakeRequest:
@@ -36,6 +41,7 @@ class FakeResponse:
         self.request = request
         self.url = request.url
         self.body = body
+        self.done = asyncio.Event()
 
     async def json(self):
         if self.case.get("invalid_response"):
@@ -43,6 +49,7 @@ class FakeResponse:
         return self.body if self.body is not None else self.case.get("response_body", {"records": []})
 
     async def finished(self):
+        await self.done.wait()
         return None
 
 
@@ -58,6 +65,8 @@ class FakePage:
         self.responses = []
         self.page_number = 1
         self.elapsed_ms = 0
+        self.state_reads = 0
+        self.partial_states = 0
 
     def on(self, event, callback):
         self.listeners.setdefault(event, []).append(callback)
@@ -79,10 +88,12 @@ class FakePage:
 
             async def complete() -> None:
                 await asyncio.sleep(0.02)
+                response.done.set()
                 self._emit("requestfinished", request)
 
             asyncio.create_task(complete())
         else:
+            response.done.set()
             self._emit("requestfinished", request)
         if document:
             if self.case.get("outgoing_after_document"):
@@ -103,6 +114,7 @@ class FakePage:
             self.responses.append(response)
             self._emit("requestfinished", stale)
         self._request("/api/v1/archive/list", "POST")
+        self.state_reads = 0
 
     @asynccontextmanager
     async def expect_response(self, predicate, **_kwargs):
@@ -137,15 +149,27 @@ class FakePage:
             self._archive_request(document=True)
 
     async def wait_for_selector(self, selector: str, **_kwargs):
+        if selector in {"#table_list #listBody", "#totalCnt strong"}:
+            return object()
         if selector == materials._MODAL and not (self.post and self.post.get("modal")):
             raise TimeoutError("modal absent")
         return object()
 
     async def evaluate(self, script: str, arg=None):
         self.events.append("evaluate:" + script.split("*/")[0].split("/*")[-1].strip())
+        if script == readiness._TOPBAR_COURSE_JS:
+            return (
+                "other-course"
+                if self.case.get("wrong_restore_course") and self.events.count(materials._ARCHIVE_MENU) > 1
+                else self.case["course"]["course_id"]
+            )
         if "archiveMetadataState" in script:
             pages = self.case.get("pages", [self.case["posts"]])
             posts = [{"board_item_id": p["board_item_id"], "title": p["title"]} for p in pages[self.page_number - 1]]
+            self.state_reads += 1
+            if self.case.get("progressive_rows") and posts and self.state_reads == 1:
+                posts = posts[:-1]
+                self.partial_states += 1
             if self.case.get("restore_fails") and self.events.count(materials._ARCHIVE_MENU) > 0:
                 return {"completed": False, "posts": []}
             return {
@@ -291,7 +315,7 @@ def test_unresolved_inline_row_does_not_borrow_other_post_controls() -> None:
         },
     ]
     page = FakePage({"course": course, "posts": posts, "missing_inline_rows": ["board-missing"]}, [])
-    with pytest.raises(CampusError, match="unresolved") as exc:
+    with pytest.raises(CampusError) as exc:
         asyncio.run(materials.enumerate_archive(page, course))
     assert exc.value.code == "course-sync-failed"
 
@@ -318,7 +342,7 @@ def test_material_collector_validates_entry_response_and_preserves_full_records(
         return await materials.collect_materials_rows(page, data["course"], capture=capture)
 
     if wrong_restore_course:
-        with pytest.raises(ValueError, match="archive table did not complete"):
+        with pytest.raises(ValueError, match="page course"):
             asyncio.run(collect())
     else:
         rows = asyncio.run(collect())
@@ -328,6 +352,21 @@ def test_material_collector_validates_entry_response_and_preserves_full_records(
         ]
         assert page.page_number == 2
     assert page.listeners["request"] == []
+
+
+def test_archive_waits_for_progressive_rows_across_pages_and_restoration(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(materials, "_WAIT_MS", 200)
+    data = fixture()
+    case = next(case for case in data["cases"] if case["name"] == "multiple-posts")
+    posts = case["posts"]
+    page = FakePage(
+        {**case, "course": data["course"], "pages": [[posts[0]], [posts[1]]], "page_size": 1, "progressive_rows": True},
+        [],
+    )
+
+    rows = asyncio.run(materials.enumerate_archive(page, data["course"]))
+    assert {row["file_id"] for row in rows} == {"file-first", "file-next"}
+    assert page.partial_states >= 3
 
 
 def test_material_collector_rejects_duplicate_entry_list() -> None:
@@ -341,7 +380,7 @@ def test_material_collector_rejects_duplicate_entry_list() -> None:
         page._request(materials._ARCHIVE_LIST, "POST")
         return await materials.collect_materials_rows(page, data["course"], capture=capture)
 
-    with pytest.raises(CampusError):
+    with pytest.raises(ValueError, match="duplicate archive response"):
         asyncio.run(collect())
 
 

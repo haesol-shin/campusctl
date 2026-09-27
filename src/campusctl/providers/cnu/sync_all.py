@@ -22,9 +22,10 @@ from campusctl.domain_catalog import (
 )
 from campusctl.envelope import CampusError
 from campusctl.providers.cnu import assignments, materials, notices
-from campusctl.providers.cnu.course_context import _css_string, _wait_for_topbar_course_id
+from campusctl.providers.cnu.course_context import _TOPBAR_COURSE_JS, _css_string, _wait_for_topbar_course_id
 from campusctl.providers.cnu.courses import COURSE_LINK_SELECTOR, EXTRACT_COURSES_JS, parse_courses
 from campusctl.providers.cnu.login import MY_LECTURE_URL, ensure_logged_in
+from campusctl.providers.cnu.readiness import provider_origin, wait_page_ready
 from campusctl.providers.cnu.roster_diagnostics import (
     capture_roster_failure,
     start_roster_requests,
@@ -97,13 +98,6 @@ class _Stage:
         )
 
 
-async def _settle(page: Any) -> None:
-    with browser.profile_span("idle", wait_kind="load"):
-        await browser.bounded(
-            page.wait_for_load_state("networkidle"), browser.PROTOCOL_TIMEOUT_SECONDS, "settling page requests"
-        )
-
-
 async def _roster(page: Any, root: Path, headless: bool, domain: str) -> list[dict[str, Any]]:
     trace = start_roster_requests(page, headless=headless)
     try:
@@ -111,18 +105,12 @@ async def _roster(page: Any, root: Path, headless: bool, domain: str) -> list[di
             with browser.profile_span("roster", domain=domain):
                 with browser.profile_span("document-commit", wait_kind="navigation", domain=domain):
                     await browser.bounded(
-                        page.goto(MY_LECTURE_URL, wait_until="domcontentloaded"),
+                        page.goto(MY_LECTURE_URL, wait_until="commit"),
                         browser.PROTOCOL_TIMEOUT_SECONDS,
                         "opening course roster",
                     )
                 trace.step = "wait"
-                with browser.profile_span("dom-ready", wait_kind="selector", domain=domain):
-                    await browser.bounded(
-                        page.wait_for_selector(COURSE_LINK_SELECTOR, state="attached"),
-                        browser.PROTOCOL_TIMEOUT_SECONDS,
-                        "waiting for course roster",
-                    )
-                await _settle(page)
+                await wait_page_ready(page, "roster", domain=domain)
                 trace.step = "evaluate"
                 with browser.profile_span("extract", domain=domain):
                     raw = await browser.bounded(
@@ -151,7 +139,6 @@ async def _roster(page: Any, root: Path, headless: bool, domain: str) -> list[di
 
 async def _select_course(page: Any, course: dict[str, Any], ordinal: int, domain: str) -> None:
     """Prove the selected course from its committed entry page, not the navigating POST body."""
-    await _settle(page)
     frame = page.main_frame
     sequence = 0
     requests: list[tuple[int, Any]] = []
@@ -185,14 +172,10 @@ async def _select_course(page: Any, course: dict[str, Any], ordinal: int, domain
                 "selecting a roster course",
             )
         browser.profile_count("course_selections")
-        await _settle(page)
-        with browser.profile_span("dom-ready", wait_kind="selector", domain=domain, course=ordinal):
-            await browser.bounded(
-                page.wait_for_selector('a[href="/std/course"]', state="attached"),
-                browser.PROTOCOL_TIMEOUT_SECONDS,
-                "waiting for selected course menu",
-            )
-        topbar_id = await _wait_for_topbar_course_id(page)
+        await wait_page_ready(
+            page, "course-entry", expected_course_id=course["course_id"], domain=domain, ordinal=ordinal
+        )
+        topbar_id = await page.evaluate(_TOPBAR_COURSE_JS)
         if (
             commits != 1
             or len(requests) != 1
@@ -209,15 +192,14 @@ async def _select_course(page: Any, course: dict[str, Any], ordinal: int, domain
 
 async def _return_to_roster(page: Any) -> None:
     with browser.profile_labels(page_kind="roster", domain=None):
-        await _settle(page)
         with browser.profile_span("document-commit", wait_kind="navigation"):
             previous = page.main_frame.url
             await browser.bounded(
-                page.goto(MY_LECTURE_URL, wait_until="domcontentloaded", referer=previous),
+                page.goto(MY_LECTURE_URL, wait_until="commit", referer=previous),
                 browser.PROTOCOL_TIMEOUT_SECONDS,
                 "returning to the roster",
             )
-        await _settle(page)
+        await wait_page_ready(page, "roster")
 
 
 async def _section(
@@ -229,7 +211,32 @@ async def _section(
     todo: dict[str, list[dict[str, Any]]],
 ) -> list[dict[str, Any]]:
     with browser.profile_labels(domain=domain, course=ordinal, page_kind=_PAGE_KIND[domain]):
-        await _settle(page)
+        menu = {
+            "lectures": COURSE_ROOM_URL_ANCHOR,
+            "assignments": 'a[href="/std/task"]',
+            "notices": 'a[href="/std/notice"]',
+            "materials": 'a[href="/std/archive"]',
+        }[domain]
+        current_url = page.main_frame.url
+        current = urlsplit(current_url)
+        if (current.scheme, current.netloc) != provider_origin() or current.path not in {
+            "/std/lecture",
+            "/std/course",
+            "/std/task",
+            "/std/notice",
+            "/std/archive",
+        }:
+            raise ValueError("Section menu is not on a verified course page")
+        with browser.profile_span("dom-ready", wait_kind="selector"):
+            await browser.bounded(
+                page.wait_for_selector(menu, state="attached"),
+                browser.PROTOCOL_TIMEOUT_SECONDS,
+                "waiting for the section menu",
+            )
+        if await _wait_for_topbar_course_id(page) != course["course_id"]:
+            raise ValueError("Section menu belongs to another course")
+        if page.main_frame.url != current_url:
+            raise ValueError("Section menu left the verified course page")
         if domain == "lectures":
             with (
                 browser.profile_span("document-commit", wait_kind="navigation"),
@@ -250,12 +257,6 @@ async def _section(
                 )
             return await assignments.collect_assignment_rows(page, course, capture=capture)
         if domain == "notices":
-            with browser.profile_span("dom-ready", wait_kind="selector"):
-                await browser.bounded(
-                    page.wait_for_selector('a[href="/std/notice"]', state="attached"),
-                    browser.PROTOCOL_TIMEOUT_SECONDS,
-                    "waiting for notice menu",
-                )
             capture = notices.arm_notice_capture(page)
             with (
                 browser.profile_span("document-commit", wait_kind="navigation"),
@@ -264,14 +265,6 @@ async def _section(
                 await notices.open_notice_section(page, lambda: page.click('a[href="/std/notice"]'), capture=capture)
             return await notices.collect_notice_rows(
                 page, course, capture=capture, courses=courses, todo_rows=todo[course["course_id"]]
-            )
-        if await _wait_for_topbar_course_id(page) != course["course_id"]:
-            raise ValueError("Archive menu belongs to another course")
-        with browser.profile_span("dom-ready", wait_kind="selector"):
-            await browser.bounded(
-                page.wait_for_selector('a[href="/std/archive"]', state="attached"),
-                browser.PROTOCOL_TIMEOUT_SECONDS,
-                "waiting for archive menu",
             )
         capture = await materials.arm_materials_capture(page)
         with (
@@ -287,7 +280,6 @@ async def _todo(
     courses: list[dict[str, Any]],
     selected_course_id: str | None,
 ) -> tuple[dict[str, list[dict[str, Any]]], set[str]]:
-    await _settle(page)
     capture = await notices.open_notice_todo(page)
     return await notices.collect_notice_todo(page, courses, capture=capture, selected_course_id=selected_course_id)
 
@@ -481,8 +473,6 @@ async def sync_all(
                         else:
                             staged[domain].successful.add(course["course_id"])
                             staged[domain].rows.extend(rows)
-                session_step = "final page settling"
-                await _settle(page)
         except CampusError as error:
             if error.code in {"course-not-found", "course-discovery-failed", "course-sync-failed"}:
                 raise

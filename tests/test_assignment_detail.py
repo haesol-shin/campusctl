@@ -13,6 +13,7 @@ import pytest
 
 from campusctl.envelope import CampusError
 from campusctl.providers.cnu import assignment_detail as adapter
+from campusctl.providers.cnu.readiness import _TOPBAR_COURSE_JS
 from campusctl.source_package import ResourceReference
 
 FIXTURE = Path(__file__).parent / "fixtures" / "lms_sources" / "assignment_detail_synthetic.html"
@@ -144,11 +145,11 @@ class SelectedLink:
         self.selector = selector
 
     async def count(self) -> int:
-        return int("TB_L_REPORT101" in self.selector)
+        return int(self.page.selected_id in self.selector)
 
     async def get_attribute(self, name: str) -> str:
         assert name == "data-id"
-        return "TB_L_REPORT101"
+        return self.page.selected_id
 
     async def click(self) -> None:
         self.page.actions.append(self.selector)
@@ -179,21 +180,34 @@ class Page:
         self.observed_course = observed_course
         self.std_id = std_id
         self.missing_report = missing_report
+        self.selected_id = "TB_L_REPORT101"
         self.url = "https://dcs-learning.cnu.ac.kr/std/myLecture"
         self.actions: list[str] = []
         self.waiters: list[Expectation] = []
         self.image_requests = 0
         self.extracted = False
 
+    async def goto(self, url: str, *, wait_until: str) -> None:
+        assert (url, wait_until) == (adapter.MY_LECTURE_URL, "commit")
+        self.actions.append("roster")
+        self.url = url
+
     async def wait_for_load_state(self, state: str) -> None:
         assert state == "networkidle"
 
     async def wait_for_selector(self, selector: str, **_: Any) -> None:
-        assert selector in {'a[data-act="detail"][data-id]', ".card-body h4"}
+        assert selector in {
+            '[data-act="moveLecture"]',
+            "#table_list tbody#tbody",
+            'a[data-act="detail"][data-id]',
+            ".card-body h4",
+        }
 
     async def evaluate(self, expression: str) -> Any:
+        if expression == _TOPBAR_COURSE_JS:
+            return self.observed_course
         if expression == adapter.EXTRACT_COURSE_CONTEXT_JS:
-            return "course-a"
+            return self.observed_course
         assert expression == adapter.EXTRACT_ASSIGNMENT_DETAIL_JS
         self.extracted = True
         return {"parts": self.fixture.parts, "page_task_id": self.fixture.task_id}
@@ -212,18 +226,20 @@ def brief() -> BriefFixture:
     return parser
 
 
-async def _capture(monkeypatch: pytest.MonkeyPatch, page: Page) -> Any:
+async def _capture(monkeypatch: pytest.MonkeyPatch, page: Page, selected: dict[str, Any] = SELECTED) -> Any:
     async def enter(_: Any, __: Any, course_id: str, section: str) -> None:
         assert (course_id, section) == ("course-a", "task")
         page.actions.append("course-a:task")
+        page.url = "https://dcs-learning.cnu.ac.kr/std/lecture"
 
     async def open_section(_: Any, section: str) -> None:
         assert section == "task"
         page.actions.append("task")
+        page.url = "https://dcs-learning.cnu.ac.kr/std/task"
 
     monkeypatch.setattr(adapter, "prepare_course_section", enter)
     monkeypatch.setattr(adapter, "open_course_section", open_section)
-    return await adapter.capture_assignment_detail(page, {}, SELECTED)
+    return await adapter.capture_assignment_detail(page, {}, selected)
 
 
 def test_selected_assignment_detail_capture_readonly(monkeypatch: pytest.MonkeyPatch, brief: BriefFixture) -> None:
@@ -245,10 +261,35 @@ def test_selected_assignment_detail_capture_readonly(monkeypatch: pytest.MonkeyP
     assert refs[1].official_target.control_locator == 'a[data-act="downloadFile"][data-id="TB_L_FILE101"]'
     assert brief.badge == original_badge == "미완료"
     assert brief.upload_controls == ["uploadFile", "fileUploadModal"]
-    assert len(page.actions) == 3
+    assert page.actions == ["roster", "course-a:task", "task", 'a[data-act="detail"][data-id="TB_L_REPORT101"]']
     assert all("uploadFile" not in action and "modal" not in action.lower() for action in page.actions)
     assert page.image_requests == 1
     assert page.extracted
+
+
+def test_two_assignment_ids_reenter_roster_in_one_session(monkeypatch: pytest.MonkeyPatch, brief: BriefFixture) -> None:
+    page = Page(brief, "TB_L_REPORT101")
+    second = {**SELECTED, "entity_id": "cnu_assignment:course-a:TB_L_REPORT102", "task_id": "TB_L_REPORT102"}
+
+    async def queue() -> list[str | None]:
+        first = await _capture(monkeypatch, page)
+        page.selected_id = "TB_L_REPORT102"
+        page.observed_id = "TB_L_REPORT102"
+        brief.task_id = "TB_L_REPORT102"
+        next_item = await _capture(monkeypatch, page, second)
+        return [first.provider_native_id, next_item.provider_native_id]
+
+    assert asyncio.run(queue()) == ["TB_L_REPORT101", "TB_L_REPORT102"]
+    assert page.actions == [
+        "roster",
+        "course-a:task",
+        "task",
+        'a[data-act="detail"][data-id="TB_L_REPORT101"]',
+        "roster",
+        "course-a:task",
+        "task",
+        'a[data-act="detail"][data-id="TB_L_REPORT102"]',
+    ]
 
 
 def test_wrong_selected_task_fails_before_transfer(monkeypatch: pytest.MonkeyPatch, brief: BriefFixture) -> None:
@@ -258,7 +299,7 @@ def test_wrong_selected_task_fails_before_transfer(monkeypatch: pytest.MonkeyPat
     assert failure.value.code == "entity-unknown"
     assert "Assignment detail selection" in failure.value.message
     assert "TB_L_REPORT101" not in failure.value.message
-    assert page.actions == ["course-a:task", "task", 'a[data-act="detail"][data-id="TB_L_REPORT101"]']
+    assert page.actions == ["roster", "course-a:task", "task", 'a[data-act="detail"][data-id="TB_L_REPORT101"]']
     assert not any(action.startswith("download") for action in page.actions)
     assert page.fixture.badge == "미완료"
     assert page.image_requests == 1
@@ -281,7 +322,7 @@ def test_assignment_response_identity_rejects_before_extraction(
         asyncio.run(_capture(monkeypatch, page))
     assert failure.value.code == "entity-unknown"
     assert not page.extracted
-    assert page.image_requests == 1
+    assert page.image_requests == (0 if options.get("observed_course") else 1)
 
 
 def test_assignment_detail_extracts_media_omission_references(

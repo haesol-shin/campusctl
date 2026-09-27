@@ -53,12 +53,9 @@ async def prepare_course_section(
     course_selector = f'[data-act="moveLecture"][data-courseid={_css_string(course_id)}]'
     with profile_span("wait", wait_kind="action", page_kind="course-entry"):
         await bounded(page.click(course_selector), PROTOCOL_TIMEOUT_SECONDS, "opening a CNU course")
-    with profile_span("dom-ready", wait_kind="selector", page_kind="course-entry"):
-        await bounded(
-            page.wait_for_selector(COURSE_MENU_SELECTOR, timeout=COURSE_MENU_TIMEOUT_MS),
-            COURSE_MENU_TIMEOUT_MS / 1000 + PROTOCOL_TIMEOUT_SECONDS,
-            "waiting for the CNU course menu",
-        )
+    from .readiness import wait_page_ready
+
+    await wait_page_ready(page, "course-entry", expected_course_id=course_id)
 
 
 async def open_course_section(page: Any, section: Literal["course", "task", "archive"]) -> None:

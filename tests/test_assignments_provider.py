@@ -160,17 +160,22 @@ def test_standalone_filtered_sync_preserves_cached_other_courses(
     ("rows", "body", "failure"),
     [
         ([], {"body": {"list": []}}, None),
-        ([{"task_id": "TB_L_REPORT901", "title": "Fallback task"}], None, None),
-        ([], {"body": {"list": [{"task_id": "TB_L_REPORT901"}]}}, "not an observed empty course"),
+        ([{"task_id": "TB_L_REPORT901", "title": "Fallback task"}], None, "no verified row count"),
+        ([], {"body": {"list": [{"task_id": "TB_L_REPORT901"}]}}, "browser-timeout"),
+        ([], {"body": {"list": [], "total": 1}}, "row count disagrees"),
     ],
 )
-def test_collector_accepts_proven_empty_or_inaccessible_body_but_rejects_count_mismatch(
-    rows: list[dict[str, Any]], body: dict[str, Any] | None, failure: str | None
+def test_collector_requires_response_count_and_matching_rows(
+    rows: list[dict[str, Any]], body: dict[str, Any] | None, failure: str | None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from campusctl.providers.cnu import login, readiness
+
+    monkeypatch.setattr(login, "MY_LECTURE_URL", "https://lms.example.invalid/std/myLecture")
+    monkeypatch.setattr(provider, "COURSE_WAIT_MS", 50)
     origin = "https://lms.example.invalid"
 
     async def evaluate(script: str) -> Any:
-        if script == provider.EXTRACT_COURSE_CONTEXT_JS:
+        if script == readiness._TOPBAR_COURSE_JS:
             return "course-a"
         assert script == provider.EXTRACT_ASSIGNMENT_ROWS_JS
         return {"row_count": len(rows), "rows": rows}
@@ -188,7 +193,9 @@ def test_collector_accepts_proven_empty_or_inaccessible_body_but_rejects_count_m
 
     request = SimpleNamespace(url=origin + provider.TASK_RESPONSE_PATH, all_headers=headers)
     response = SimpleNamespace(request=request, status=200, finished=settle, json=decode)
-    page = SimpleNamespace(wait_for_load_state=settle, wait_for_selector=settle, evaluate=evaluate)
+    page = SimpleNamespace(
+        main_frame=SimpleNamespace(url=origin + "/std/task"), wait_for_selector=settle, evaluate=evaluate
+    )
     activity = provider._PageActivity(page)
     activity.task_commit_seq = 1
     activity.document_count = 1
@@ -196,7 +203,11 @@ def test_collector_accepts_proven_empty_or_inaccessible_body_but_rejects_count_m
     activity.responses.append(response)
 
     async def exercise() -> None:
-        if failure is not None:
+        if failure == "browser-timeout":
+            with pytest.raises(CampusError) as caught:
+                await provider._collect_assignment_rows(page, COURSES[0], activity, response)
+            assert caught.value.code == "browser-timeout"
+        elif failure is not None:
             with pytest.raises(ValueError, match=failure):
                 await provider._collect_assignment_rows(page, COURSES[0], activity, response)
         else:
