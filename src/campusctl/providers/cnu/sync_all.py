@@ -193,7 +193,7 @@ async def _select_course(page: Any, course: dict[str, Any], ordinal: int, domain
             browser.profile_diagnostic(
                 "course-identity",
                 started=proof_started,
-                bound_ns=browser.PROTOCOL_TIMEOUT_SECONDS * 1_000_000_000,
+                bound_ns=COURSE_MENU_TIMEOUT_MS * 1_000_000,
                 domain=domain,
                 course=ordinal,
                 page_kind="course-entry",
@@ -258,11 +258,21 @@ async def _section(
             )
             raise ValueError("Section menu is not on a verified course page")
         with browser.profile_span("dom-ready", wait_kind="selector"):
-            await browser.bounded(
-                page.wait_for_selector(menu, state="attached"),
-                browser.PROTOCOL_TIMEOUT_SECONDS,
-                "waiting for the section menu",
-            )
+            try:
+                await browser.bounded(
+                    page.wait_for_selector(menu, state="attached"),
+                    browser.PROTOCOL_TIMEOUT_SECONDS,
+                    "waiting for the section menu",
+                )
+            except Exception:
+                browser.profile_diagnostic(
+                    "page-readiness",
+                    started=check_started,
+                    bound_ns=int(browser.PROTOCOL_TIMEOUT_SECONDS * 1_000_000_000),
+                    states={"route_match": True},
+                )
+                raise
+        check_started = browser.profile_check_start()
         topbar_id = await _wait_for_topbar_course_id(page)
         if topbar_id != course["course_id"]:
             browser.profile_diagnostic(

@@ -802,8 +802,19 @@ async def _restore_archive_document(page: Any, *, expected_course_id: str) -> No
 
 async def enumerate_archive(page: Any, course: Mapping[str, Any]) -> list[dict[str, Any]]:
     """Enumerate every completed archive page and restore its exact post context."""
+    table_started = profile_check_start()
     with profile_span("dom-ready", wait_kind="selector", domain="materials", page_kind="archive"):
-        await _step(page.wait_for_selector("#table_list", timeout=_WAIT_MS), "waiting for archive table")
+        try:
+            await _step(page.wait_for_selector("#table_list", timeout=_WAIT_MS), "waiting for archive table")
+        except Exception:
+            profile_diagnostic(
+                "archive-state",
+                started=table_started,
+                bound_ns=_WAIT_MS * 1_000_000,
+                domain="materials",
+                page_kind="archive",
+            )
+            raise
     with profile_span("archive-page", domain="materials"):
         first = await _wait_archive_state(page, 1, expected_course_id=course["course_id"])
     total = first["total_count"]

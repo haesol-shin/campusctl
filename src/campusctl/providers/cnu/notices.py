@@ -496,6 +496,8 @@ async def _grid_snapshot(page: Any, capture: _TodoCapture) -> list[dict[str, Any
             response_total = None
             coverage_available = True
             while True:
+                if observed is not None:
+                    observed.clear()
                 if previous is not None:
                     started = profile_check_start()
                     bound_ns = COURSE_MENU_TIMEOUT_MS * 1_000_000
