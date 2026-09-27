@@ -349,29 +349,10 @@ async def open_notice_todo(page: Any) -> _TodoCapture:
         raise
 
 
-def _todo_response_counts(payload: Any) -> tuple[int, int]:
-    """Bind a rendered to-do page to its list size and total coverage."""
-    if not isinstance(payload, dict):
-        raise ValueError("To-do response has no count")
-    body = payload.get("body", payload)
-    if not isinstance(body, dict):
-        raise ValueError("To-do response has no count")
-    items = next((body[key] for key in ("list", "rows", "items") if key in body), None)
-    total = next((body[key] for key in ("tot_cnt", "total", "totalCount", "total_count") if key in body), None)
-    if (
-        not isinstance(items, list)
-        or any(not isinstance(item, dict) for item in items)
-        or type(total) is not int
-        or total < len(items)
-    ):
-        raise ValueError("To-do response has no verified page and total count")
-    return len(items), total
-
-
 async def _grid_snapshot(page: Any, capture: _TodoCapture) -> list[dict[str, Any]]:
     """Read each committed grid page after its own response and render gate."""
 
-    async def completed(start: int, *, required: bool) -> tuple[int, int] | None:
+    async def completed(start: int, *, required: bool) -> None:
         async def response_for(request: Any) -> Any:
             while True:
                 matching = [response for source, response in capture.responses if source is request]
@@ -408,10 +389,9 @@ async def _grid_snapshot(page: Any, capture: _TodoCapture) -> list[dict[str, Any
                 is not None
             ):
                 raise ValueError("Notice request did not complete successfully")
-        payload = await bounded(response.json(), PROTOCOL_TIMEOUT_SECONDS, "validating the notice list response")
+        await bounded(response.json(), PROTOCOL_TIMEOUT_SECONDS, "validating the notice list response")
         if capture.stale_response or len([order for order, _ in capture.requests if order > start]) != 1:
             raise ValueError("Notice list changed during completion")
-        return _todo_response_counts(payload)
 
     async def advanced(previous: tuple[str, ...]) -> None:
         async def changed() -> None:
@@ -434,46 +414,17 @@ async def _grid_snapshot(page: Any, capture: _TodoCapture) -> list[dict[str, Any
             rows: list[dict[str, Any]] = []
             seen_pages: set[tuple[str, ...]] = set()
             previous: tuple[str, ...] | None = None
-            total: int | None = None
-            page_size: int | None = None
             while True:
                 if previous is not None:
                     await advanced(previous)
-                response_counts = await completed(window_start, required=previous is None)
-                if response_counts is not None:
-                    count, response_total = response_counts
-                    if total is not None and response_total != total:
-                        raise ValueError("To-do response total changed during pagination")
-                    total = response_total
-                    if page_size is None:
-                        page_size = count
-                if total is None or page_size is None:
-                    raise ValueError("To-do response has no verified total")
-                expected_rows = response_counts[0] if response_counts is not None else min(page_size, total - len(rows))
-                if expected_rows < 0 or (expected_rows == 0 and total > len(rows)):
-                    raise ValueError("To-do response page size is invalid")
+                await completed(window_start, required=previous is None)
                 await wait_page_ready(page, "todo", domain="notices")
 
-                async def complete_grid(expected_rows: int, total: int, current_rows: int) -> dict[str, Any]:
-                    while True:
-                        snapshot = await page.evaluate(_EXTRACT_GRID_JS)
-                        if isinstance(snapshot, dict) and isinstance(snapshot.get("rows"), list):
-                            page_rows = snapshot["rows"]
-                            has_more = current_rows + expected_rows < total
-                            if (
-                                len(page_rows) == expected_rows
-                                and (not has_more or snapshot.get("next") is not None)
-                                and (page_rows or snapshot.get("empty") is True)
-                            ):
-                                return snapshot
-                        await asyncio.sleep(0.05)
-
-                with profile_span("page-readiness", wait_kind="readiness", domain="notices", page_kind="todo"):
-                    snapshot = await bounded(
-                        complete_grid(expected_rows, total, len(rows)),
-                        COURSE_MENU_TIMEOUT_MS / 1000,
-                        "waiting for complete notice grid",
-                    )
+                snapshot = await bounded(
+                    page.evaluate(_EXTRACT_GRID_JS), PROTOCOL_TIMEOUT_SECONDS, "extracting notice grid"
+                )
+                if not isinstance(snapshot, dict) or not isinstance(snapshot.get("rows"), list):
+                    raise ValueError("Notice grid was not rendered")
                 if page.main_frame.url != _TODO_URL:
                     raise ValueError("To-do document changed during extraction")
                 page_rows = snapshot["rows"]
@@ -489,12 +440,8 @@ async def _grid_snapshot(page: Any, capture: _TodoCapture) -> list[dict[str, Any
                 seen_pages.add(fingerprint)
                 rows.extend(page_rows)
                 next_page = snapshot.get("next")
-                if len(rows) == total:
-                    if next_page is not None:
-                        raise ValueError("To-do pagination exceeds verified total")
-                    return rows
                 if next_page is None:
-                    raise ValueError("To-do pagination ended before verified total")
+                    return rows
                 if len(seen_pages) >= 100:
                     raise ValueError("Notice pagination exceeded 100 pages")
                 if next_page not in {'.tabulator-page[data-page="next"]', '[data-act="loadMore"]', ".load-more"}:
