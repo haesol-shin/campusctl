@@ -101,7 +101,7 @@ jobs:
           enable-cache: true
           cache-dependency-glob: uv.lock
       - run: uv sync --locked --python ${{ matrix.python-version }}
-      - run: uv run pytest -q -o faulthandler_timeout=30
+      - run: uv run pytest -q -n 2 -o faulthandler_timeout=30
         env:
           PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/empty-browsers
 

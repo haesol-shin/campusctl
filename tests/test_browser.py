@@ -919,7 +919,8 @@ def test_persistent_profile_reopens_synthetic_cookie_until_server_expiry(
             return
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
     url = f"http://127.0.0.1:{server.server_address[1]}/"
     monkeypatch.setattr(
         "campusctl.providers.cnu.login.get_credentials",
@@ -950,6 +951,8 @@ def test_persistent_profile_reopens_synthetic_cookie_until_server_expiry(
                 assert await session.page.locator("input[name='user_id']").count() == 1
         finally:
             server.shutdown()
+            server.server_close()
+            thread.join()
 
     _run(scenario())
 
@@ -958,27 +961,24 @@ def test_persistent_profile_reopens_synthetic_cookie_until_server_expiry(
 def test_cdp_attachment_preserves_unrelated_tabs(tmp_path: Path) -> None:
     if not _chromium_available():
         pytest.skip("local Playwright Chromium not installed")
-    import socket
-
-    with socket.socket() as listener:
-        listener.bind(("127.0.0.1", 0))
-        port = listener.getsockname()[1]
+    profile = tmp_path / "external-profile"
+    port_file = profile / "DevToolsActivePort"
 
     async def scenario() -> None:
         from playwright.async_api import async_playwright
 
         async with async_playwright() as playwright:
-            external = await playwright.chromium.launch(headless=True, args=[f"--remote-debugging-port={port}"])
+            external = await playwright.chromium.launch_persistent_context(
+                str(profile), headless=True, args=["--remote-debugging-port=0"]
+            )
             try:
                 deadline = asyncio.get_running_loop().time() + 5
-                while True:
-                    try:
-                        await browser.resolve_cdp_ws_url(f"http://127.0.0.1:{port}/json/version")
-                        break
-                    except Exception:
-                        if asyncio.get_running_loop().time() >= deadline:
-                            pytest.skip("external CDP endpoint was not available")
-                        await asyncio.sleep(0.1)
+                while not port_file.exists():
+                    if asyncio.get_running_loop().time() >= deadline:
+                        pytest.fail("external CDP endpoint did not start")
+                    await asyncio.sleep(0.1)
+                port = int(port_file.read_text(encoding="utf-8").splitlines()[0])
+                await browser.resolve_cdp_ws_url(f"http://127.0.0.1:{port}/json/version")
                 unrelated = await external.new_page()
                 await unrelated.goto("data:text/html,<title>Unrelated</title><p>Keep</p>")
                 config = {"browser": {"cdp_endpoint": f"http://127.0.0.1:{port}/json/version"}}

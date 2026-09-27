@@ -123,7 +123,9 @@ def test_unknown_exception_reports_only_class_name(
     ("mode", "expected_exit", "expected_status"),
     [("ok", 0, "ok"), ("error", 1, "error"), ("partial", 1, "partial")],
 )
-def test_cli_json_stdout_is_utf8_through_a_redirected_pipe(mode: str, expected_exit: int, expected_status: str) -> None:
+def test_cli_json_stdout_is_utf8_through_a_redirected_pipe(
+    mode: str, expected_exit: int, expected_status: str, tmp_path: Path
+) -> None:
     root = Path(__file__).resolve().parents[1]
     env = os.environ.copy()
     source_root = str(root / "src")
@@ -149,7 +151,7 @@ def test_cli_json_stdout_is_utf8_through_a_redirected_pipe(mode: str, expected_e
     )
     result = subprocess.run(
         [sys.executable, "-c", driver, mode],
-        cwd=root,
+        cwd=tmp_path,
         env=env,
         capture_output=True,
         timeout=30,
@@ -993,7 +995,7 @@ def test_lock_contention_is_nonblocking_across_processes_and_can_be_reacquired(t
     env["PYTHONPATH"] = os.pathsep.join(filter(None, (str(root / "src"), env.get("PYTHONPATH"))))
     process = subprocess.Popen(
         [sys.executable, "-c", script, str(lock_path), str(ready_path), str(release_path)],
-        cwd=root,
+        cwd=tmp_path,
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
