@@ -507,11 +507,15 @@ async def _post_names(
             modal = await page.evaluate(_TARGETS_JS, {"modalOnly": True, "boardItemId": post_id})
             inline = await page.evaluate(_TARGETS_JS, {"modalOnly": False, "boardItemId": post_id})
             targets = modal or inline
-            if isinstance(targets, list) and targets and not any(
-                isinstance(target, dict)
-                and (file_id := target.get("data_id") or target.get("file_id")) in seen_files
-                and target.get("text") == seen_files[file_id]
-                for target in targets
+            if (
+                isinstance(targets, list)
+                and targets
+                and not any(
+                    isinstance(target, dict)
+                    and (file_id := target.get("data_id") or target.get("file_id")) in seen_files
+                    and target.get("text") == seen_files[file_id]
+                    for target in targets
+                )
             ):
                 return targets
             await asyncio.sleep(0.05)
