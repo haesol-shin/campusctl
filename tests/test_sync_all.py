@@ -26,6 +26,8 @@ IDS = tuple(f"course-{n}.invalid" for n in range(1, 8))
 COURSES = [{"course_id": cid, "label": f"Fixture Course {n}", "class_no": "01"} for n, cid in enumerate(IDS, 1)]
 DOMAINS = ("lectures", "assignments", "notices", "materials")
 
+pytestmark = pytest.mark.chromium
+
 
 def _topbar(*, wrong_selection: bool = False, delay_ms: int = 0) -> str:
     links = "".join(

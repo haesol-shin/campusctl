@@ -17,6 +17,7 @@ from campusctl.providers.cnu.roster_diagnostics import (
 )
 
 
+@pytest.mark.chromium
 def test_real_browser_roster_timeout(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     from playwright.async_api import TimeoutError as PlaywrightTimeoutError
     from playwright.async_api import async_playwright

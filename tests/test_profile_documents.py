@@ -196,6 +196,7 @@ def test_disabled_session_installs_no_document_listeners(tmp_path, monkeypatch):
     assert recorder.finish(stderr=io.StringIO()) is None
 
 
+@pytest.mark.chromium
 def test_profiled_sync_matches_plain_sync_and_attributes_waits(tmp_path, monkeypatch, capsys):
     from test_sync_all import DOMAINS, IDS, _catalogs, _install_fixture, fixture_server
 
@@ -267,6 +268,7 @@ def test_profiled_sync_matches_plain_sync_and_attributes_waits(tmp_path, monkeyp
     assert summary["coverage"] == profile["coverage"]
 
 
+@pytest.mark.chromium
 def test_playwright_redirect_commit_uses_request_identity(tmp_path):
     import os
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer

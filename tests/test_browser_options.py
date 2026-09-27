@@ -84,6 +84,7 @@ def test_approved_download_mode_still_rejects_cdp_before_lock(tmp_path: Path) ->
     assert not (tmp_path / "data").exists()
 
 
+@pytest.mark.chromium
 @pytest.mark.skipif(os.name == "nt", reason="no-display assertion is POSIX-only")
 def test_actual_local_headless_chromium_without_display(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     pytest.importorskip("playwright.async_api")
@@ -128,6 +129,7 @@ def test_doctor_exposes_fetch_headless_candidate_keys(tmp_path: Path, monkeypatc
     assert support["lectures.play"] is False
 
 
+@pytest.mark.chromium
 @pytest.mark.skipif(os.name == "nt", reason="no-display assertion is POSIX-only")
 def test_headless_fetch_publishes_synthetic_details_without_display(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
