@@ -390,64 +390,48 @@ def fixture() -> dict:
     return json.loads(_FIXTURE.read_text(encoding="utf-8"))
 
 
-def test_archive_fixture_cases(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("case", fixture()["cases"], ids=lambda case: case["name"])
+def test_archive_fixture_cases(monkeypatch: pytest.MonkeyPatch, case: dict) -> None:
     monkeypatch.setattr(materials, "_WAIT_MS", 100)
-    data = fixture()
-    assert data["course"]["course_id"] == "course-synthetic-a"
-    assert {c["name"] for c in data["cases"]} == {
-        "modal-multiple",
-        "official-list-filename",
-        "unnamed-official",
-        "inline-after-modal-timeout",
-        "unresolved-after-inline",
-        "multiple-posts",
-        "completed-empty",
-        "table-incomplete",
-        "empty-post",
-        "duplicate-id",
-        "missing-id",
-        "metadata-only",
-        "failed-restore",
-    }
-    for case in data["cases"]:
-        page = FakePage({**case, "course": data["course"]}, [])
-        if case.get("fails"):
-            with pytest.raises((CampusError, ValueError)):
-                asyncio.run(materials.enumerate_archive(page, data["course"]))
-        else:
-            rows = asyncio.run(materials.enumerate_archive(page, data["course"]))
-            assert len(rows) == sum(len(p.get("modal") or p.get("inline") or []) for p in case["posts"])
-            assert len({row["entity_id"] for row in rows}) == len(rows)
-            assert all(row["archive_entry"]["board_item_id"] for row in rows)
-            if case["name"] == "modal-multiple":
-                assert rows[0]["display_name"] == "example.pdf 바로보기"
-                assert rows[0]["filename"] == "example.pdf"
-                assert rows[0]["downloadable"]
-            if case["name"] == "official-list-filename":
-                assert rows[0]["display_name"] == "original.pdf 바로보기 "
-                assert rows[0]["filename"] == "original.pdf"
-                assert rows[0]["downloadable"]
-            if case["name"] == "unnamed-official":
-                assert not rows[0]["downloadable"]
-                assert rows[0]["unavailable_reason"] == "official-name-unavailable"
-            if case["name"] == "metadata-only":
-                assert not any(row["downloadable"] for row in rows)
-            if case["name"] == "multiple-posts":
-                assert [(row["file_id"], row["filename"], row["archive_entry"]["board_item_id"]) for row in rows] == [
-                    ("file-first", "first.pdf", "board-first"),
-                    ("file-next", "next.pdf", "board-next"),
-                ]
-                assert page.events.count(materials._ARCHIVE_MENU) == 0
-                assert not any(response.request.url.endswith(materials._ARCHIVE_LIST) for response in page.responses)
-                assert not page.modal_open
-                assert page.backdrop is None
-            if case["name"] == "completed-empty":
-                assert page.events.count(materials._ARCHIVE_MENU) == 0
-            if case["name"] == "inline-after-modal-timeout":
-                assert rows[0]["archive_entry"]["board_item_id"] == "board-inline"
-                assert rows[0]["file_id"] == "file-inline"
-                assert page.events.count(materials._ARCHIVE_MENU) == 0
-        assert not any("downloadFile" in event for event in page.events)
+    course = fixture()["course"]
+    page = FakePage({**case, "course": course}, [])
+    if case.get("fails"):
+        with pytest.raises((CampusError, ValueError)):
+            asyncio.run(materials.enumerate_archive(page, course))
+    else:
+        rows = asyncio.run(materials.enumerate_archive(page, course))
+        assert len(rows) == sum(len(p.get("modal") or p.get("inline") or []) for p in case["posts"])
+        assert len({row["entity_id"] for row in rows}) == len(rows)
+        assert all(row["archive_entry"]["board_item_id"] for row in rows)
+        if case["name"] == "modal-multiple":
+            assert rows[0]["display_name"] == "example.pdf 바로보기"
+            assert rows[0]["filename"] == "example.pdf"
+            assert rows[0]["downloadable"]
+        if case["name"] == "official-list-filename":
+            assert rows[0]["display_name"] == "original.pdf 바로보기 "
+            assert rows[0]["filename"] == "original.pdf"
+            assert rows[0]["downloadable"]
+        if case["name"] == "unnamed-official":
+            assert not rows[0]["downloadable"]
+            assert rows[0]["unavailable_reason"] == "official-name-unavailable"
+        if case["name"] == "metadata-only":
+            assert not any(row["downloadable"] for row in rows)
+        if case["name"] == "multiple-posts":
+            assert [(row["file_id"], row["filename"], row["archive_entry"]["board_item_id"]) for row in rows] == [
+                ("file-first", "first.pdf", "board-first"),
+                ("file-next", "next.pdf", "board-next"),
+            ]
+            assert page.events.count(materials._ARCHIVE_MENU) == 0
+            assert not any(response.request.url.endswith(materials._ARCHIVE_LIST) for response in page.responses)
+            assert not page.modal_open
+            assert page.backdrop is None
+        if case["name"] == "completed-empty":
+            assert page.events.count(materials._ARCHIVE_MENU) == 0
+        if case["name"] == "inline-after-modal-timeout":
+            assert rows[0]["archive_entry"]["board_item_id"] == "board-inline"
+            assert rows[0]["file_id"] == "file-inline"
+            assert page.events.count(materials._ARCHIVE_MENU) == 0
+    assert not any("downloadFile" in event for event in page.events)
 
 
 def test_archive_waits_for_attachment_request_completion() -> None:
