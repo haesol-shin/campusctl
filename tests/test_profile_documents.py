@@ -269,11 +269,22 @@ def test_profiled_sync_matches_plain_sync_and_attributes_waits(tmp_path, monkeyp
 def test_playwright_redirect_commit_uses_request_identity(tmp_path):
     import os
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from pathlib import Path
 
-    available = int(os.popen("awk '/MemAvailable/ {print $2}' /proc/meminfo").read() or "0")
-    if available and available < 1_500_000:
-        pytest.skip("not enough memory for Chromium")
+    if os.name != "nt" and Path("/proc/meminfo").is_file():
+        available = 0
+        for line in Path("/proc/meminfo").read_text(encoding="utf-8").splitlines():
+            if line.startswith("MemAvailable:"):
+                available = int(line.split()[1])
+                break
+        if available and available < 1_500_000:
+            pytest.skip("not enough memory for Chromium")
     pytest.importorskip("playwright.async_api")
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as manager:
+        if not Path(manager.chromium.executable_path).is_file():
+            pytest.skip("local Playwright Chromium not installed")
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
