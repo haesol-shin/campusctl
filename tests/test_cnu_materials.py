@@ -285,7 +285,7 @@ class FakePage:
             posts = posts[:-1]
             self.partial_states += 1
         if self.case.get("restore_fails") and self._restoring():
-            return {"completed": False, "posts": [], "modal_clear": False}
+            raise CampusError("course-sync-failed", "Archive restoration failed.", "Retry.", "error")
         selected = self._selected_course_id()
         total = sum(len(items) for items in self.case.get("pages", [self.case["posts"]]))
         if self.mutation == "changed-total":
