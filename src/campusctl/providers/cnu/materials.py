@@ -505,8 +505,11 @@ async def _post_names(
     async def controls() -> list[dict[str, Any]]:
         while True:
             modal = await page.evaluate(_TARGETS_JS, {"modalOnly": True, "boardItemId": post_id})
-            inline = await page.evaluate(_TARGETS_JS, {"modalOnly": False, "boardItemId": post_id})
-            targets = modal or inline
+            targets = (
+                modal
+                if isinstance(modal, list) and modal
+                else await page.evaluate(_TARGETS_JS, {"modalOnly": False, "boardItemId": post_id})
+            )
             if (
                 isinstance(targets, list)
                 and targets
