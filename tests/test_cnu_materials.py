@@ -395,6 +395,10 @@ def test_archive_fixture_cases(monkeypatch: pytest.MonkeyPatch, case: dict) -> N
     monkeypatch.setattr(materials, "_WAIT_MS", 275)
     course = fixture()["course"]
     page = FakePage({**case, "course": course}, [])
+    if case["name"] == "table-incomplete":
+        with pytest.raises(ValueError, match="archive table did not complete"):
+            asyncio.run(materials._archive_state(page, 1, expected_course_id=course["course_id"]))
+        return
     if case.get("fails"):
         with pytest.raises((CampusError, ValueError)):
             asyncio.run(materials.enumerate_archive(page, course))
