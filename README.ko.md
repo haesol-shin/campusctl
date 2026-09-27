@@ -10,13 +10,13 @@
 
 <p align="center"><em>터미널이나 AI 에이전트를 통해 캠퍼스 강의 진행 상황을 확인하세요.</em></p>
 
-`campusctl`은 충남대학교(Chungnam National University, CNU) LMS의 강의, 과제, 과목 공지, 자료를 확인하는 로컬 CLI입니다. 현재 CNU LMS만 지원합니다. 목록은 로컬에 보관하며 LMS 작업에는 화면이 표시되는 브라우저를 사용합니다.
+`campusctl`은 충남대학교(Chungnam National University, CNU) LMS의 강의, 과제, 과목 공지, 자료를 확인하는 로컬 CLI입니다. 현재 CNU LMS만 지원합니다. 목록은 로컬에 보관하고 LMS 작업에는 Chromium을 사용합니다.
 
 ## 주요 기능
 
-- 명령 하나로 수강 중인 강의와 강의 항목을 동기화합니다: `campusctl sync`.
-- 미완료 강의를 상태 및 마감일과 함께 표시합니다: `campusctl lectures list`.
-- 각 항목을 동기화한 뒤 과제 마감일과 제출 여부, 과목 게시판 공지, 내려받을 수 있는 자료를 확인합니다.
+- `campusctl sync` 한 번으로 네 영역의 자료를 함께 동기화하며 과목당 한 번 선택합니다.
+- `campusctl lectures list`로 미완료 강의를, `campusctl status`로 과제·공지·강의 현황을 확인합니다.
+- `sync --only DOMAIN`으로 영역을 좁히거나 목록의 `--refresh`로 해당 영역만 새로 고칩니다.
 - 선택한 자료 하나를 운영체제의 다운로드 폴더 아래 `campusctl/<과목 이름>/`에 저장합니다.
 - 한 번에 하나씩 화면이 표시되는 브라우저에서 CNU 공식 플레이어로 강의를 재생하고, 이후 LMS 상태를 확인합니다.
 - 스크립트와 에이전트에서 사용할 수 있는 JSON 출력을 제공합니다.
@@ -48,7 +48,7 @@ uv tool install --with-executables-from playwright git+https://github.com/haesol
 uv tool update-shell
 ```
 
-설치 후 새 터미널을 엽니다. `campusctl setup`을 실행해 Chromium을 설치하거나 설치 여부를 확인합니다. 브라우저가 없으면 다운로드 전에 다음과 같이 묻습니다: “campusctl needs a Chromium browser for playback and sync. Download and install it now? [Y/n]” (재생 및 동기화에 Chromium 브라우저가 필요합니다. 지금 다운로드하여 설치할까요? [Y/n])
+설치 후 새 터미널을 열고 `campusctl setup`으로 설정, Chromium 설치, 자격 증명, 선택적 첫 동기화를 순서대로 진행하세요. 비대화형 또는 JSON 모드에서는 브라우저만 확인·설치하므로 `campusctl config init --username ID`와 `campusctl auth set`을 별도로 사용하세요.
 
 Linux에서는 필요할 경우 다음 명령으로 브라우저 시스템 라이브러리를 설치합니다:
 
@@ -60,29 +60,27 @@ uv tool run --from playwright playwright install-deps chromium
 
 ## 빠른 시작
 
-campusctl 프롬프트는 영어로 표시되며, 괄호 안 한국어는 설명용 번역입니다. 새 설정을 만들려면 터미널에서 `campusctl config init`을 실행합니다. CNU 로그인 ID(`CNU login ID:`; 한국어 번역: CNU 로그인 ID:)를 묻고, 이어서 비밀번호 저장 여부(`Save your password now? [Y/n]`; 한국어 번역: 비밀번호를 지금 저장할까요? [Y/n]; 기본값 Yes)를 묻습니다. 저장에 동의하면 `LMS password:`(한국어 번역: LMS 비밀번호:)에 입력하며, 입력 내용은 화면에 표시되지 않습니다. 저장하지 않으면 동기화 전에 터미널에서 직접 `campusctl auth set`을 실행하세요. Chromium이 없으면 다음과 같이 묻습니다: `campusctl needs a Chromium browser for playback and sync. Download and install it now? [Y/n]` (한국어 번역: 재생 및 동기화에 Chromium 브라우저가 필요합니다. 지금 다운로드하여 설치할까요? [Y/n]; 기본값 Yes). 설치를 거절하면 동기화 전에 `campusctl setup`을 실행하세요.
+터미널에서 안내에 따라 설정하세요. 비밀번호 입력은 화면에 표시되지 않으며 기본적으로 운영체제 키링에 저장됩니다. 첫 전체 동기화는 선택 사항입니다.
 
 ```console
-$ campusctl config init
+$ campusctl setup
 $ campusctl sync
+$ campusctl status
 $ campusctl lectures list
-```
-
-과제·공지·자료는 항목별로 동기화한 다음 목록을 확인하세요. 자료 목록에서 전체 ID를 복사해 원하는 파일 하나만 내려받을 수 있습니다:
-
-```console
-$ campusctl sync --only assignments
+$ campusctl courses list
 $ campusctl assignments list
-$ campusctl sync --only notices
 $ campusctl notices list
-$ campusctl sync --only materials
 $ campusctl materials list
-$ campusctl materials download <ENTITY_ID>
+$ campusctl materials download 1
 ```
 
-파일은 기본적으로 운영체제의 다운로드 폴더 아래 `campusctl/<과목 이름>/`에 저장됩니다. 다른 폴더에 저장하려면 `--out DIR`을 지정하세요. 동기화와 자료 다운로드는 전역 옵션으로 화면 없이 실행할 수 있습니다. 예: `campusctl --headless sync`, `campusctl --headless materials download <ENTITY_ID>`. 로컬 Chromium 프로필에서만 가능하며 CDP 브라우저 세션과 강의 재생에는 사용할 수 없습니다.
+`sync`는 한 브라우저 세션에서 강의·과제·공지·자료를 모두 갱신하고 과목당 한 번 선택합니다. `--only lectures,notices`로 영역을 제한할 수 있습니다. 과목이나 영역이 실패하면 이전 목록은 유지하고 부분 실패를 표시합니다. 목록은 `--refresh`를 지정하지 않으면 네트워크를 사용하지 않습니다. `campusctl --profile sync`는 단계별 시간을 표준 오류 출력으로 보냅니다.
 
-스크립트나 에이전트에서 JSON이 필요하면 `--json`을 추가하세요. 터미널에서는 기본적으로 사람이 읽기 쉬운 형식으로 출력합니다.
+사람이 읽는 출력에서 `courses list`의 번호나 고유한 과목 이름 일부를 `--course`에 지정할 수 있습니다. `materials list`의 번호는 `materials download 번호`에 쓰며, 인자 없이 실행하면 대화형 터미널에서 파일 한 개를 선택합니다. 번호는 마지막으로 출력한 목록에 묶여 있어 카탈로그가 바뀌면 무효가 됩니다. 전체 ID는 목록 기록 없이 사용할 수 있으며 `--json`에서는 전체 ID가 필요합니다. 선택한 공식 첨부파일 한 개는 운영체제 다운로드 폴더의 `campusctl/<과목 이름>/`에 저장됩니다. 다른 위치는 `--out DIR`을 사용하세요.
+
+전역 `--headless`와 `--headed`는 명령 앞에 지정하며 `browser.headless` 설정보다 우선합니다. 기본값은 화면 표시입니다. `campusctl --headless sync`와 `campusctl --headless materials download <ENTITY_ID>`는 로컬 Chromium 프로필에서 실행합니다. CDP 세션에는 headless 모드를 사용할 수 없고 공식 플레이어 재생은 화면 표시 모드만 지원합니다.
+
+스크립트나 에이전트에서는 `--json`을 추가하세요. 터미널에서는 기본적으로 사람이 읽기 쉬운 형식으로 출력합니다.
 
 영어 가짜 카탈로그로 너비 80열에서 `CAMPUSCTL_OUTPUT=human`을 설정해 CLI를 실행하고 캡처한 출력 예시입니다. 마감일은 CNU 현지 시간이며, `-`는 마감일 정보가 없음을 뜻하고 `opens MM-DD`는 아직 열리지 않은 강의를 나타냅니다:
 
@@ -128,7 +126,7 @@ To refresh: campusctl sync
 
 ## 업그레이드
 
-v0.2.1에서 업그레이드하려면 `uv tool upgrade campusctl`을 실행하세요. 새 목록을 보기 전에 해당 항목을 `sync --only`로 동기화해야 합니다. v0.1과 달리 v0.2부터 터미널 출력은 사람이 읽기 쉬운 형식이 기본이며, 스크립트나 에이전트에는 `--json`을 추가하세요.
+업데이트하려면 `uv tool upgrade campusctl`을 실행하세요. `campusctl sync`는 네 영역을 갱신하며 `--only`로 범위를 좁힐 수 있습니다.
 
 ## 문서
 
@@ -159,7 +157,7 @@ campusctl은 공식 플레이어로 강의를 재생한 뒤 LMS 강의 상태를
 
 #### 과제나 공지의 본문도 볼 수 있나요?
 
-아직은 제목과 상태 등 목록 정보만 제공합니다. 본문 읽기는 v0.4.0에서 제공할 예정입니다. 공지는 각 과목 게시판에서 가져오며, 읽음 여부는 할 일 목록에서 확인된 경우에만 표시합니다. 한 과목의 공지가 10개를 넘어 다음 페이지가 있으면 그 과목의 동기화는 `notice-board-paginated` 오류가 나고 이전 목록이 유지됩니다. 해당 과목은 LMS에서 확인하세요.
+공개된 명령은 목록 정보만 제공합니다. 선택한 본문을 가져오는 fetch 명령은 아직 등록되지 않았습니다. 공지는 각 과목 게시판에서 가져오고, 읽음 여부는 할 일 목록과 일치할 때만 표시합니다. 게시판에 다음 페이지가 있으면 `notice-board-paginated` 오류와 함께 그 과목의 이전 목록이 유지됩니다. 해당 과목은 LMS에서 확인하세요.
 
 ## 라이선스
 
