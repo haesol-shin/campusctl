@@ -12,7 +12,7 @@ from urllib.parse import urlsplit
 
 from playwright.async_api import Error as PlaywrightError
 
-from campusctl.browser import PROTOCOL_TIMEOUT_SECONDS, bounded, profile_span
+from campusctl.browser import PROTOCOL_TIMEOUT_SECONDS, bounded, profile_check_start, profile_diagnostic, profile_span
 from campusctl.envelope import CampusError
 from campusctl.identity import material_entity_id
 
@@ -447,8 +447,40 @@ async def _archive_state(
     expected_course_id: str | None = None,
     *,
     expected_document: Any = None,
+    observed: dict[str, dict] | None = None,
 ) -> dict:
     state = await _step(page.evaluate(_ARCHIVE_STATE_JS, expected_document), "observing archive table")
+    if observed is not None:
+        observed.clear()
+        if isinstance(state, dict):
+            counts = {
+                name: state[source]
+                for name, source in (
+                    ("rendered_rows", "row_count"),
+                    ("tot_cnt", "total_count"),
+                    ("page_size", "page_size"),
+                    ("current_page", "current_page"),
+                )
+                if type(state.get(source)) is int and state[source] >= 0
+            }
+            counts["expected_page"] = expected_page
+            if expected_total is not None:
+                counts["expected_total"] = expected_total
+            if counts.get("page_size", 0) > 0 and "tot_cnt" in counts:
+                counts["expected_rows"] = min(
+                    counts["page_size"], max(0, counts["tot_cnt"] - (expected_page - 1) * counts["page_size"])
+                )
+            states = {}
+            if type(state.get("completed")) is bool:
+                states["completed"] = state["completed"]
+            if expected_course_id is not None:
+                states["ids_match"] = state.get("selected_course_id") == expected_course_id
+            for name in ("modal_clear", "same_document"):
+                if type(state.get(name)) is bool and (name != "same_document" or expected_document is not None):
+                    states[name] = state[name]
+            if type(state.get("archive_path")) is bool:
+                states["route_match"] = state["archive_path"]
+            observed.update(counts=counts, states=states)
     if (
         not isinstance(state, dict)
         or state.get("completed") is not True
@@ -476,11 +508,13 @@ async def _wait_archive_state(
     expected_course_id: str | None = None,
 ) -> dict:
     """Wait for the bound list response to finish rendering every expected post."""
+    started = profile_check_start()
+    observed: dict[str, dict] | None = {} if started is not None else None
 
     async def complete() -> dict:
         while True:
             try:
-                return await _archive_state(page, expected_page, expected_total, expected_course_id)
+                return await _archive_state(page, expected_page, expected_total, expected_course_id, observed=observed)
             except ValueError:
                 await asyncio.sleep(0.05)
 
@@ -488,6 +522,16 @@ async def _wait_archive_state(
         try:
             return await bounded(complete(), _WAIT_MS / 1000, "waiting for complete archive rows")
         except CampusError as error:
+            if started is not None:
+                profile_diagnostic(
+                    "archive-state",
+                    started=started,
+                    bound_ns=_WAIT_MS * 1_000_000,
+                    counts=observed.get("counts") if observed else None,
+                    states=observed.get("states") if observed else None,
+                    domain="materials",
+                    page_kind="archive",
+                )
             if error.code != "browser-timeout" or expected_course_id is None:
                 raise
             raise _failure("course-sync-failed", {"course_id": expected_course_id}) from None
@@ -497,10 +541,59 @@ async def _select_page(page: Any, number: int) -> None:
     await _archive_navigation(page, lambda: page.evaluate(_PAGE_JS, number), document=False)
 
 
+def _modal_identity_failure(
+    started: int | None, targets: list[dict[str, Any]], names: Mapping[str, str], verified: bool
+) -> None:
+    """Report a rejected file identity without retaining the identity itself."""
+    if started is None:
+        return
+    counts = {"modal_controls": len(targets)}
+    if verified:
+        counts["response_items"] = len(names)
+    profile_diagnostic(
+        "modal-binding",
+        started=started,
+        bound_ns=((SECTION_RESPONSE_TIMEOUT_MS + _WAIT_MS) if verified else _WAIT_MS) * 1_000_000,
+        counts=counts,
+        states={"ids_match": False},
+        domain="materials",
+        page_kind="archive",
+    )
+
+
 async def _post_names(
     page: Any, activity: _RequestWindow, after: int, post_id: str
 ) -> tuple[dict[str, str], list[dict[str, Any]], bool]:
     """Bind file controls to this post's completed attachment response when available."""
+    started = profile_check_start()
+    modal_controls: int | None = None
+    response_items: int | None = None
+    ids_match: bool | None = None
+    route_match: bool | None = None
+
+    def diagnose(*, started_at: int | None = None, bound_ns: int | None = None) -> None:
+        check_started = started if started_at is None else started_at
+        if check_started is None:
+            return
+        counts = {}
+        states = {}
+        if modal_controls is not None:
+            counts["modal_controls"] = modal_controls
+        if response_items is not None:
+            counts["response_items"] = response_items
+        if ids_match is not None:
+            states["ids_match"] = ids_match
+        if route_match is not None:
+            states["route_match"] = route_match
+        profile_diagnostic(
+            "modal-binding",
+            started=check_started,
+            bound_ns=_WAIT_MS * 1_000_000 if bound_ns is None else bound_ns,
+            counts=counts,
+            states=states,
+            domain="materials",
+            page_kind="archive",
+        )
 
     async def controls() -> list[dict[str, Any]]:
         modal = await page.evaluate(_TARGETS_JS, {"modalOnly": True, "boardItemId": post_id})
@@ -511,48 +604,66 @@ async def _post_names(
         )
 
     async def matching(names: dict[str, str]) -> list[dict[str, Any]]:
+        nonlocal modal_controls, ids_match
         while True:
             targets = await controls()
+            modal_controls = len(targets)
             identities = [
                 target.get("data_id") or target.get("file_id") for target in targets if isinstance(target, dict)
             ]
-            if (
+            ids_match = (
                 len(identities) == len(targets)
                 and len(identities) == len(names)
                 and set(identities) == names.keys()
                 and len(set(identities)) == len(identities)
-            ):
+            )
+            if ids_match:
                 return targets
             await asyncio.sleep(0.05)
 
     if urlsplit(page.main_frame.url).path != "/std/archive":
+        route_match = False
+        diagnose()
         raise ValueError("attachment request not in the selected archive")
+    route_match = True
     # An icon click can show the previous modal before its new XHR is dispatched.
     if not activity.matches(_ATTACH_LIST, "GET", after=after):
         await asyncio.sleep(0.1)
     requests = activity.matches(_ATTACH_LIST, "GET", after=after)
     if len(requests) > 1 or any(not activity._archive_referer(request) for _, request in requests):
+        diagnose()
         raise ValueError("duplicate attachment list response")
     if requests:
+        response_started = profile_check_start()
+        response_bound_ns = SECTION_RESPONSE_TIMEOUT_MS * 1_000_000
         try:
             response = await activity.wait_response(_ATTACH_LIST, "GET", after=after)
             if response.request is not requests[0][1]:
                 raise ValueError("attachment list response changed")
+            response_started = profile_check_start()
+            response_bound_ns = int(PROTOCOL_TIMEOUT_SECONDS * 1_000_000_000)
             with profile_span("attachment-list", domain="materials"):
                 body = await _step(response.json(), "reading attachment list metadata")
         except CampusError as error:
             if error.code != "browser-timeout":
                 raise
+            diagnose(started_at=response_started, bound_ns=response_bound_ns)
             return {}, [], False
         except ValueError:
+            diagnose(started_at=response_started, bound_ns=response_bound_ns)
             return {}, [], False
         if isinstance(body, dict) and isinstance(body.get("header"), dict) and body["header"].get("code") != 200:
+            diagnose()
             return {}, [], False
         try:
             names = _attachment_names(body)
         except ValueError:
-            return {}, await controls(), False
+            targets = await controls()
+            modal_controls = len(targets) if isinstance(targets, list) else None
+            diagnose()
+            return {}, targets, False
         else:
+            response_items = len(names)
             with profile_span("page-readiness", wait_kind="readiness", domain="materials", page_kind="archive"):
                 try:
                     return (
@@ -563,12 +674,15 @@ async def _post_names(
                 except CampusError as error:
                     if error.code != "browser-timeout":
                         raise
+                    diagnose()
         # The response did not identify the rendered controls; reload before trusting them.
         return names, [], False
 
     async def available() -> list[dict[str, Any]]:
+        nonlocal modal_controls
         while True:
             targets = await controls()
+            modal_controls = len(targets) if isinstance(targets, list) else None
             if isinstance(targets, list) and targets:
                 return targets
             await asyncio.sleep(0.05)
@@ -579,6 +693,7 @@ async def _post_names(
         except CampusError as error:
             if error.code != "browser-timeout":
                 raise
+            diagnose()
             return {}, [], False
 
 
@@ -712,8 +827,19 @@ async def _restore_archive_document(page: Any, *, expected_course_id: str) -> No
 
 async def enumerate_archive(page: Any, course: Mapping[str, Any]) -> list[dict[str, Any]]:
     """Enumerate every completed archive page and restore its exact post context."""
+    table_started = profile_check_start()
     with profile_span("dom-ready", wait_kind="selector", domain="materials", page_kind="archive"):
-        await _step(page.wait_for_selector("#table_list", timeout=_WAIT_MS), "waiting for archive table")
+        try:
+            await _step(page.wait_for_selector("#table_list", timeout=_WAIT_MS), "waiting for archive table")
+        except Exception:
+            profile_diagnostic(
+                "archive-state",
+                started=table_started,
+                bound_ns=_WAIT_MS * 1_000_000,
+                domain="materials",
+                page_kind="archive",
+            )
+            raise
     with profile_span("archive-page", domain="materials"):
         first = await _wait_archive_state(page, 1, expected_course_id=course["course_id"])
     total = first["total_count"]
@@ -759,6 +885,7 @@ async def enumerate_archive(page: Any, course: Mapping[str, Any]) -> list[dict[s
                     ):
                         await _step(page.evaluate(_CLICK_ICON_JS, post_id), "opening archive file icon")
                     try:
+                        binding_started = profile_check_start()
                         names, targets, verified = await _post_names(page, activity, baseline, post_id)
                         if not verified and attempt == 0:
                             retry = True
@@ -768,8 +895,14 @@ async def enumerate_archive(page: Any, course: Mapping[str, Any]) -> list[dict[s
                             for target in targets:
                                 if not isinstance(target, dict):
                                     raise _failure("course-sync-failed", course)
-                                row = _target_row(target, course, metadata, names)
+                                try:
+                                    row = _target_row(target, course, metadata, names)
+                                except CampusError as error:
+                                    if error.code == "item-identity-missing":
+                                        _modal_identity_failure(binding_started, targets, names, verified)
+                                    raise
                                 if row["file_id"] in seen_files:
+                                    _modal_identity_failure(binding_started, targets, names, verified)
                                     raise _failure("item-identity-missing", course)
                                 seen_files.add(row["file_id"])
                                 results.append(row)

@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Literal
 
-from campusctl.browser import PROTOCOL_TIMEOUT_SECONDS, bounded, profile_span
+from campusctl.browser import PROTOCOL_TIMEOUT_SECONDS, bounded, profile_check_start, profile_diagnostic, profile_span
+from campusctl.envelope import CampusError
 
 COURSE_MENU_SELECTOR = 'a[href="/std/course"]'
 COURSE_MENU_TIMEOUT_MS = 7000
@@ -34,8 +35,17 @@ async def _wait_for_topbar_course_id(page: Any) -> str:
                 return course_id
             await asyncio.sleep(0.1)
 
+    started = profile_check_start()
     with profile_span("wait", wait_kind="function"):
-        return await bounded(poll(), COURSE_MENU_TIMEOUT_MS / 1000, "waiting for the course topbar")
+        try:
+            return await bounded(poll(), COURSE_MENU_TIMEOUT_MS / 1000, "waiting for the course topbar")
+        except CampusError:
+            profile_diagnostic(
+                "course-identity",
+                started=started,
+                bound_ns=COURSE_MENU_TIMEOUT_MS * 1_000_000,
+            )
+            raise
 
 
 async def prepare_course_section(

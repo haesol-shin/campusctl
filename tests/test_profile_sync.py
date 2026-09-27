@@ -175,12 +175,26 @@ def test_profile_metrics_are_validated_before_persistence(tmp_path, monkeypatch)
                 "end_reason": "next-document",
             }
         ],
+        "diagnostics": [
+            {
+                "check": "todo-grid",
+                "outcome": "failed",
+                "page_kind": "todo",
+                "domain": "notices",
+                "course": 1,
+                "counts": {"rendered_rows": 1, "response_items": 2, "tot_cnt": 3},
+                "states": {"next_state": "absent"},
+                "elapsed_ns": 7,
+                "bound_ns": 10,
+            }
+        ],
         "coverage": {"lock_ns": 10, "covered_ns": 8, "unattributed_ns": 2},
         "event_loop_lag_ns": 3,
     }
     safe = module._safe_profile(valid)
     assert safe["counts"]["course_selections"] == 7
     assert safe["documents"][0]["end_reason"] == "next-document"
+    assert safe["diagnostics"][0]["counts"]["response_items"] == 2
     assert "schema_version" in safe and set(safe) == set(valid)
     assert module._safe_profile({**valid, "schema_version": 1}) is None
     assert module._safe_profile({**valid, "routes": {"https://secret.invalid": 1}}) is None
@@ -188,6 +202,17 @@ def test_profile_metrics_are_validated_before_persistence(tmp_path, monkeypatch)
     assert module._safe_profile({**valid, "spans": [{**valid["spans"][0], "count": True}]}) is None
     assert module._safe_profile({**valid, "spans": [{**valid["spans"][0], "document": 9}]}) is None
     assert module._safe_profile({**valid, "documents": [{**valid["documents"][0], "end_reason": "done"}]}) is None
+    assert (
+        module._safe_profile({**valid, "diagnostics": [{**valid["diagnostics"][0], "counts": {"course_id": 1}}]})
+        is None
+    )
+    assert (
+        module._safe_profile(
+            {**valid, "diagnostics": [{**valid["diagnostics"][0], "states": {"ids_match": "secret.invalid"}}]}
+        )
+        is None
+    )
+    assert module._safe_profile({**valid, "diagnostics": [{**valid["diagnostics"][0], "course": "private-id"}]}) is None
 
     original = module._run
 

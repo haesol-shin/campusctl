@@ -638,6 +638,7 @@ def test_document_commit_spans_exclude_all_four_collector_phases(
     assert {span["domain"] for span in commits} == set(DOMAINS)
     assert all(span["inclusive_ns"] == 0 for span in commits)
     assert profile["wall_ns"] == 4_000_000_000
+    assert profile["diagnostics"] == []
 
 
 def test_first_entry_topbar_mismatch_retains_old_row_and_continues_other_courses(
@@ -655,10 +656,11 @@ def test_first_entry_topbar_mismatch_retains_old_row_and_continues_other_courses
         },
         catalog_path(tmp_path),
     )
+    recorder = SpanRecorder(enabled=True, scope=DOMAINS)
     with fixture_server() as server:
         server.wrong_topbar = True
         config = _install_fixture(monkeypatch, server)
-        result, errors = run_sync(config, tmp_path, DOMAINS, None, headless=True)
+        result, errors = run_sync(config, tmp_path, DOMAINS, None, headless=True, profile=recorder)
         assert [error.code for error in errors] == ["course-sync-failed"] * len(DOMAINS)
         assert all(result["domains"][domain]["status"] == "partial" for domain in DOMAINS)
         assert all(
@@ -679,6 +681,34 @@ def test_first_entry_topbar_mismatch_retains_old_row_and_continues_other_courses
             if (method, path) == ("POST", "/api/v1/course/addSessionCourseInfo")
         ] == list(IDS)
         assert sum(path == "/std/course" for _, path, _ in server.requests) == 6
+    profile = recorder.finish(stderr=io.StringIO())
+    diagnostic = next(row for row in profile["diagnostics"] if row["check"] == "course-identity")
+    assert diagnostic["page_kind"] == "course-entry" and diagnostic["course"] == 1
+    assert diagnostic["states"]["ids_match"] is False
+    assert diagnostic["elapsed_ns"] > 0 and diagnostic["bound_ns"] > 0
+
+
+def test_cli_profile_stderr_carries_failed_check_without_identifiers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from campusctl import cli
+
+    with fixture_server() as server:
+        server.wrong_topbar = True
+        config = _install_fixture(monkeypatch, server)
+        monkeypatch.setenv("CAMPUSCTL_DATA_DIR", str(tmp_path))
+        monkeypatch.setattr(cli, "load_config", lambda: config)
+        code = cli.main(["--headless", "--profile", "sync", "--only", "lectures", "--course", IDS[0], "--json"])
+    output = capsys.readouterr()
+    assert code == 1
+    lines = [line for line in output.err.splitlines() if line.startswith("campusctl-profile: ")]
+    assert len(lines) == 1
+    profile = json.loads(lines[0].removeprefix("campusctl-profile: "))
+    assert profile["schema_version"] == 2
+    assert profile["diagnostics"][0]["check"] == "course-identity"
+    assert profile["diagnostics"][0]["course"] == 1
+    assert profile["diagnostics"][0]["states"]["ids_match"] is False
+    assert IDS[0] not in lines[0] and COURSES[0]["label"] not in lines[0]
 
 
 def test_first_course_section_redirect_fails_only_that_course(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

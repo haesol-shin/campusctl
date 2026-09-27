@@ -10,7 +10,7 @@ import asyncio
 from typing import Any
 from urllib.parse import urlsplit
 
-from campusctl.browser import bounded, profile_span
+from campusctl.browser import bounded, profile_check_start, profile_diagnostic, profile_span
 from campusctl.envelope import CampusError
 
 from .course_context import _TOPBAR_COURSE_JS, COURSE_MENU_TIMEOUT_MS
@@ -118,8 +118,29 @@ async def wait_page_ready(
         labels["domain"] = domain
     if ordinal is not None:
         labels["course"] = ordinal
+    started = profile_check_start()
+    check = "page-readiness"
+    route_match: bool | None = None
+    ids_match: bool | None = None
+
+    def diagnose() -> None:
+        if started is None:
+            return
+        states: dict[str, bool] = {}
+        if route_match is not None:
+            states["route_match"] = route_match
+        if ids_match is not None:
+            states["ids_match"] = ids_match
+        profile_diagnostic(
+            check,
+            started=started,
+            bound_ns=int(READINESS_TIMEOUT_S * 1_000_000_000),
+            states=states,
+            **{key: value for key, value in labels.items() if key != "wait_kind"},
+        )
 
     async def ready() -> None:
+        nonlocal check, route_match, ids_match
         entered_route = False
         while True:
             if loop.time() >= deadline:
@@ -127,20 +148,28 @@ async def wait_page_ready(
             url = _page_url(page)
             current = urlsplit(url)
             if url and (current.scheme, current.netloc) != provider_origin():
+                check = "page-readiness"
+                route_match = False
                 raise ValueError("page origin does not match the provider")
             if not _route_matches(url, path):
+                check = "page-readiness"
+                route_match = False
                 if entered_route:
                     raise ValueError("page route changed before readiness")
                 await asyncio.sleep(0.05)
                 continue
             entered_route = True
+            route_match = True
             if page_kind in _COURSE_KINDS:
+                check = "course-identity"
                 course_id = await _identity(page)
+                ids_match = course_id == expected_course_id if course_id is not None else None
                 if course_id is not None and course_id != expected_course_id:
                     raise ValueError("page course does not match the selected course")
                 if course_id != expected_course_id:
                     await asyncio.sleep(0.05)
                     continue
+            check = "page-readiness"
             break
         try:
             await _await_surface(page, page_kind, deadline)
@@ -149,16 +178,22 @@ async def wait_page_ready(
                 raise TimeoutError from error
             raise
         if not _route_matches(_page_url(page), path):
+            route_match = False
             raise ValueError("page route changed before readiness")
-        if page_kind in _COURSE_KINDS and await _identity(page) != expected_course_id:
-            raise ValueError("page course does not match the selected course")
+        if page_kind in _COURSE_KINDS:
+            check = "course-identity"
+            ids_match = await _identity(page) == expected_course_id
+            if not ids_match:
+                raise ValueError("page course does not match the selected course")
 
     with profile_span("page-readiness", **labels):
         try:
             await bounded(ready(), READINESS_TIMEOUT_S, "waiting for page readiness")
         except CampusError:
+            diagnose()
             raise
         except Exception as error:
+            diagnose()
             if type(error).__name__ != "TimeoutError":
                 raise
             raise CampusError(

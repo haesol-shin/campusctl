@@ -181,6 +181,48 @@ def profile_span(
     )
 
 
+def profile_check_start() -> int | None:
+    recorder = current_profile()
+    return None if recorder is None else recorder.check_start()
+
+
+def profile_diagnostic(
+    check: str,
+    *,
+    started: int | None,
+    bound_ns: int,
+    counts: dict[str, int] | None = None,
+    states: dict[str, bool | str] | None = None,
+    domain: Any = _UNSET,
+    course: Any = _UNSET,
+    page_kind: Any = _UNSET,
+) -> None:
+    if started is None:
+        return
+    recorder = current_profile()
+    if recorder is None:
+        return
+    inherited = _INHERITED.get() or _InheritedLabels()
+    session = _SESSION_LABELS.get()
+    in_session = session is not None
+    recorder.diagnostic(
+        check,
+        started=started,
+        bound_ns=bound_ns,
+        counts=counts,
+        states=states,
+        domain=_pick_label(
+            domain, inherited.domain, None if session is None else session.domain, in_session=in_session
+        ),
+        course=_pick_label(
+            course, inherited.course, None if session is None else session.course, in_session=in_session
+        ),
+        page_kind=_pick_label(
+            page_kind, inherited.page_kind, None if session is None else session.page_kind, in_session=in_session
+        ),
+    )
+
+
 def profile_count(name: str, amount: int = 1) -> None:
     recorder = current_profile()
     if recorder is not None:

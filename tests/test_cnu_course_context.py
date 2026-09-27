@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from campusctl.browser import profile_context
 from campusctl.envelope import CampusError
-from campusctl.providers.cnu import course_context
+from campusctl.profiling import SpanRecorder
+from campusctl.providers.cnu import course_context, readiness
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "lms_sources" / "course_navigation.json"
 
@@ -74,8 +77,11 @@ async def _navigate(page: FakePage, fixture: dict[str, Any]) -> None:
 
 def test_enters_section_after_course_row(navigation_fixture: dict[str, Any]) -> None:
     page = _page(navigation_fixture)
-    asyncio.run(_navigate(page, navigation_fixture))
+    recorder = SpanRecorder(enabled=True)
+    with profile_context(recorder):
+        asyncio.run(_navigate(page, navigation_fixture))
     assert page.events == navigation_fixture["expected_events"]
+    assert recorder.finish(stderr=io.StringIO())["diagnostics"] == []
 
 
 def test_empty_section_keeps_row_to_menu_context(navigation_fixture: dict[str, Any]) -> None:
@@ -96,3 +102,84 @@ def test_wrong_course_id_never_clicks_another_course(navigation_fixture: dict[st
     assert caught.value.code == "browser-timeout"
 
     assert page.events == []
+
+
+def test_readiness_origin_failure_records_sanitized_route_state(navigation_fixture: dict[str, Any]) -> None:
+    class WrongOriginPage(FakePage):
+        async def click(self, selector: str) -> None:
+            await super().click(selector)
+            self.main_frame.url = "https://other.invalid/std/lecture"
+
+    page = WrongOriginPage(
+        expected_row=navigation_fixture["selectors"]["course_row"],
+        section_link=navigation_fixture["selectors"]["section_link"],
+        course_id=navigation_fixture["course_id"],
+    )
+    recorder = SpanRecorder(enabled=True)
+    with profile_context(recorder), pytest.raises(ValueError, match="origin"):
+        asyncio.run(
+            course_context.prepare_course_section(
+                page, {}, navigation_fixture["course_id"], navigation_fixture["section"]
+            )
+        )
+    profile = recorder.finish(stderr=io.StringIO())
+    assert profile["diagnostics"][0]["check"] == "page-readiness"
+    assert profile["diagnostics"][0]["page_kind"] == "course-entry"
+    assert profile["diagnostics"][0]["states"] == {"route_match": False}
+    assert profile["diagnostics"][0]["counts"] == {}
+    assert profile["diagnostics"][0]["elapsed_ns"] >= 0
+    assert profile["diagnostics"][0]["bound_ns"] > 0
+
+
+def test_readiness_missing_route_records_false_state_and_wait_bound(
+    navigation_fixture: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class MissingRoutePage(FakePage):
+        async def click(self, selector: str) -> None:
+            await super().click(selector)
+            self.main_frame.url = "https://lms.example.invalid/std/other"
+
+    page = MissingRoutePage(
+        expected_row=navigation_fixture["selectors"]["course_row"],
+        section_link=navigation_fixture["selectors"]["section_link"],
+        course_id=navigation_fixture["course_id"],
+    )
+    monkeypatch.setattr(readiness, "READINESS_TIMEOUT_S", 0.05)
+    recorder = SpanRecorder(enabled=True)
+    with profile_context(recorder), pytest.raises(CampusError) as caught:
+        asyncio.run(
+            course_context.prepare_course_section(
+                page, {}, navigation_fixture["course_id"], navigation_fixture["section"]
+            )
+        )
+    assert caught.value.code == "browser-timeout"
+    diagnostic = recorder.finish(stderr=io.StringIO())["diagnostics"][0]
+    assert diagnostic["check"] == "page-readiness"
+    assert diagnostic["states"] == {"route_match": False}
+    assert diagnostic["elapsed_ns"] > 0 and diagnostic["bound_ns"] == 50_000_000
+
+
+def test_route_change_after_unrendered_identity_stays_a_readiness_failure(
+    navigation_fixture: dict[str, Any],
+) -> None:
+    class DriftingPage(FakePage):
+        async def evaluate(self, _script: str) -> None:
+            self.main_frame.url = "https://lms.example.invalid/std/other"
+            return None
+
+    page = DriftingPage(
+        expected_row=navigation_fixture["selectors"]["course_row"],
+        section_link=navigation_fixture["selectors"]["section_link"],
+        course_id=navigation_fixture["course_id"],
+    )
+    recorder = SpanRecorder(enabled=True)
+    with profile_context(recorder), pytest.raises(ValueError, match="route changed"):
+        asyncio.run(
+            course_context.prepare_course_section(
+                page, {}, navigation_fixture["course_id"], navigation_fixture["section"]
+            )
+        )
+    diagnostic = recorder.finish(stderr=io.StringIO())["diagnostics"][0]
+    assert diagnostic["check"] == "page-readiness"
+    assert diagnostic["page_kind"] == "course-entry"
+    assert diagnostic["states"] == {"route_match": False}

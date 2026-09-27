@@ -446,6 +446,36 @@ def test_archive_waits_for_attachment_request_completion() -> None:
     assert rows[0]["filename"] == "original.pdf"
 
 
+def test_attachment_response_timeout_reports_its_own_bound(monkeypatch: pytest.MonkeyPatch) -> None:
+    import io
+
+    from campusctl.browser import profile_context
+    from campusctl.profiling import SpanRecorder
+
+    monkeypatch.setattr(materials, "SECTION_RESPONSE_TIMEOUT_MS", 123)
+    course = fixture()["course"]
+    page = FakePage({"course": course, "posts": []}, [])
+    request = object()
+
+    class TimedOutActivity:
+        def matches(self, *_args, **_kwargs):
+            return [(1, request)]
+
+        def _archive_referer(self, _request):
+            return True
+
+        async def wait_response(self, *_args, **_kwargs):
+            raise CampusError("browser-timeout", "Timed out waiting for attachment response.")
+
+    recorder = SpanRecorder(enabled=True, scope=("materials",))
+    with profile_context(recorder):
+        assert asyncio.run(materials._post_names(page, TimedOutActivity(), 0, "board-synthetic")) == ({}, [], False)
+    diagnostic = recorder.finish(stderr=io.StringIO())["diagnostics"][0]
+    assert diagnostic["check"] == "modal-binding"
+    assert diagnostic["bound_ns"] == 123 * 1_000_000
+    assert diagnostic["elapsed_ns"] >= 0
+
+
 def test_inline_controls_belong_to_selected_post_before_duplicate_check() -> None:
     course = fixture()["course"]
     posts = [
@@ -543,9 +573,14 @@ def test_response_identity_mismatch_reloads_then_reopens_current_post(monkeypatc
             return await super().evaluate(script, arg)
 
     page = StaleControlsPage({"course": course, "posts": [post]}, [])
-    rows = asyncio.run(materials.enumerate_archive(page, course))
+    rows, profile = _profiled(page, course)
     assert [row["file_id"] for row in rows] == ["file-current"]
     assert page.events.count(materials._ARCHIVE_MENU) == 1
+    binding = next(row for row in profile["diagnostics"] if row["check"] == "modal-binding")
+    assert binding["counts"] == {"modal_controls": 1, "response_items": 1}
+    assert binding["states"]["ids_match"] is False
+    assert binding["page_kind"] == "archive"
+    assert binding["elapsed_ns"] > 0 and binding["bound_ns"] == 120 * 1_000_000
 
 
 def test_empty_attachment_response_confirms_post_has_no_files() -> None:
@@ -574,13 +609,34 @@ def test_unresolved_inline_row_does_not_borrow_other_post_controls() -> None:
     assert exc.value.code == "course-sync-failed"
 
 
-def test_modal_inline_detail_and_course_failure() -> None:
+@pytest.mark.parametrize(("case_name", "response_backed"), [("missing-id", False), ("duplicate-id", True)])
+def test_modal_inline_detail_and_course_failure(case_name: str, response_backed: bool) -> None:
+    import io
+
+    from campusctl.browser import profile_context
+    from campusctl.profiling import SpanRecorder
+
     data = fixture()
-    case = next(c for c in data["cases"] if c["name"] == "duplicate-id")
+    case = next(c for c in data["cases"] if c["name"] == case_name)
+    if not response_backed:
+        case["posts"][0]["no_attachment_request"] = True
     page = FakePage({**case, "course": data["course"]}, [])
-    with pytest.raises(CampusError, match="enumerate") as exc:
+    recorder = SpanRecorder(enabled=True, scope=("materials",))
+    with profile_context(recorder), pytest.raises(CampusError, match="enumerate") as exc:
         asyncio.run(materials.enumerate_archive(page, data["course"]))
     assert exc.value.code == "item-identity-missing"
+    profile = recorder.finish(stderr=io.StringIO())
+    diagnostic = next(
+        row
+        for row in profile["diagnostics"]
+        if row["check"] == "modal-binding" and row["states"].get("ids_match") is False
+    )
+    assert diagnostic["counts"] == {
+        "modal_controls": 1,
+        **({"response_items": 1} if response_backed else {}),
+    }
+    assert diagnostic["page_kind"] == "archive" and diagnostic["elapsed_ns"] > 0
+    assert case["posts"][0]["board_item_id"] not in json.dumps(diagnostic)
 
 
 @pytest.mark.parametrize("wrong_restore_course", [False, True])
@@ -931,6 +987,7 @@ def test_profile_distinguishes_retained_and_reloaded_restores() -> None:
     assert _phase_count(profile, "archive-restore") == 2
     assert _phase_count(profile, "document-commit") == 1
     assert all(handle.disposed for handle in page.handles)
+    assert profile["diagnostics"] == []
 
 
 def test_initial_archive_state_waits_for_completed_rows(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -944,6 +1001,37 @@ def test_initial_archive_state_waits_for_completed_rows(monkeypatch: pytest.Monk
     assert _associated(rows) == [("board-a", "file-board-a", "board-a.pdf")]
     assert page.state_observations >= 3
     assert page.events.count(materials._ARCHIVE_MENU) == 0
+
+
+def test_incomplete_archive_state_records_compared_counts_without_identity() -> None:
+    import io
+
+    from campusctl.browser import profile_context
+    from campusctl.profiling import SpanRecorder
+
+    course = fixture()["course"]
+    page = FakePage({"course": course, "posts": _sample_posts("board-a", "board-b"), "table_ready": False}, [])
+    recorder = SpanRecorder(enabled=True, scope=("materials",))
+    with profile_context(recorder), pytest.raises(CampusError) as caught:
+        asyncio.run(materials._wait_archive_state(page, 1, expected_course_id=course["course_id"]))
+    assert caught.value.code == "course-sync-failed"
+    profile = recorder.finish(stderr=io.StringIO())
+    diagnostic = next(row for row in profile["diagnostics"] if row["check"] == "archive-state")
+    assert diagnostic["counts"] == {
+        "rendered_rows": 2,
+        "tot_cnt": 2,
+        "page_size": 10,
+        "expected_rows": 2,
+        "current_page": 1,
+        "expected_page": 1,
+    }
+    assert diagnostic["states"] == {
+        "completed": False,
+        "ids_match": True,
+        "route_match": True,
+        "modal_clear": True,
+    }
+    assert diagnostic["elapsed_ns"] > 0 and diagnostic["bound_ns"] == materials._WAIT_MS * 1_000_000
 
 
 def test_unrelated_request_inspection_error_propagates() -> None:
