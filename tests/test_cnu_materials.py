@@ -472,12 +472,12 @@ def test_retained_archive_waits_for_next_modal_controls(monkeypatch: pytest.Monk
     monkeypatch.setattr(materials, "_WAIT_MS", 300)
     course = fixture()["course"]
     posts = [
-        {"board_item_id": "board-a", "title": "First", "modal": [
-            {"data_id": "file-a", "text": "first.pdf", "official": True},
-        ]},
-        {"board_item_id": "board-b", "title": "Second", "modal": [
-            {"data_id": "file-b", "text": "second.pdf", "official": True},
-        ]},
+        {"board_item_id": "board-a", "title": "First",
+         "attachment_list": [{"boarditem_attach_file_no": "file-a", "file_name": "first.pdf"}],
+         "modal": [{"data_id": "file-a", "text": "first.pdf", "official": True}]},
+        {"board_item_id": "board-b", "title": "Second",
+         "attachment_list": [{"boarditem_attach_file_no": "file-b", "file_name": "second.pdf"}],
+         "modal": [{"data_id": "file-b", "text": "second.pdf", "official": True}]},
     ]
 
     class DelayedModalPage(FakePage):
