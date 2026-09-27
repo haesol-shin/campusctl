@@ -541,6 +541,26 @@ async def _select_page(page: Any, number: int) -> None:
     await _archive_navigation(page, lambda: page.evaluate(_PAGE_JS, number), document=False)
 
 
+def _modal_identity_failure(
+    started: int | None, targets: list[dict[str, Any]], names: Mapping[str, str], verified: bool
+) -> None:
+    """Report a rejected file identity without retaining the identity itself."""
+    if started is None:
+        return
+    counts = {"modal_controls": len(targets)}
+    if verified:
+        counts["response_items"] = len(names)
+    profile_diagnostic(
+        "modal-binding",
+        started=started,
+        bound_ns=((SECTION_RESPONSE_TIMEOUT_MS + _WAIT_MS) if verified else _WAIT_MS) * 1_000_000,
+        counts=counts,
+        states={"ids_match": False},
+        domain="materials",
+        page_kind="archive",
+    )
+
+
 async def _post_names(
     page: Any, activity: _RequestWindow, after: int, post_id: str
 ) -> tuple[dict[str, str], list[dict[str, Any]], bool]:
@@ -551,8 +571,9 @@ async def _post_names(
     ids_match: bool | None = None
     route_match: bool | None = None
 
-    def diagnose() -> None:
-        if started is None:
+    def diagnose(*, started_at: int | None = None, bound_ns: int | None = None) -> None:
+        check_started = started if started_at is None else started_at
+        if check_started is None:
             return
         counts = {}
         states = {}
@@ -566,8 +587,8 @@ async def _post_names(
             states["route_match"] = route_match
         profile_diagnostic(
             "modal-binding",
-            started=started,
-            bound_ns=_WAIT_MS * 1_000_000,
+            started=check_started,
+            bound_ns=_WAIT_MS * 1_000_000 if bound_ns is None else bound_ns,
             counts=counts,
             states=states,
             domain="materials",
@@ -613,19 +634,23 @@ async def _post_names(
         diagnose()
         raise ValueError("duplicate attachment list response")
     if requests:
+        response_started = profile_check_start()
+        response_bound_ns = SECTION_RESPONSE_TIMEOUT_MS * 1_000_000
         try:
             response = await activity.wait_response(_ATTACH_LIST, "GET", after=after)
             if response.request is not requests[0][1]:
                 raise ValueError("attachment list response changed")
+            response_started = profile_check_start()
+            response_bound_ns = int(PROTOCOL_TIMEOUT_SECONDS * 1_000_000_000)
             with profile_span("attachment-list", domain="materials"):
                 body = await _step(response.json(), "reading attachment list metadata")
         except CampusError as error:
             if error.code != "browser-timeout":
                 raise
-            diagnose()
+            diagnose(started_at=response_started, bound_ns=response_bound_ns)
             return {}, [], False
         except ValueError:
-            diagnose()
+            diagnose(started_at=response_started, bound_ns=response_bound_ns)
             return {}, [], False
         if isinstance(body, dict) and isinstance(body.get("header"), dict) and body["header"].get("code") != 200:
             diagnose()
@@ -860,6 +885,7 @@ async def enumerate_archive(page: Any, course: Mapping[str, Any]) -> list[dict[s
                     ):
                         await _step(page.evaluate(_CLICK_ICON_JS, post_id), "opening archive file icon")
                     try:
+                        binding_started = profile_check_start()
                         names, targets, verified = await _post_names(page, activity, baseline, post_id)
                         if not verified and attempt == 0:
                             retry = True
@@ -869,8 +895,14 @@ async def enumerate_archive(page: Any, course: Mapping[str, Any]) -> list[dict[s
                             for target in targets:
                                 if not isinstance(target, dict):
                                     raise _failure("course-sync-failed", course)
-                                row = _target_row(target, course, metadata, names)
+                                try:
+                                    row = _target_row(target, course, metadata, names)
+                                except CampusError as error:
+                                    if error.code == "item-identity-missing":
+                                        _modal_identity_failure(binding_started, targets, names, verified)
+                                    raise
                                 if row["file_id"] in seen_files:
+                                    _modal_identity_failure(binding_started, targets, names, verified)
                                     raise _failure("item-identity-missing", course)
                                 seen_files.add(row["file_id"])
                                 results.append(row)

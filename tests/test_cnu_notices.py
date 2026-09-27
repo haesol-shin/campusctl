@@ -887,6 +887,46 @@ def test_todo_missing_terminal_proof_times_out(
     assert diagnostic["elapsed_ns"] > 0 and diagnostic["bound_ns"] == 850 * 1_000_000
 
 
+def test_hidden_next_is_absent_in_failed_grid_diagnostic(monkeypatch: pytest.MonkeyPatch) -> None:
+    class HiddenNextPage(FakePage):
+        async def evaluate(self, expression: str) -> Any:
+            snapshot = await super().evaluate(expression)
+            if expression == notices._EXTRACT_GRID_JS:
+                snapshot["next_present"] = True
+                snapshot["pagination_present"] = True
+            return snapshot
+
+    page = HiddenNextPage()
+    page.handler = lambda route: route.continue_()
+    page.todo = [
+        {
+            "number": "1",
+            "course_label": "Example Course",
+            "title": "First",
+            "date": "2026-09-01 08:00",
+            "read_yn": "읽음",
+        }
+    ]
+    page.todo_response = {"body": {"list": [{"row_idx": 1}], "tot_cnt": 2}}
+    monkeypatch.setattr(notices, "COURSE_MENU_TIMEOUT_MS", 200)
+    monkeypatch.setattr(notices, "_ORIGIN", L)
+    monkeypatch.setattr(notices, "_TODO_URL", L + "/std/todo")
+
+    async def collect() -> None:
+        capture = await notices.open_notice_todo(page)
+        await notices.collect_notice_todo(page, COURSES, capture=capture)
+
+    recorder = SpanRecorder(enabled=True, scope=("notices",))
+    with profile_context(recorder), pytest.raises(CampusError) as caught:
+        asyncio.run(collect())
+    assert caught.value.code == "browser-timeout"
+    diagnostic = next(
+        row for row in recorder.finish(stderr=io.StringIO())["diagnostics"] if row["check"] == "todo-grid"
+    )
+    assert diagnostic["counts"] == {"rendered_rows": 1, "response_items": 1, "tot_cnt": 2}
+    assert diagnostic["states"]["next_state"] == "absent"
+
+
 def test_todo_unstable_grid_fails_without_publishing_rows(monkeypatch: pytest.MonkeyPatch) -> None:
     first = {
         "number": "1",

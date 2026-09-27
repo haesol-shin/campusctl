@@ -446,6 +446,36 @@ def test_archive_waits_for_attachment_request_completion() -> None:
     assert rows[0]["filename"] == "original.pdf"
 
 
+def test_attachment_response_timeout_reports_its_own_bound(monkeypatch: pytest.MonkeyPatch) -> None:
+    import io
+
+    from campusctl.browser import profile_context
+    from campusctl.profiling import SpanRecorder
+
+    monkeypatch.setattr(materials, "SECTION_RESPONSE_TIMEOUT_MS", 123)
+    course = fixture()["course"]
+    page = FakePage({"course": course, "posts": []}, [])
+    request = object()
+
+    class TimedOutActivity:
+        def matches(self, *_args, **_kwargs):
+            return [(1, request)]
+
+        def _archive_referer(self, _request):
+            return True
+
+        async def wait_response(self, *_args, **_kwargs):
+            raise CampusError("browser-timeout", "Timed out waiting for attachment response.")
+
+    recorder = SpanRecorder(enabled=True, scope=("materials",))
+    with profile_context(recorder):
+        assert asyncio.run(materials._post_names(page, TimedOutActivity(), 0, "board-synthetic")) == ({}, [], False)
+    diagnostic = recorder.finish(stderr=io.StringIO())["diagnostics"][0]
+    assert diagnostic["check"] == "modal-binding"
+    assert diagnostic["bound_ns"] == 123 * 1_000_000
+    assert diagnostic["elapsed_ns"] >= 0
+
+
 def test_inline_controls_belong_to_selected_post_before_duplicate_check() -> None:
     course = fixture()["course"]
     posts = [
@@ -579,13 +609,34 @@ def test_unresolved_inline_row_does_not_borrow_other_post_controls() -> None:
     assert exc.value.code == "course-sync-failed"
 
 
-def test_modal_inline_detail_and_course_failure() -> None:
+@pytest.mark.parametrize(("case_name", "response_backed"), [("missing-id", False), ("duplicate-id", True)])
+def test_modal_inline_detail_and_course_failure(case_name: str, response_backed: bool) -> None:
+    import io
+
+    from campusctl.browser import profile_context
+    from campusctl.profiling import SpanRecorder
+
     data = fixture()
-    case = next(c for c in data["cases"] if c["name"] == "duplicate-id")
+    case = next(c for c in data["cases"] if c["name"] == case_name)
+    if not response_backed:
+        case["posts"][0]["no_attachment_request"] = True
     page = FakePage({**case, "course": data["course"]}, [])
-    with pytest.raises(CampusError, match="enumerate") as exc:
+    recorder = SpanRecorder(enabled=True, scope=("materials",))
+    with profile_context(recorder), pytest.raises(CampusError, match="enumerate") as exc:
         asyncio.run(materials.enumerate_archive(page, data["course"]))
     assert exc.value.code == "item-identity-missing"
+    profile = recorder.finish(stderr=io.StringIO())
+    diagnostic = next(
+        row
+        for row in profile["diagnostics"]
+        if row["check"] == "modal-binding" and row["states"].get("ids_match") is False
+    )
+    assert diagnostic["counts"] == {
+        "modal_controls": 1,
+        **({"response_items": 1} if response_backed else {}),
+    }
+    assert diagnostic["page_kind"] == "archive" and diagnostic["elapsed_ns"] > 0
+    assert case["posts"][0]["board_item_id"] not in json.dumps(diagnostic)
 
 
 @pytest.mark.parametrize("wrong_restore_course", [False, True])

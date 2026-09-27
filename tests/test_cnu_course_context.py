@@ -157,3 +157,29 @@ def test_readiness_missing_route_records_false_state_and_wait_bound(
     assert diagnostic["check"] == "page-readiness"
     assert diagnostic["states"] == {"route_match": False}
     assert diagnostic["elapsed_ns"] > 0 and diagnostic["bound_ns"] == 50_000_000
+
+
+def test_route_change_after_unrendered_identity_stays_a_readiness_failure(
+    navigation_fixture: dict[str, Any],
+) -> None:
+    class DriftingPage(FakePage):
+        async def evaluate(self, _script: str) -> None:
+            self.main_frame.url = "https://lms.example.invalid/std/other"
+            return None
+
+    page = DriftingPage(
+        expected_row=navigation_fixture["selectors"]["course_row"],
+        section_link=navigation_fixture["selectors"]["section_link"],
+        course_id=navigation_fixture["course_id"],
+    )
+    recorder = SpanRecorder(enabled=True)
+    with profile_context(recorder), pytest.raises(ValueError, match="route changed"):
+        asyncio.run(
+            course_context.prepare_course_section(
+                page, {}, navigation_fixture["course_id"], navigation_fixture["section"]
+            )
+        )
+    diagnostic = recorder.finish(stderr=io.StringIO())["diagnostics"][0]
+    assert diagnostic["check"] == "page-readiness"
+    assert diagnostic["page_kind"] == "course-entry"
+    assert diagnostic["states"] == {"route_match": False}

@@ -148,9 +148,11 @@ async def wait_page_ready(
             url = _page_url(page)
             current = urlsplit(url)
             if url and (current.scheme, current.netloc) != provider_origin():
+                check = "page-readiness"
                 route_match = False
                 raise ValueError("page origin does not match the provider")
             if not _route_matches(url, path):
+                check = "page-readiness"
                 route_match = False
                 if entered_route:
                     raise ValueError("page route changed before readiness")

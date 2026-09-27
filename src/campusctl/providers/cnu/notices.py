@@ -448,11 +448,11 @@ async def _grid_snapshot(page: Any, capture: _TodoCapture) -> list[dict[str, Any
                     if observed is not None:
                         observed["rendered_rows"] = len(page_rows)
                         observed["next_state"] = (
-                            "absent"
-                            if not next_present
+                            "enabled"
+                            if snapshot.get("next") is not None
                             else "disabled"
-                            if snapshot.get("next_disabled") is True
-                            else "enabled"
+                            if next_present and snapshot.get("next_disabled") is True
+                            else "absent"
                         )
                     pagination_present = snapshot.get("pagination_present") is True or next_present
                     current = (
