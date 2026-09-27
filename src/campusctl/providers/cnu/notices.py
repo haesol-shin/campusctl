@@ -350,10 +350,21 @@ async def open_notice_todo(page: Any) -> _TodoCapture:
         raise
 
 
+def _todo_response_coverage(payload: Any) -> tuple[int, int] | None:
+    """Count server-delivered items without equating them to rendered grid rows."""
+    if not isinstance(payload, dict) or not isinstance(payload.get("body"), dict):
+        return None
+    body = payload["body"]
+    items, total = body.get("list"), body.get("tot_cnt")
+    if not isinstance(items, list) or type(total) is not int or total < len(items):
+        return None
+    return len(items), total
+
+
 async def _grid_snapshot(page: Any, capture: _TodoCapture) -> list[dict[str, Any]]:
     """Read each committed grid page after its own response and render gate."""
 
-    async def completed(start: int, *, required: bool) -> None:
+    async def completed(start: int, *, required: bool) -> tuple[bool, tuple[int, int] | None]:
         async def response_for(request: Any) -> Any:
             while True:
                 matching = [response for source, response in capture.responses if source is request]
@@ -371,7 +382,7 @@ async def _grid_snapshot(page: Any, capture: _TodoCapture) -> list[dict[str, Any
         if capture.stale_response or len(window) > 1 or (required and len(window) != 1):
             raise ValueError("Notice request was stale, absent or duplicated")
         if not window:
-            return  # UI-only pagination is allowed only after DOM advancement.
+            return False, None  # UI-only pagination is allowed only after DOM advancement.
         request = window[0]
         if request.method != "POST" or request.frame != page.main_frame:
             raise ValueError("Notice request did not originate in the main frame")
@@ -390,9 +401,10 @@ async def _grid_snapshot(page: Any, capture: _TodoCapture) -> list[dict[str, Any
                 is not None
             ):
                 raise ValueError("Notice request did not complete successfully")
-        await bounded(response.json(), PROTOCOL_TIMEOUT_SECONDS, "validating the notice list response")
+        payload = await bounded(response.json(), PROTOCOL_TIMEOUT_SECONDS, "validating the notice list response")
         if capture.stale_response or len([order for order, _ in capture.requests if order > start]) != 1:
             raise ValueError("Notice list changed during completion")
+        return True, _todo_response_coverage(payload)
 
     async def advanced(previous: tuple[str, ...]) -> None:
         async def changed() -> None:
@@ -407,7 +419,7 @@ async def _grid_snapshot(page: Any, capture: _TodoCapture) -> list[dict[str, Any
         with profile_span("page-readiness", wait_kind="readiness", domain="notices", page_kind="todo"):
             await bounded(changed(), COURSE_MENU_TIMEOUT_MS / 1000, "waiting for the next notice page")
 
-    async def stable_grid() -> dict[str, Any]:
+    async def stable_grid(*, require_next: bool) -> dict[str, Any]:
         loop = asyncio.get_running_loop()
         signature: tuple[Any, ...] | None = None
         unchanged_since = 0.0
@@ -425,7 +437,9 @@ async def _grid_snapshot(page: Any, capture: _TodoCapture) -> list[dict[str, Any
                     now = loop.time()
                     if current != signature:
                         signature, unchanged_since = current, now
-                    elif now - unchanged_since >= _GRID_QUIET_SECONDS:
+                    elif now - unchanged_since >= _GRID_QUIET_SECONDS and (
+                        not require_next or snapshot.get("next") is not None
+                    ):
                         return snapshot
                 else:
                     signature = None
@@ -441,16 +455,29 @@ async def _grid_snapshot(page: Any, capture: _TodoCapture) -> list[dict[str, Any
             rows: list[dict[str, Any]] = []
             seen_pages: set[tuple[str, ...]] = set()
             previous: tuple[str, ...] | None = None
+            response_items = 0
+            response_total: int | None = None
+            coverage_available = True
             while True:
                 if previous is not None:
                     await advanced(previous)
-                await completed(window_start, required=previous is None)
+                has_response, coverage = await completed(window_start, required=previous is None)
+                if has_response and coverage_available:
+                    if coverage is None:
+                        # One missing total makes cumulative response coverage unknowable.
+                        coverage_available = False
+                        response_total = None
+                    else:
+                        count, response_total = coverage
+                        response_items += count
                 loop = asyncio.get_running_loop()
                 deadline = loop.time() + COURSE_MENU_TIMEOUT_MS / 1000
                 await wait_page_ready(page, "todo", domain="notices")
                 with profile_span("page-readiness", wait_kind="readiness", domain="notices", page_kind="todo"):
                     snapshot = await bounded(
-                        stable_grid(), max(0, deadline - loop.time()), "waiting for stable notice grid"
+                        stable_grid(require_next=response_total is not None and response_items < response_total),
+                        max(0, deadline - loop.time()),
+                        "waiting for stable notice grid",
                     )
                 if page.main_frame.url != _TODO_URL:
                     raise ValueError("To-do document changed during extraction")

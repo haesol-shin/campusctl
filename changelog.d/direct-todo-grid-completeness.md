@@ -1,2 +1,2 @@
 ## Fixed
-- Collect to-do grid pages after a bounded quiet period for rendered rows and Next controls, without requiring their counts to match the list response
+- Collect to-do grid pages after a bounded quiet period, using delivered response counts to require Next when server items remain without equating response counts to rendered rows
