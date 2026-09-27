@@ -250,11 +250,15 @@ class _RequestWindow:
         ]
 
     async def idle(self) -> None:
-        await _step(
-            self.page.wait_for_load_state("networkidle", timeout=SECTION_RESPONSE_TIMEOUT_MS),
-            "waiting for archive requests",
-        )
-        await bounded(self.settled.wait(), SECTION_RESPONSE_TIMEOUT_MS / 1000, "waiting for archive request completion")
+        with profile_span("idle", wait_kind="load", domain="materials", page_kind="archive"):
+            await _step(
+                self.page.wait_for_load_state("networkidle", timeout=SECTION_RESPONSE_TIMEOUT_MS),
+                "waiting for archive requests",
+            )
+        with profile_span("wait", wait_kind="timeout", domain="materials", page_kind="archive"):
+            await bounded(
+                self.settled.wait(), SECTION_RESPONSE_TIMEOUT_MS / 1000, "waiting for archive request completion"
+            )
         if self.pending:
             raise ValueError("archive requests remain pending")
 
@@ -314,13 +318,19 @@ async def _archive_navigation(page: Any, action: Callable[[], Any], *, document:
                 records = [entry for entry in records if entry[0] > activity.commits[0]]
             return bool(records) and request is records[0][1] and activity._archive_referer(request)
 
-        async with page.expect_response(
-            selected, timeout=SECTION_RESPONSE_TIMEOUT_MS if document else _WAIT_MS
-        ) as pending:
-            with profile_span("document-commit" if document else "archive-page", domain="materials"):
-                await _step(action(), "opening archive list")
-        response = await _step(pending.value, "waiting for archive list response")
-        with profile_span("response-completion", domain="materials"):
+        with profile_span("response-completion", wait_kind="response", domain="materials", page_kind="archive"):
+            async with page.expect_response(
+                selected, timeout=SECTION_RESPONSE_TIMEOUT_MS if document else _WAIT_MS
+            ) as pending:
+                with profile_span(
+                    "document-commit" if document else "archive-page",
+                    wait_kind="navigation" if document else "action",
+                    domain="materials",
+                    page_kind="archive",
+                ):
+                    await _step(action(), "opening archive list")
+            response = await _step(pending.value, "waiting for archive list response")
+        with profile_span("response-completion", wait_kind="response", domain="materials", page_kind="archive"):
             await _step(response.finished(), "finishing archive list response")
         await activity.idle()
         records = activity.matches(_ARCHIVE_LIST, "POST", after=before)
@@ -466,7 +476,7 @@ async def _restore_archive_document(page: Any) -> None:
 
 async def enumerate_archive(page: Any, course: Mapping[str, Any]) -> list[dict[str, Any]]:
     """Enumerate every completed archive page and restore its exact post context."""
-    with profile_span("dom-ready", domain="materials"):
+    with profile_span("dom-ready", wait_kind="selector", domain="materials", page_kind="archive"):
         await _step(page.wait_for_selector("#table_list", timeout=_WAIT_MS), "waiting for archive table")
     with profile_span("archive-page", domain="materials"):
         first = await _archive_state(page, 1, expected_course_id=course["course_id"])
@@ -500,13 +510,16 @@ async def enumerate_archive(page: Any, course: Mapping[str, Any]) -> list[dict[s
             try:
                 await activity.idle()
                 baseline = len(activity.requests)
-                with profile_span("modal", domain="materials"):
+                with (
+                    profile_span("modal", domain="materials", page_kind="archive"),
+                    profile_span("wait", wait_kind="action", domain="materials", page_kind="archive"),
+                ):
                     await _step(page.evaluate(_CLICK_ICON_JS, post_id), "opening archive file icon")
                 try:
-                    with profile_span("attachment-list", domain="materials"):
+                    with profile_span("attachment-list", domain="materials", page_kind="archive"):
                         names = await _post_names(page, activity, baseline)
                     try:
-                        with profile_span("modal", domain="materials"):
+                        with profile_span("dom-ready", wait_kind="selector", domain="materials", page_kind="archive"):
                             await _step(page.wait_for_selector(_MODAL, timeout=_WAIT_MS), "waiting for file modal")
                     except CampusError as error:
                         if error.code != "browser-timeout":
@@ -541,9 +554,12 @@ async def enumerate_archive(page: Any, course: Mapping[str, Any]) -> list[dict[s
                         seen_files.add(row["file_id"])
                         results.append(row)
                 finally:
-                    with profile_span("modal", domain="materials"):
+                    with (
+                        profile_span("modal", domain="materials", page_kind="archive"),
+                        profile_span("wait", wait_kind="action", domain="materials", page_kind="archive"),
+                    ):
                         await _step(page.evaluate(_CLOSE_MODAL_JS), "closing archive modal")
-                    with profile_span("archive-restore", domain="materials"):
+                    with profile_span("archive-restore", domain="materials", page_kind="archive"):
                         await _restore_archive_document(page)
                         if page_number > 1:
                             await _select_page(page, page_number)

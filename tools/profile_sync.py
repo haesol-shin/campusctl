@@ -5,9 +5,8 @@ built-in synthetic fixture modes run without --allow-live. Raw child output and
 catalog records never enter the private report.
 """
 
-from __future__ import annotations
-
 import argparse
+import hashlib
 import json
 import os
 import statistics
@@ -44,6 +43,8 @@ def _fixture(argv: list[str]) -> bool:
 
 
 def _fixture_main(argv: list[str]) -> int:
+    if argv and argv[0] == "--fixture-overhead":
+        return _overhead_fixture(argv[1:])
     if not _fixture([sys.executable, str(Path(__file__).resolve()), *argv]):
         return 2
     marker = Path(argv[1])
@@ -129,45 +130,149 @@ def _group(name: str) -> str:
     return "python"
 
 
-def _safe_profile(profile: object) -> dict | None:
-    if not isinstance(profile, dict) or profile.get("schema_version") != 1:
-        return None
-    from campusctl.profiling import COUNT_NAMES, DOMAINS, PHASES
+def _exact_int(value: object, *, minimum: int = 0) -> bool:
+    return type(value) is int and value >= minimum
 
+
+def _safe_profile(profile: object) -> dict | None:
+    if not isinstance(profile, dict):
+        return None
+    from campusctl.profiling import COUNT_NAMES, DOMAINS, END_REASONS, PAGE_KINDS, PHASES, WAIT_KINDS
+
+    top = {
+        "schema_version",
+        "run",
+        "mode",
+        "scope",
+        "outcome",
+        "wall_ns",
+        "spans",
+        "documents",
+        "coverage",
+        "counts",
+        "dropped_events",
+        "event_loop_lag_ns",
+    }
+    if set(profile) != top or profile.get("schema_version") != 2:
+        return None
+    if profile.get("mode") not in {"headed", "headless"} or profile.get("outcome") not in {"ok", "failed"}:
+        return None
+    if not _exact_int(profile.get("run"), minimum=1) or not _exact_int(profile.get("wall_ns")):
+        return None
+    if not _exact_int(profile.get("dropped_events")):
+        return None
+    scope = profile.get("scope")
+    if not isinstance(scope, list) or any(item not in DOMAINS or type(item) is not str for item in scope):
+        return None
+    lag = profile.get("event_loop_lag_ns")
+    if lag is not None and not _exact_int(lag):
+        return None
     counts = profile.get("counts")
-    if "routes" in profile:
-        return None
     spans = profile.get("spans")
-    if not isinstance(counts, dict) or not isinstance(spans, list) or len(spans) > 4096:
+    documents = profile.get("documents")
+    coverage = profile.get("coverage")
+    if (
+        not isinstance(counts, dict)
+        or not isinstance(spans, list)
+        or not isinstance(documents, list)
+        or not isinstance(coverage, dict)
+        or set(counts) != COUNT_NAMES
+        or any(not _exact_int(value) for value in counts.values())
+        or len(spans) > 4096
+        or len(documents) > 4096
+        or set(coverage) != {"lock_ns", "covered_ns", "unattributed_ns"}
+        or any(not _exact_int(coverage[key]) for key in ("lock_ns", "covered_ns", "unattributed_ns"))
+        or coverage["covered_ns"] + coverage["unattributed_ns"] != coverage["lock_ns"]
+    ):
         return None
-    if set(counts) != COUNT_NAMES or any(type(value) is not int or value < 0 for value in counts.values()):
-        return None
-    keys = {"phase", "domain", "course", "window", "failed", "count", "inclusive_ns", "exclusive_ns"}
+    span_order = (
+        "phase",
+        "domain",
+        "course",
+        "window",
+        "page_kind",
+        "wait_kind",
+        "document",
+        "failed",
+        "count",
+        "inclusive_ns",
+        "exclusive_ns",
+    )
+    safe_spans = []
     for span in spans:
-        if not isinstance(span, dict) or set(span) != keys or span["phase"] not in PHASES:
+        if not isinstance(span, dict) or set(span) != set(span_order) or span["phase"] not in PHASES:
             return None
         if span["domain"] is not None and span["domain"] not in DOMAINS:
             return None
-        if any(type(span[key]) is not int or span[key] < 1 for key in ("course", "window") if span[key] is not None):
+        if span["page_kind"] is not None and span["page_kind"] not in PAGE_KINDS:
             return None
-        if type(span["failed"]) is not bool or any(
-            type(span[key]) is not int or span[key] < 0 for key in ("count", "inclusive_ns", "exclusive_ns")
+        if span["wait_kind"] is not None and span["wait_kind"] not in WAIT_KINDS:
+            return None
+        if any(
+            span[key] is not None and not _exact_int(span[key], minimum=1) for key in ("course", "window", "document")
         ):
+            return None
+        if type(span["failed"]) is not bool or not _exact_int(span["count"], minimum=1):
+            return None
+        if any(not _exact_int(span[key]) for key in ("inclusive_ns", "exclusive_ns")):
             return None
         if span["exclusive_ns"] > span["inclusive_ns"]:
             return None
-    lag = profile.get("event_loop_lag_ns")
-    if lag is not None and (type(lag) is not int or lag < 0):
-        return None
-    dropped = profile.get("dropped_events")
-    if type(dropped) is not int or dropped < 0 or profile.get("outcome") not in {"ok", "failed"}:
+        safe_spans.append({key: span[key] for key in span_order})
+    document_order = (
+        "document",
+        "page_kind",
+        "domain",
+        "course",
+        "start_ns",
+        "commit_ns",
+        "end_ns",
+        "end_reason",
+    )
+    safe_documents = []
+    previous_ordinal = 0
+    previous_start = -1
+    ordinals: set[int] = set()
+    for row in documents:
+        if not isinstance(row, dict) or set(row) != set(document_order):
+            return None
+        ordinal = row["document"]
+        if not _exact_int(ordinal, minimum=1) or ordinal <= previous_ordinal or ordinal in ordinals:
+            return None
+        if row["page_kind"] not in PAGE_KINDS or row["end_reason"] not in END_REASONS:
+            return None
+        if row["domain"] is not None and row["domain"] not in DOMAINS:
+            return None
+        if row["course"] is not None and not _exact_int(row["course"], minimum=1):
+            return None
+        if not _exact_int(row["start_ns"]) or not _exact_int(row["end_ns"]) or row["end_ns"] < row["start_ns"]:
+            return None
+        if row["start_ns"] < previous_start:
+            return None
+        commit = row["commit_ns"]
+        if commit is not None and (not _exact_int(commit) or commit < row["start_ns"] or commit > row["end_ns"]):
+            return None
+        if row["end_reason"] == "failed" and commit is not None:
+            return None
+        previous_ordinal = ordinal
+        previous_start = row["start_ns"]
+        ordinals.add(ordinal)
+        safe_documents.append({key: row[key] for key in document_order})
+    if any(span["document"] is not None and span["document"] not in ordinals for span in safe_spans):
         return None
     return {
-        "spans": spans,
-        "counts": counts,
-        "event_loop_lag_ns": lag,
-        "dropped_events": dropped,
+        "schema_version": 2,
+        "run": profile["run"],
+        "mode": profile["mode"],
+        "scope": list(scope),
         "outcome": profile["outcome"],
+        "wall_ns": profile["wall_ns"],
+        "spans": safe_spans,
+        "documents": safe_documents,
+        "coverage": {key: coverage[key] for key in ("lock_ns", "covered_ns", "unattributed_ns")},
+        "counts": {name: counts[name] for name in sorted(COUNT_NAMES)},
+        "dropped_events": profile["dropped_events"],
+        "event_loop_lag_ns": lag,
     }
 
 
@@ -242,12 +347,18 @@ def _run(argv: list[str], *, data_root: Path | None = None, domains: tuple[str, 
     if complete and data_root is not None and domains:
         catalogs = _catalogs(data_root, domains)
         complete = catalogs is not None
+    attribution = None
+    if profile is not None:
+        from campusctl.profiling import attribute_profile
+
+        attribution = attribute_profile(profile)
     return {
         "exit_code": proc.returncode,
         "complete": complete,
         "wall_ns": wall,
         "event_loop_lag_ns": profile["event_loop_lag_ns"] if profile else None,
         "profile": profile,
+        "attribution": attribution,
         "processes": metrics,
         "_result": (result, catalogs),
     }
@@ -416,10 +527,170 @@ def compare(
     return report
 
 
+def _overhead_shape(shape: str) -> tuple[int, int, int, int]:
+    if shape == "observed":
+        return 7, 68, 21, 800_000
+    if shape == "cpu":
+        return 2, 16, 4, 1_200_000
+    raise ValueError("unknown overhead shape")
+
+
+def _burn(rounds: int) -> int:
+    token = b"fixture-overhead"
+    for _round in range(rounds):
+        token = hashlib.sha256(token).digest()
+    return token[0]
+
+
+def _overhead_fixture(argv: list[str]) -> int:
+    if len(argv) != 2 or argv[0] not in {"off", "on", "previous"} or argv[1] not in {"observed", "cpu"}:
+        return 2
+    mode, shape = argv
+    courses, documents, restores, burn_rounds = _overhead_shape(shape)
+    encoded = json.dumps({"rows": [{"n": index, "text": "fixture-row-" + ("x" * 32)} for index in range(40)]})
+    from campusctl.profiling import SpanRecorder
+
+    recorder = (
+        None
+        if mode == "off"
+        else SpanRecorder(enabled=True, mode="headed", scope=("lectures", "assignments", "notices", "materials"))
+    )
+    digest = _burn(burn_rounds)
+    if recorder is None:
+        digest = _overhead_pass(digest, encoded, courses, documents, restores, None, mode)
+    else:
+        with recorder.span("lock"):
+            digest = _overhead_pass(digest, encoded, courses, documents, restores, recorder, mode)
+    if recorder is not None:
+        recorder.close_documents()
+        finished = recorder.finish()
+        if finished is None or finished["dropped_events"]:
+            return 4
+    print(
+        json.dumps(
+            {
+                "status": "ok",
+                "result": {"courses": courses, "documents": documents, "restores": restores, "digest": digest},
+                "errors": [],
+            }
+        )
+    )
+    return 0
+
+
+def _overhead_pass(digest, encoded, courses, documents, restores, recorder, mode) -> int:
+    for course in range(1, courses + 1):
+        parsed = json.loads(encoded)
+        digest += len(parsed["rows"]) + course
+        for document in range(documents):
+            parsed = json.loads(encoded)
+            digest += parsed["rows"][document % 40]["n"]
+            token = encoded.encode()
+            for _round in range(6):
+                token = hashlib.sha256(token).digest()
+            digest += token[0]
+            if mode == "on" and recorder is not None:
+                ordinal = recorder.open_document(page_kind="archive", domain="materials", course=course)
+                if ordinal is not None:
+                    recorder.commit_document(ordinal)
+        for _restore in range(restores):
+            digest += 1 + parsed["rows"][0]["n"]
+            if recorder is None:
+                continue
+            phase_labels = {"domain": "materials", "course": course}
+            if mode == "on":
+                phase_labels["page_kind"] = "archive"
+                phase_labels["wait_kind"] = "load"
+            with recorder.span("archive-restore", **phase_labels):
+                pass
+    return digest
+
+
+def _host_conditions() -> dict:
+    import platform
+
+    return {
+        "platform": sys.platform,
+        "python": platform.python_version(),
+        "cpu_count": os.cpu_count(),
+        "browser_mode": "headed",
+    }
+
+
+def _spread(values: list[int]) -> float | None:
+    if not values:
+        return None
+    middle = statistics.median(values)
+    if middle <= 0:
+        return None
+    return (max(values) - min(values)) / middle
+
+
+def _paired_ratio(left: list[dict], right: list[dict]) -> dict:
+    if len(left) != len(right) or any(
+        not row["complete"] or row["result"] != other["result"] for row, other in zip(left, right, strict=True)
+    ):
+        return {"verdict": "rejected", "ratio": None, "dispersion": None}
+    if any(row["dropped_events"] not in {None, 0} for row in (*left, *right)):
+        return {"verdict": "rejected", "ratio": None, "dispersion": None}
+    left_walls = [row["wall_ns"] for row in left]
+    right_walls = [row["wall_ns"] for row in right]
+    left_median = statistics.median(left_walls)
+    right_median = statistics.median(right_walls)
+    if not left_median:
+        return {"verdict": "rejected", "ratio": None, "dispersion": None}
+    ratio = (right_median - left_median) / left_median
+    dispersion = max(_spread(left_walls) or 0, _spread(right_walls) or 0)
+    # A median well under 5% is a pass. Near the bound, host jitter leaves the result unresolved.
+    if ratio > 0.05 and dispersion <= 0.03:
+        verdict = "fail"
+    elif ratio <= 0.03 or (ratio <= 0.05 and dispersion <= 0.02):
+        verdict = "pass"
+    else:
+        verdict = "unresolved"
+    return {
+        "verdict": verdict,
+        "ratio": ratio,
+        "dispersion": dispersion,
+        "left_median_ns": left_median,
+        "right_median_ns": right_median,
+    }
+
+
+def measure_overhead(*, trials: int = 5) -> dict:
+    """Time whole fixture processes. A noisy ratio is unresolved, not a pass."""
+    if trials < 5:
+        raise ValueError("five trials are required")
+    harness = [sys.executable, str(Path(__file__).resolve()), "--fixture-overhead"]
+    shapes = {}
+    for shape in ("observed", "cpu"):
+        arms = {mode: [] for mode in ("off", "on", "previous")}
+        for index in range(trials):
+            order = ("off", "on", "previous") if index % 2 == 0 else ("on", "off", "previous")
+            for mode in order:
+                row = _run([*harness, mode, shape])
+                result = None if row["_result"] is None else row["_result"][0]
+                arms[mode].append(
+                    {
+                        "complete": row["complete"],
+                        "wall_ns": row["wall_ns"],
+                        "dropped_events": None if row["profile"] is None else row["profile"]["dropped_events"],
+                        "result": result,
+                        "attribution": row["attribution"],
+                    }
+                )
+        shapes[shape] = {
+            "off_vs_on": _paired_ratio(arms["off"], arms["on"]),
+            "previous_vs_on": _paired_ratio(arms["previous"], arms["on"]),
+            "attribution": next((row["attribution"] for row in reversed(arms["on"]) if row["attribution"]), None),
+        }
+    return {"schema_version": 1, "host": _host_conditions(), "shapes": shapes}
+
+
 def main(argv: list[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
-    if argv and argv[0] in {"--fixture-process", "--fixture-setup"}:
+    if argv and argv[0] in {"--fixture-process", "--fixture-setup", "--fixture-overhead"}:
         return _fixture_main(argv)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--baseline-command-json", required=True, type=_argv)

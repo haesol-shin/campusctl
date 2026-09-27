@@ -139,27 +139,55 @@ def test_failed_candidate_never_scores_even_with_five_successful_pairs(tmp_path,
 
 def test_profile_metrics_are_validated_before_persistence(tmp_path, monkeypatch):
     valid = {
-        "schema_version": 1,
+        "schema_version": 2,
+        "run": 1,
+        "mode": "headed",
+        "scope": ["notices"],
         "outcome": "ok",
+        "wall_ns": 10,
         "dropped_events": 0,
-        "counts": {"course_selections": 7, "documents": 2, "sso_settles": 0},
+        "counts": {"course_selections": 7, "documents": 1, "sso_settles": 0},
         "spans": [
             {
                 "phase": "extract",
                 "domain": "notices",
                 "course": 1,
                 "window": None,
+                "page_kind": "notices",
+                "wait_kind": None,
+                "document": 1,
                 "failed": False,
                 "count": 1,
                 "inclusive_ns": 10,
                 "exclusive_ns": 8,
             }
         ],
+        "documents": [
+            {
+                "document": 1,
+                "page_kind": "notices",
+                "domain": "notices",
+                "course": 1,
+                "start_ns": 0,
+                "commit_ns": 2,
+                "end_ns": 10,
+                "end_reason": "next-document",
+            }
+        ],
+        "coverage": {"lock_ns": 10, "covered_ns": 8, "unattributed_ns": 2},
         "event_loop_lag_ns": 3,
     }
-    assert module._safe_profile(valid)["counts"]["course_selections"] == 7
+    safe = module._safe_profile(valid)
+    assert safe["counts"]["course_selections"] == 7
+    assert safe["documents"][0]["end_reason"] == "next-document"
+    assert "schema_version" in safe and set(safe) == set(valid)
+    assert module._safe_profile({**valid, "schema_version": 1}) is None
     assert module._safe_profile({**valid, "routes": {"https://secret.invalid": 1}}) is None
     assert module._safe_profile({**valid, "spans": [{**valid["spans"][0], "domain": "secret.invalid"}]}) is None
+    assert module._safe_profile({**valid, "spans": [{**valid["spans"][0], "count": True}]}) is None
+    assert module._safe_profile({**valid, "spans": [{**valid["spans"][0], "document": 9}]}) is None
+    assert module._safe_profile({**valid, "documents": [{**valid["documents"][0], "end_reason": "done"}]}) is None
+
     original = module._run
 
     def run(argv, **kwargs):
@@ -211,3 +239,15 @@ def test_rejects_unsafe_or_uncontrolled_runs(tmp_path, change):
     result = subprocess.run(argv, capture_output=True, text=True)
     assert result.returncode == 2
     assert not (tmp_path / "private").exists()
+
+
+def test_overhead_gate_reports_attribution_and_rejects_noise_as_unresolved():
+    report = module.measure_overhead(trials=5)
+    assert report["schema_version"] == 1
+    assert report["host"]["browser_mode"] == "headed"
+    for shape in ("observed", "cpu"):
+        measured = report["shapes"][shape]
+        assert measured["off_vs_on"]["verdict"] == "pass", measured
+        assert measured["previous_vs_on"]["verdict"] in {"pass", "unresolved"}
+        assert measured["attribution"]["coverage"]["unattributed_ns"] >= 0
+        assert measured["attribution"]["dropped_events"] == 0

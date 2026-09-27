@@ -325,10 +325,16 @@ async def open_notice_todo(page: Any) -> _TodoCapture:
     capture = _TodoCapture(page)
 
     async def navigate() -> None:
-        await bounded(page.goto(_TODO_URL, wait_until="domcontentloaded"), PROTOCOL_TIMEOUT_SECONDS, "opening notices")
+        with profile_span("document-commit", wait_kind="navigation", domain="notices", page_kind="todo"):
+            await bounded(
+                page.goto(_TODO_URL, wait_until="domcontentloaded"), PROTOCOL_TIMEOUT_SECONDS, "opening notices"
+            )
 
     try:
-        await bounded(page.wait_for_load_state("networkidle"), PROTOCOL_TIMEOUT_SECONDS, "settling prior page requests")
+        with profile_span("idle", wait_kind="load", domain="notices", page_kind="todo"):
+            await bounded(
+                page.wait_for_load_state("networkidle"), PROTOCOL_TIMEOUT_SECONDS, "settling prior page requests"
+            )
         await navigate()
         if (
             capture.document_sequence is None
@@ -347,7 +353,8 @@ async def _grid_snapshot(page: Any, capture: _TodoCapture) -> list[dict[str, Any
     """Read the committed notice grid; per-course coverage is a live release gate."""
 
     async def settle(start: int, *, required: bool) -> None:
-        await bounded(page.wait_for_load_state("networkidle"), PROTOCOL_TIMEOUT_SECONDS, "settling page requests")
+        with profile_span("idle", wait_kind="load", domain="notices", page_kind="todo"):
+            await bounded(page.wait_for_load_state("networkidle"), PROTOCOL_TIMEOUT_SECONDS, "settling page requests")
         window = [request for order, request in capture.requests if order > start]
         if capture.stale_response or len(window) > 1 or (required and len(window) != 1):
             raise ValueError("Notice request was stale, absent or duplicated")
@@ -365,7 +372,8 @@ async def _grid_snapshot(page: Any, capture: _TodoCapture) -> list[dict[str, Any
         if len(matching) != 1 or matching[0].status != 200:
             raise ValueError("Notice request did not complete successfully")
         response = matching[0]
-        await bounded(response.finished(), PROTOCOL_TIMEOUT_SECONDS, "settling the notice list")
+        with profile_span("response-completion", wait_kind="response", domain="notices", page_kind="todo"):
+            await bounded(response.finished(), PROTOCOL_TIMEOUT_SECONDS, "settling the notice list")
         await bounded(response.json(), PROTOCOL_TIMEOUT_SECONDS, "validating the notice list response")
 
     try:
@@ -379,19 +387,20 @@ async def _grid_snapshot(page: Any, capture: _TodoCapture) -> list[dict[str, Any
             while True:
                 await settle(window_start, required=first_page)
                 first_page = False
-                await bounded(
-                    page.wait_for_function(
-                        """() => {
-                            const grid = document.querySelector('#noticeList');
-                            if (!grid) return false;
-                            const empty = grid.querySelector('#noticeNoData');
-                            return !!grid.querySelector('.tabulator-row') ||
-                                (!!empty && getComputedStyle(empty).display !== 'none');
-                        }"""
-                    ),
-                    PROTOCOL_TIMEOUT_SECONDS,
-                    "waiting for notice rendering",
-                )
+                with profile_span("dom-ready", wait_kind="selector", domain="notices", page_kind="todo"):
+                    await bounded(
+                        page.wait_for_function(
+                            """() => {
+                                const grid = document.querySelector('#noticeList');
+                                if (!grid) return false;
+                                const empty = grid.querySelector('#noticeNoData');
+                                return !!grid.querySelector('.tabulator-row') ||
+                                    (!!empty && getComputedStyle(empty).display !== 'none');
+                            }"""
+                        ),
+                        PROTOCOL_TIMEOUT_SECONDS,
+                        "waiting for notice rendering",
+                    )
                 snapshot = await bounded(
                     page.evaluate(_EXTRACT_GRID_JS), PROTOCOL_TIMEOUT_SECONDS, "extracting notice grid"
                 )
@@ -415,7 +424,8 @@ async def _grid_snapshot(page: Any, capture: _TodoCapture) -> list[dict[str, Any
                 if next_page not in {'.tabulator-page[data-page="next"]', '[data-act="loadMore"]', ".load-more"}:
                     raise ValueError("Unknown notice pagination control")
                 window_start = capture.sequence
-                await bounded(page.click(next_page), PROTOCOL_TIMEOUT_SECONDS, "opening next notice page")
+                with profile_span("wait", wait_kind="action", domain="notices", page_kind="todo"):
+                    await bounded(page.click(next_page), PROTOCOL_TIMEOUT_SECONDS, "opening next notice page")
     finally:
         capture.close()
 
@@ -535,7 +545,8 @@ class _NoticeCapture:
             self.commit,
             self.notice_document,
         )
-        await bounded(page.wait_for_load_state("networkidle"), PROTOCOL_TIMEOUT_SECONDS, "settling notice board")
+        with profile_span("idle", wait_kind="load", domain="notices"):
+            await bounded(page.wait_for_load_state("networkidle"), PROTOCOL_TIMEOUT_SECONDS, "settling notice board")
         if self.stale or commit is None or notice_document is None or commit < notice_document:
             raise ValueError("Notice navigation did not commit cleanly")
         board_sequences: list[int] = []
@@ -559,7 +570,7 @@ class _NoticeCapture:
             if len(matching) != 1 or matching[0].status != 200:
                 raise ValueError("Board list response missing or duplicated")
             response = matching[0]
-            with profile_span("response-completion", domain="notices"):
+            with profile_span("response-completion", wait_kind="response", domain="notices"):
                 if await bounded(response.finished(), PROTOCOL_TIMEOUT_SECONDS, "finishing board response") is not None:
                     raise ValueError("Board response incomplete")
             response_body = await bounded(response.json(), PROTOCOL_TIMEOUT_SECONDS, "checking board response")

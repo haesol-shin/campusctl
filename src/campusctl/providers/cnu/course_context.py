@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Literal
 
-from campusctl.browser import PROTOCOL_TIMEOUT_SECONDS, bounded
+from campusctl.browser import PROTOCOL_TIMEOUT_SECONDS, bounded, profile_span
 
 COURSE_MENU_SELECTOR = 'a[href="/std/course"]'
 COURSE_MENU_TIMEOUT_MS = 7000
@@ -34,7 +34,8 @@ async def _wait_for_topbar_course_id(page: Any) -> str:
                 return course_id
             await asyncio.sleep(0.1)
 
-    return await bounded(poll(), COURSE_MENU_TIMEOUT_MS / 1000, "waiting for the course topbar")
+    with profile_span("wait", wait_kind="function"):
+        return await bounded(poll(), COURSE_MENU_TIMEOUT_MS / 1000, "waiting for the course topbar")
 
 
 async def prepare_course_section(
@@ -50,23 +51,26 @@ async def prepare_course_section(
         raise ValueError("section must be course, task, or archive")
 
     course_selector = f'[data-act="moveLecture"][data-courseid={_css_string(course_id)}]'
-    await bounded(page.click(course_selector), PROTOCOL_TIMEOUT_SECONDS, "opening a CNU course")
-    await bounded(
-        page.wait_for_selector(COURSE_MENU_SELECTOR, timeout=COURSE_MENU_TIMEOUT_MS),
-        COURSE_MENU_TIMEOUT_MS / 1000 + PROTOCOL_TIMEOUT_SECONDS,
-        "waiting for the CNU course menu",
-    )
+    with profile_span("wait", wait_kind="action", page_kind="course-entry"):
+        await bounded(page.click(course_selector), PROTOCOL_TIMEOUT_SECONDS, "opening a CNU course")
+    with profile_span("dom-ready", wait_kind="selector", page_kind="course-entry"):
+        await bounded(
+            page.wait_for_selector(COURSE_MENU_SELECTOR, timeout=COURSE_MENU_TIMEOUT_MS),
+            COURSE_MENU_TIMEOUT_MS / 1000 + PROTOCOL_TIMEOUT_SECONDS,
+            "waiting for the CNU course menu",
+        )
 
 
 async def open_course_section(page: Any, section: Literal["course", "task", "archive"]) -> None:
     """Click the selected section while its response listener is armed."""
     if section not in _SECTION_SELECTORS:
         raise ValueError("section must be course, task, or archive")
-    await bounded(
-        page.click(_SECTION_SELECTORS[section]),
-        PROTOCOL_TIMEOUT_SECONDS,
-        "opening the CNU course section",
-    )
+    with profile_span("wait", wait_kind="action"):
+        await bounded(
+            page.click(_SECTION_SELECTORS[section]),
+            PROTOCOL_TIMEOUT_SECONDS,
+            "opening the CNU course section",
+        )
 
 
 def _css_string(value: str) -> str:

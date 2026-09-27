@@ -53,7 +53,7 @@ async def discover_courses(page: object, config: dict) -> list[dict]:
     if trace is not None:
         trace.step = "wait"
     with profile_span("roster", domain="lectures"):
-        with profile_span("dom-ready", domain="lectures"):
+        with profile_span("dom-ready", wait_kind="selector", domain="lectures"):
             await bounded(
                 page.wait_for_selector(
                     COURSE_LINK_SELECTOR,

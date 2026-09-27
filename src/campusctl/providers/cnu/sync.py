@@ -75,11 +75,12 @@ async def collect_lectures_rows(
     if page_course_id != course["course_id"]:
         raise ValueError("Lecture section belongs to another course")
     try:
-        await bounded(
-            page.wait_for_selector(LEARNING_ROW_SELECTOR, state="attached", timeout=COURSE_ROOM_TIMEOUT_MS),
-            COURSE_ROOM_TIMEOUT_MS / 1000 + PROTOCOL_TIMEOUT_SECONDS,
-            "waiting for CNU lecture rows",
-        )
+        with profile_span("dom-ready", wait_kind="selector", domain="lectures", course=ordinal):
+            await bounded(
+                page.wait_for_selector(LEARNING_ROW_SELECTOR, state="attached", timeout=COURSE_ROOM_TIMEOUT_MS),
+                COURSE_ROOM_TIMEOUT_MS / 1000 + PROTOCOL_TIMEOUT_SECONDS,
+                "waiting for CNU lecture rows",
+            )
     except Exception as error:
         if not _is_timeout(error):
             raise

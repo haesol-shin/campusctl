@@ -471,6 +471,7 @@ def test_profiled_session_orders_bounded_browser_phases_and_keeps_stdout(
         "launch-connect",
         "user-agent",
         "teardown",
+        "wait",
     ]
     output = capsys.readouterr()
     assert output.out == ""
