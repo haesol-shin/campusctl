@@ -21,6 +21,7 @@ _ORIGIN = "https://dcs-learning.cnu.ac.kr"
 _TODO_URL = f"{_ORIGIN}/std/todo"
 _NOTICE_LIST_PATH = "/api/v1/board/std/notice/list"
 _GRID_QUIET_SECONDS = 0.5
+_GRID_NO_CONTROL_QUIET_SECONDS = 1.5
 # TB_L_BOARDITEM followed by digits is an observed native post ID, not a legacy identity.
 _NATIVE_POST_ID = re.compile(r"TB_L_BOARDITEM[0-9]+\Z")
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}(?:\s+\d{2}:\d{2})?\Z")
@@ -28,7 +29,8 @@ _NUMBER = re.compile(r"[0-9]+\Z")
 _ROLE = frozenset({"교수", "교수자", "조교", "관리자", "Instructor", "Teaching Assistant", "Administrator"})
 _EXTRACT_GRID_JS = """() => {
     const grid = document.querySelector('#noticeList');
-    if (!grid) return {rendered: false, empty: false, rows: [], next: null};
+    if (!grid) return {rendered: false, empty: false, rows: [], next: null,
+        next_present: false, next_disabled: false, pagination_present: false};
     const rows = [...grid.querySelectorAll('.tabulator-row')].map(row => {
         const cell = field => row.querySelector(`.tabulator-cell[tabulator-field="${field}"]`)?.innerText;
         const link = row.querySelector('[data-boarditem_no], a[href*="noticeDetail?no="]');
@@ -40,10 +42,19 @@ _EXTRACT_GRID_JS = """() => {
     const empty = grid.querySelector('#noticeNoData');
     const next = grid.querySelector('.tabulator-page[data-page="next"]');
     const more = grid.querySelector('[data-act="loadMore"], .load-more');
-    const active = element => element && !element.disabled &&
-        !element.classList.contains('disabled') && getComputedStyle(element).display !== 'none';
+    const pagination = grid.querySelector('.tabulator-paginator, .tabulator-pages');
+    const disabled = element => !!element && (element.disabled ||
+        element.classList.contains('disabled') ||
+        element.getAttribute('aria-disabled') === 'true' ||
+        element.parentElement?.classList.contains('disabled'));
+    const active = element => !!element && !disabled(element) &&
+        getComputedStyle(element).display !== 'none' &&
+        getComputedStyle(element).visibility !== 'hidden';
     return {rendered: !!grid.querySelector('.tabulator') || rows.length > 0,
         empty: !!empty && getComputedStyle(empty).display !== 'none', rows,
+        next_present: !!next || !!more,
+        next_disabled: (!!next || !!more) && (!next || disabled(next)) && (!more || disabled(more)),
+        pagination_present: !!pagination || !!next || !!more,
         next: active(next) ? '.tabulator-page[data-page="next"]' :
             active(more) ? (more.matches('[data-act="loadMore"]') ? '[data-act="loadMore"]' : '.load-more') : null};
 }"""
@@ -428,19 +439,31 @@ async def _grid_snapshot(page: Any, capture: _TodoCapture) -> list[dict[str, Any
             if isinstance(snapshot, dict) and isinstance(snapshot.get("rows"), list):
                 page_rows = snapshot["rows"]
                 if page_rows or snapshot.get("empty") is True:
+                    next_present = snapshot.get("next_present") is True or snapshot.get("next") is not None
+                    pagination_present = snapshot.get("pagination_present") is True or next_present
                     current = (
                         len(page_rows),
                         tuple(str(item) for item in page_rows),
                         snapshot.get("next"),
                         snapshot.get("empty") is True,
+                        next_present,
+                        snapshot.get("next_disabled") is True,
+                        pagination_present,
                     )
                     now = loop.time()
                     if current != signature:
                         signature, unchanged_since = current, now
-                    elif now - unchanged_since >= _GRID_QUIET_SECONDS and (
-                        not require_next or snapshot.get("next") is not None
-                    ):
-                        return snapshot
+                    elif now - unchanged_since >= _GRID_QUIET_SECONDS:
+                        if snapshot.get("next") is not None or (
+                            not require_next and snapshot.get("next_disabled") is True
+                        ):
+                            return snapshot
+                        if (
+                            not require_next
+                            and not pagination_present
+                            and now - unchanged_since >= _GRID_NO_CONTROL_QUIET_SECONDS
+                        ):
+                            return snapshot
                 else:
                     signature = None
             else:

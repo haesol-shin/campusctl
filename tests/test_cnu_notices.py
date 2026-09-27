@@ -20,7 +20,7 @@ def provider_origin(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(login, "MY_LECTURE_URL", L + "/std/myLecture")
     monkeypatch.setattr(readiness, "READINESS_TIMEOUT_S", 0.1)
     monkeypatch.setattr(notices, "SECTION_RESPONSE_TIMEOUT_MS", 100)
-    monkeypatch.setattr(notices, "COURSE_MENU_TIMEOUT_MS", 1200)
+    monkeypatch.setattr(notices, "COURSE_MENU_TIMEOUT_MS", 2500)
 
 
 COURSES = [
@@ -140,6 +140,8 @@ class FakePage:
         self.context_id: str | None = "course-a"
         self.context_name = "Example Course"
         self.todo_pending = False
+        self.todo_next_disabled = False
+        self.todo_pagination_shell = False
         self.current = "course-a"
         self.main_frame = SimpleNamespace(url=L + "/std/myLecture")
         self.listeners: dict[str, Any] = {}
@@ -250,7 +252,15 @@ class FakePage:
 
     async def evaluate(self, expression: str) -> Any:
         if expression == notices._EXTRACT_GRID_JS:
-            return {"rendered": True, "empty": not self.todo, "rows": self.todo, "next": None}
+            return {
+                "rendered": True,
+                "empty": not self.todo,
+                "rows": self.todo,
+                "next": None,
+                "next_present": self.todo_next_disabled,
+                "next_disabled": self.todo_next_disabled,
+                "pagination_present": self.todo_next_disabled or self.todo_pagination_shell,
+            }
         if expression == notices._EXTRACT_BOARD_JS:
             row_ids = (
                 self.rendered_ids
@@ -641,8 +651,12 @@ def test_todo_paginates_by_rendered_next_when_response_has_more_rows(
     assert not page.listeners
 
 
-def test_todo_accepts_filtered_grid_when_response_covers_total(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("has_disabled_next", [False, True])
+def test_todo_accepts_filtered_grid_when_response_covers_total(
+    monkeypatch: pytest.MonkeyPatch, has_disabled_next: bool
+) -> None:
     page = FakePage()
+    page.todo_next_disabled = has_disabled_next
     page.handler = lambda route: route.continue_()
     page.todo = [
         {
@@ -741,7 +755,13 @@ def test_todo_waits_for_late_rows_and_next_before_collecting(monkeypatch: pytest
     assert not page.listeners
 
 
-def test_todo_waits_for_next_after_quiet_when_response_requires_more(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize(
+    ("response_complete", "control_hidden"),
+    [(False, False), (True, False), (True, True)],
+)
+def test_todo_waits_for_late_next_after_response_settles(
+    monkeypatch: pytest.MonkeyPatch, response_complete: bool, control_hidden: bool
+) -> None:
     first = {
         "number": "1",
         "course_label": "Example Course",
@@ -755,7 +775,12 @@ def test_todo_waits_for_next_after_quiet_when_response_requires_more(monkeypatch
         def __init__(self) -> None:
             super().__init__()
             self.todo = [first]
-            self.todo_response = {"body": {"list": [{"row_idx": 1}], "tot_cnt": 2}}
+            self.todo_response = {
+                "body": {
+                    "list": [{"row_idx": number} for number in range(1, 3 if response_complete else 2)],
+                    "tot_cnt": 2,
+                }
+            }
             self.page_index = 0
             self.started: float | None = None
             self.clicked_at: float | None = None
@@ -768,7 +793,15 @@ def test_todo_waits_for_next_after_quiet_when_response_requires_more(monkeypatch
                 if self.started is None:
                     self.started = now
                 next_page = '.tabulator-page[data-page="next"]' if now - self.started >= 0.6 else None
-                return {"rendered": True, "empty": False, "rows": [first], "next": next_page}
+                return {
+                    "rendered": True,
+                    "empty": False,
+                    "rows": [first],
+                    "next": next_page,
+                    "next_present": control_hidden or next_page is not None,
+                    "next_disabled": False,
+                    "pagination_present": control_hidden or next_page is not None,
+                }
             return await super().evaluate(expression)
 
         async def click(self, selector: str) -> None:
@@ -798,8 +831,15 @@ def test_todo_waits_for_next_after_quiet_when_response_requires_more(monkeypatch
     assert not page.listeners
 
 
-def test_todo_missing_next_with_incomplete_response_times_out(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize(
+    ("response_complete", "pagination_shell"),
+    [(False, False), (True, True)],
+)
+def test_todo_missing_terminal_proof_times_out(
+    monkeypatch: pytest.MonkeyPatch, response_complete: bool, pagination_shell: bool
+) -> None:
     page = FakePage()
+    page.todo_pagination_shell = pagination_shell
     page.handler = lambda route: route.continue_()
     page.todo = [
         {
@@ -810,7 +850,12 @@ def test_todo_missing_next_with_incomplete_response_times_out(monkeypatch: pytes
             "read_yn": "읽음",
         }
     ]
-    page.todo_response = {"body": {"list": [{"row_idx": 1}], "tot_cnt": 2}}
+    page.todo_response = {
+        "body": {
+            "list": [{"row_idx": number} for number in range(1, 3 if response_complete else 2)],
+            "tot_cnt": 2,
+        }
+    }
     monkeypatch.setattr(notices, "COURSE_MENU_TIMEOUT_MS", 850)
     monkeypatch.setattr(notices, "_ORIGIN", L)
     monkeypatch.setattr(notices, "_TODO_URL", L + "/std/todo")
