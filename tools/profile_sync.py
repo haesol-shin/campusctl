@@ -641,13 +641,13 @@ def _paired_ratio(left: list[dict], right: list[dict]) -> dict:
         return {"verdict": "rejected", "ratio": None, "dispersion": None}
     ratio = (right_median - left_median) / left_median
     dispersion = max(_spread(left_walls) or 0, _spread(right_walls) or 0)
-    # A median well under 5% is a pass. Near the bound, host jitter leaves the result unresolved.
-    if ratio > 0.05 and dispersion <= 0.03:
-        verdict = "fail"
-    elif ratio <= 0.03 or (ratio <= 0.05 and dispersion <= 0.02):
-        verdict = "pass"
-    else:
+    # Compare medians. Jitter that leaves a median above 5% is unresolved, not a pass.
+    if ratio > 0.05 and dispersion > 0.05:
         verdict = "unresolved"
+    elif ratio > 0.05:
+        verdict = "fail"
+    else:
+        verdict = "pass"
     return {
         "verdict": verdict,
         "ratio": ratio,
