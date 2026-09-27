@@ -7,7 +7,7 @@ A live run exercises campusctl on the real LMS and records enough to plan the ne
 - The owner authorizes the run and its scope.
 - Nothing else uses the same LMS account or browser during the run; other automation is paused and resumed afterwards even if the run fails.
 - The browser session lock is free and the host has enough free memory for one browser.
-- The run script performs every step of the scope in one go, so a failed step is recorded and the remaining steps still run.
+- The run script performs every step of the scope in one go. A failed step is recorded and the remaining steps still run; a later step that depends on the failed one uses the previous catalog. No step is retried.
 
 ## Scope of a full-path run
 
@@ -26,7 +26,10 @@ A live run exercises campusctl on the real LMS and records enough to plan the ne
 | State | catalog record sets before and after, notice read state and view count, assignment submission state |
 | Environment | campusctl revision, browser mode, browser version, host memory |
 
-Response bodies are recorded as JSON key paths with value types and equality flags against the selected IDs, never as values.
+Collection and publication are separate:
+
+- **Raw record (private):** keeps whatever explains a failure in the same run, including response bodies, DOM snapshots of the checked elements, and the counts and states each readiness or identity check compared. Credentials, cookies and tokens are never recorded.
+- **Repository (public):** specs, fixtures and commits carry only sanitized facts: JSON key paths, value types, counts, booleans and timings, with synthetic IDs.
 
 ## After the run
 
