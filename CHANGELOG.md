@@ -11,7 +11,7 @@ All notable changes to campusctl are documented here. This project follows [Keep
 
 ### Fixed
 - Read the global to-do before selecting a course so all enrolled notice boards and archives remain reachable
-- Report the failing notice detail check without exposing provider identities
+- Read selected notice content from verified info responses instead of unobserved detail-page selectors, and report failing checks without exposing provider identities
 
 ## [0.3.2] - 2026-09-26
 

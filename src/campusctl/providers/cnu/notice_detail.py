@@ -1,8 +1,9 @@
-"""Fixture-backed, selected per-course notice detail reader (no mark-read action)."""
+"""Selected per-course notice detail reader (no mark-read action)."""
 
 from __future__ import annotations
 
 import re
+from html.parser import HTMLParser
 from typing import Any
 from urllib.parse import parse_qs, urljoin, urlsplit
 
@@ -23,63 +24,6 @@ _DETAIL_PATHS = ("/api/v1/board/notice/info", "/api/v1/board/cmt/list")
 _BOARD_JS = """() => [...document.querySelectorAll('tbody#table-body > tr')].map(row => ({
     links: [...row.querySelectorAll('a[href*="noticeDetail?no="]')].map(a => a.getAttribute('href'))
 }))"""
-
-# Fixture selectors identify content, not an official file control. The latter
-# remains a separate live-release gate and must not be invented from an image/link.
-_DETAIL_JS = r"""() => {
-    const article = document.querySelector('#noticeDetail');
-    const body = article?.querySelector('#noticeContent');
-    if (!article || !body) return null;
-    const parts = [];
-    const walk = node => {
-        if (node.nodeType === Node.TEXT_NODE) {
-            if (node.textContent.trim()) parts.push({kind: 'text', text: node.textContent});
-            return;
-        }
-        if (node.nodeType !== Node.ELEMENT_NODE ||
-            ['SCRIPT', 'STYLE', 'NOSCRIPT', 'IFRAME'].includes(node.tagName)) return;
-        if (getComputedStyle(node).display === 'none') return;
-        if (node.tagName === 'IMG') {
-            parts.push({kind: 'image', url: node.src, label: node.alt || 'image', name: node.getAttribute('src')?.split(/[?#]/)[0].split('/').pop() || null});
-            return;
-        }
-        if (node.tagName === 'VIDEO' || node.tagName === 'AUDIO') {
-            const src = node.getAttribute('src') || node.querySelector('source')?.getAttribute('src') || '';
-            const label = (node.getAttribute('title') || node.getAttribute('aria-label') || node.tagName.toLowerCase()).trim();
-            const name = src ? src.split(/[?#]/)[0].split('/').pop() || null : null;
-            const fullUrl = src ? new URL(src, document.URL).href : document.URL;
-            parts.push({kind: node.tagName.toLowerCase(), url: fullUrl, label: label || node.tagName.toLowerCase(), name});
-            return;
-        }
-        if (node.tagName === 'A') {
-            const label = (node.textContent || '').trim();
-            const isOfficialControl = node.getAttribute('data-act') === 'downloadFile';
-            const fileId = node.getAttribute('data-id') || node.getAttribute('data-file_no') || null;
-            if (isOfficialControl && fileId) {
-                const name = node.getAttribute('data-name') || label || 'attachment';
-                const href = node.getAttribute('href');
-                parts.push({
-                    kind: 'attachment',
-                    file_id: fileId,
-                    label: label || 'attachment',
-                    name,
-                    url: href && /^https?:\/\//i.test(href) ? href : null,
-                });
-            } else {
-                parts.push({kind: 'link', text: label});
-            }
-            return;
-        }
-        if (['P', 'DIV', 'LI', 'H1', 'H2', 'H3', 'H4', 'BR'].includes(node.tagName))
-            parts.push({kind: 'text', text: '\\n'});
-        for (const child of node.childNodes) walk(child);
-        if (['P', 'DIV', 'LI', 'H1', 'H2', 'H3', 'H4'].includes(node.tagName))
-            parts.push({kind: 'text', text: '\\n'});
-    };
-    walk(body);
-    return {native_id: article.getAttribute('data-boarditem-no'),
-        title: article.querySelector('h4')?.textContent?.trim(), parts};
-}"""
 
 
 class NoticeDetailError(CampusError):
@@ -123,7 +67,93 @@ def _escape_markdown(text: str) -> str:
     return re.sub(r"([\\`*_{}\[\]()<>#!|])", r"\\\1", text)
 
 
-def _extract_parts(raw: Any, source_url: str) -> tuple[str | ResourceReference, ...]:
+class _NoticeHTML(HTMLParser):
+    """Read content as data, never as executable page markup."""
+
+    _BLOCK = frozenset({"p", "div", "li", "h1", "h2", "h3", "h4"})
+    _SKIP = frozenset({"script", "style", "noscript", "iframe"})
+
+    def __init__(self, source_url: str) -> None:
+        super().__init__(convert_charrefs=True)
+        self.source_url = source_url
+        self.parts: list[dict[str, str | None]] = []
+        self._hidden = 0
+        self._link: list[str] | None = None
+        self._media_index: int | None = None
+
+    def _resource_url(self, value: str | None) -> str:
+        url = urlsplit(urljoin(self.source_url, value or ""))
+        page = urlsplit(self.source_url)
+        if url.scheme != page.scheme or url.netloc != page.netloc:
+            return self.source_url  # An unverified resource is omitted, not fetched.
+        return url.geturl()
+
+    def _break(self) -> None:
+        if self.parts and self.parts[-1].get("text") != "\n":
+            self.parts.append({"kind": "text", "text": "\n"})
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if self._hidden:
+            if tag not in {"br", "img", "source", "hr", "input", "meta", "link"}:
+                self._hidden += 1
+            return
+        if tag in self._SKIP:
+            self._hidden = 1
+            return
+        fields = dict(attrs)
+        if tag == "a":
+            self._link = []
+        elif tag == "img":
+            src = fields.get("src")
+            url = self._resource_url(src)
+            self.parts.append(
+                {
+                    "kind": "image",
+                    "url": url,
+                    "label": fields.get("alt") or "image",
+                    "name": urlsplit(url).path.rsplit("/", 1)[-1] or None,
+                }
+            )
+        elif tag in {"video", "audio"}:
+            url = self._resource_url(fields.get("src"))
+            self._media_index = len(self.parts)
+            self.parts.append(
+                {
+                    "kind": tag,
+                    "url": url,
+                    "label": fields.get("title") or fields.get("aria-label") or tag,
+                    "name": urlsplit(url).path.rsplit("/", 1)[-1] or None,
+                }
+            )
+        elif tag == "source" and self._media_index is not None and fields.get("src"):
+            url = self._resource_url(fields["src"])
+            self.parts[self._media_index]["url"] = url
+            self.parts[self._media_index]["name"] = urlsplit(url).path.rsplit("/", 1)[-1] or None
+        elif tag in self._BLOCK or tag == "br":
+            self._break()
+
+    def handle_endtag(self, tag: str) -> None:
+        if self._hidden:
+            self._hidden -= 1
+            return
+        if tag == "a" and self._link is not None:
+            self.parts.append({"kind": "link", "text": "".join(self._link).strip()})
+            self._link = None
+        elif tag in {"video", "audio"}:
+            self._media_index = None
+        elif tag in self._BLOCK:
+            self._break()
+
+    def handle_data(self, data: str) -> None:
+        if self._hidden or not data.strip():
+            return
+        if self._link is not None:
+            self._link.append(data)
+        else:
+            self.parts.append({"kind": "text", "text": data})
+
+
+def _extract_parts(raw: list[dict[str, str | None]]) -> tuple[str | ResourceReference, ...]:
     if not isinstance(raw, list) or not raw:
         raise _failed("detail has no readable content.")
     parts: list[str | ResourceReference] = []
@@ -152,21 +182,6 @@ def _extract_parts(raw: Any, source_url: str) -> tuple[str | ResourceReference, 
             if not isinstance(url, str) or not isinstance(label, str):
                 raise _failed("detail media part is invalid.")
             parts.append(ResourceReference(kind, url, item.get("name"), f"{kind}/*", label, None, None))
-        elif kind == "attachment":
-            file_id = item.get("file_id")
-            name = item.get("name")
-            label = item.get("label", "attachment")
-            parts.append(
-                ResourceReference(
-                    kind="attachment",
-                    source_url=item.get("url") or source_url,
-                    original_name=name,
-                    media_type_hint=None,
-                    label=label,
-                    provider_file_id=file_id,
-                    official_target=None,
-                )
-            )
         else:
             raise _failed("detail content part is invalid.")
     return tuple(parts)
@@ -291,12 +306,9 @@ async def capture_notice_detail(page: Any, selected_row: dict[str, Any]) -> Deta
         ):
             raise _failed("detail response is invalid.")
         body = payload["body"]
-        info = body.get("data", body)
-        if not isinstance(info, dict):
-            raise _failed("notice info body.data must be an object when present.")
-        if info.get("boarditem_no") != native:
+        if body.get("boarditem_no") != native:
             raise _failed("notice info boarditem_no does not match the selected board item.")
-        if "course_id" in info and info["course_id"] != course_id:
+        if body.get("course_id") != course_id:
             raise _failed("notice info course_id does not match the selected course.")
         comments = await response_payload(_DETAIL_PATHS[1])
         if (
@@ -305,31 +317,50 @@ async def capture_notice_detail(page: Any, selected_row: dict[str, Any]) -> Deta
             or comments["header"].get("code") != 200
         ):
             raise _failed("comments response is invalid.")
-        detail = await bounded(page.evaluate(_DETAIL_JS), PROTOCOL_TIMEOUT_SECONDS, "reading notice detail")
-        if not isinstance(detail, dict):
-            raise _failed("rendered detail content container is missing.")
-        if detail.get("native_id") != native:
-            raise _failed("rendered detail native ID does not match the selected board item.")
-        if not isinstance(detail.get("title"), str) or not detail["title"].strip():
-            raise _failed("rendered detail title is missing.")
-        extracted = _extract_parts(detail.get("parts"), source_url=source_url)
-        has_attachment_ref = any(isinstance(p, ResourceReference) and p.kind == "attachment" for p in extracted)
-        notice_has_attachments = bool(matched_item.get("has_attachments") or selected_row.get("has_attachments"))
-        if notice_has_attachments and not has_attachment_ref:
-            extracted = (
-                *extracted,
-                "\n\n",
+        title = body.get("boarditem_title")
+        content = body.get("boarditem_content")
+        attachments = body.get("attach_file_list")
+        if not isinstance(title, str) or not title.strip():
+            raise _failed("notice info boarditem_title is missing.")
+        if not isinstance(content, str):
+            raise _failed("notice info boarditem_content is invalid.")
+        if not isinstance(attachments, list):
+            raise _failed("notice info attach_file_list is invalid.")
+        html = _NoticeHTML(source_url)
+        html.feed(content)
+        html.close()
+        if not content.strip() and not attachments:
+            raise _failed("notice info has no readable content.")
+        extracted = _extract_parts(html.parts) if html.parts else ()
+        attachment_parts: list[ResourceReference] = []
+        for entry in attachments:
+            if not isinstance(entry, dict):
+                raise _failed("notice info attachment entry is invalid.")
+            name = next(
+                (
+                    value
+                    for key in ("file_name", "pdf_attach_file_nm")
+                    if isinstance(value := entry.get(key), str) and value.strip()
+                ),
+                None,
+            )
+            file_id = entry.get("boarditem_attach_file_no")
+            attachment_parts.append(
                 ResourceReference(
                     kind="attachment",
                     source_url=source_url,
-                    original_name=None,
+                    original_name=name,
                     media_type_hint=None,
-                    label="Notice attachment",
-                    provider_file_id=None,
+                    label=name or "Notice attachment",
+                    provider_file_id=file_id if isinstance(file_id, str) and file_id else None,
                     official_target=None,
-                ),
+                )
             )
-        parts = ("# " + _escape_markdown(detail["title"]) + "\n\n", *extracted)
+        if not attachment_parts and (matched_item.get("has_attachments") or selected_row.get("has_attachments")):
+            attachment_parts.append(
+                ResourceReference("attachment", source_url, None, None, "Notice attachment", None, None)
+            )
+        parts = ("# " + _escape_markdown(title) + "\n\n", *extracted, *attachment_parts)
         return DetailSnapshot(source_url=source_url, provider_native_id=None, parts=parts)
     finally:
         page.remove_listener("response", on_response)

@@ -60,7 +60,7 @@ def test_notice_fetch_detail_entity_unknown_names_failing_check(
 
     async def detail(*_args: Any, **_kwargs: Any) -> None:
         raise NoticeDetailError(
-            "entity-unknown", "Notice detail: rendered detail native ID does not match the selected board item."
+            "entity-unknown", "Notice detail: notice info course_id does not match the selected course."
         )
 
     monkeypatch.setattr(browser, "open_session", session)
@@ -71,8 +71,7 @@ def test_notice_fetch_detail_entity_unknown_names_failing_check(
         asyncio.run(notices._fetch_notice({}, tmp_path, {}))
     assert caught.value.code == "entity-unknown"
     assert caught.value.message == (
-        "Notices fetch: detail capture: Notice detail: rendered detail native ID "
-        "does not match the selected board item."
+        "Notices fetch: detail capture: Notice detail: notice info course_id does not match the selected course."
     )
 
 
