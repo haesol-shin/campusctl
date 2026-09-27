@@ -20,7 +20,7 @@ def provider_origin(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(login, "MY_LECTURE_URL", L + "/std/myLecture")
     monkeypatch.setattr(readiness, "READINESS_TIMEOUT_S", 0.1)
     monkeypatch.setattr(notices, "SECTION_RESPONSE_TIMEOUT_MS", 100)
-    monkeypatch.setattr(notices, "COURSE_MENU_TIMEOUT_MS", 100)
+    monkeypatch.setattr(notices, "COURSE_MENU_TIMEOUT_MS", 1200)
 
 
 COURSES = [
@@ -665,6 +665,119 @@ def test_todo_keeps_filtered_grid_rows_when_response_has_more_items(monkeypatch:
     assert failures == set()
     assert [item["title"] for item in rows["course-a"]] == ["Visible notice"]
     assert rows["course-b"] == []
+    assert not page.listeners
+
+
+def test_todo_waits_for_late_rows_and_next_before_collecting(monkeypatch: pytest.MonkeyPatch) -> None:
+    first = {
+        "number": "1",
+        "course_label": "Example Course",
+        "title": "First",
+        "date": "2026-09-01 08:00",
+        "read_yn": "읽음",
+    }
+    second = {
+        "number": "2",
+        "course_label": "Example Course",
+        "title": "Second",
+        "date": "2026-09-01 09:00",
+        "read_yn": "읽음",
+    }
+    third = {
+        "number": "3",
+        "course_label": "Other Course",
+        "title": "Third",
+        "date": "2026-09-01 10:00",
+        "read_yn": "읽음",
+    }
+
+    class ProgressiveTodoPage(FakePage):
+        def __init__(self) -> None:
+            super().__init__()
+            self.todo = [first, second]
+            self.todo_response = {"body": {"list": [{"row_idx": 1}, {"row_idx": 2}, {"row_idx": 3}], "tot_cnt": 3}}
+            self.page_index = 0
+            self.snapshots = [
+                {"rendered": True, "empty": False, "rows": [first], "next": None},
+                {"rendered": True, "empty": False, "rows": [first, second], "next": None},
+                {
+                    "rendered": True,
+                    "empty": False,
+                    "rows": [first, second],
+                    "next": '.tabulator-page[data-page="next"]',
+                },
+            ]
+
+        async def evaluate(self, expression: str) -> Any:
+            if expression == notices._EXTRACT_GRID_JS:
+                if self.page_index:
+                    return {"rendered": True, "empty": False, "rows": [third], "next": None}
+                return self.snapshots.pop(0) if len(self.snapshots) > 1 else self.snapshots[0]
+            return await super().evaluate(expression)
+
+        async def click(self, selector: str) -> None:
+            if selector == '.tabulator-page[data-page="next"]':
+                self.page_index = 1
+                return
+            await super().click(selector)
+
+    page = ProgressiveTodoPage()
+    page.handler = lambda route: route.continue_()
+    monkeypatch.setattr(notices, "_ORIGIN", L)
+    monkeypatch.setattr(notices, "_TODO_URL", L + "/std/todo")
+
+    async def collect() -> tuple[dict[str, list[dict[str, Any]]], set[str]]:
+        capture = await notices.open_notice_todo(page)
+        return await notices.collect_notice_todo(page, COURSES, capture=capture)
+
+    rows, failures = asyncio.run(collect())
+    assert failures == set()
+    assert [item["title"] for item in rows["course-a"]] == ["First", "Second"]
+    assert [item["title"] for item in rows["course-b"]] == ["Third"]
+    assert page.page_index == 1
+    assert not page.listeners
+
+
+def test_todo_unstable_grid_fails_without_publishing_rows(monkeypatch: pytest.MonkeyPatch) -> None:
+    first = {
+        "number": "1",
+        "course_label": "Example Course",
+        "title": "First",
+        "date": "2026-09-01 08:00",
+        "read_yn": "읽음",
+    }
+    second = {**first, "number": "2", "title": "Second"}
+
+    class UnstableTodoPage(FakePage):
+        def __init__(self) -> None:
+            super().__init__()
+            self.todo = [first]
+            self.reads = 0
+
+        async def evaluate(self, expression: str) -> Any:
+            if expression == notices._EXTRACT_GRID_JS:
+                self.reads += 1
+                return {
+                    "rendered": True,
+                    "empty": False,
+                    "rows": [first if self.reads % 2 else second],
+                    "next": None,
+                }
+            return await super().evaluate(expression)
+
+    monkeypatch.setattr(notices, "COURSE_MENU_TIMEOUT_MS", 700)
+    page = UnstableTodoPage()
+    page.handler = lambda route: route.continue_()
+    monkeypatch.setattr(notices, "_ORIGIN", L)
+    monkeypatch.setattr(notices, "_TODO_URL", L + "/std/todo")
+
+    async def collect() -> None:
+        capture = await notices.open_notice_todo(page)
+        await notices.collect_notice_todo(page, COURSES, capture=capture)
+
+    with pytest.raises(CampusError) as error:
+        asyncio.run(collect())
+    assert error.value.code == "browser-timeout"
     assert not page.listeners
 
 

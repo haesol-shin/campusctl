@@ -20,6 +20,7 @@ from .readiness import _route_matches, wait_page_ready
 _ORIGIN = "https://dcs-learning.cnu.ac.kr"
 _TODO_URL = f"{_ORIGIN}/std/todo"
 _NOTICE_LIST_PATH = "/api/v1/board/std/notice/list"
+_GRID_QUIET_SECONDS = 0.5
 # TB_L_BOARDITEM followed by digits is an observed native post ID, not a legacy identity.
 _NATIVE_POST_ID = re.compile(r"TB_L_BOARDITEM[0-9]+\Z")
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}(?:\s+\d{2}:\d{2})?\Z")
@@ -406,6 +407,32 @@ async def _grid_snapshot(page: Any, capture: _TodoCapture) -> list[dict[str, Any
         with profile_span("page-readiness", wait_kind="readiness", domain="notices", page_kind="todo"):
             await bounded(changed(), COURSE_MENU_TIMEOUT_MS / 1000, "waiting for the next notice page")
 
+    async def stable_grid() -> dict[str, Any]:
+        loop = asyncio.get_running_loop()
+        signature: tuple[Any, ...] | None = None
+        unchanged_since = 0.0
+        while True:
+            snapshot = await page.evaluate(_EXTRACT_GRID_JS)
+            if isinstance(snapshot, dict) and isinstance(snapshot.get("rows"), list):
+                page_rows = snapshot["rows"]
+                if page_rows or snapshot.get("empty") is True:
+                    current = (
+                        len(page_rows),
+                        tuple(str(item) for item in page_rows),
+                        snapshot.get("next"),
+                        snapshot.get("empty") is True,
+                    )
+                    now = loop.time()
+                    if current != signature:
+                        signature, unchanged_since = current, now
+                    elif now - unchanged_since >= _GRID_QUIET_SECONDS:
+                        return snapshot
+                else:
+                    signature = None
+            else:
+                signature = None
+            await asyncio.sleep(0.05)
+
     try:
         async with asyncio.timeout(120):
             if capture.committed_sequence is None:
@@ -418,13 +445,13 @@ async def _grid_snapshot(page: Any, capture: _TodoCapture) -> list[dict[str, Any
                 if previous is not None:
                     await advanced(previous)
                 await completed(window_start, required=previous is None)
+                loop = asyncio.get_running_loop()
+                deadline = loop.time() + COURSE_MENU_TIMEOUT_MS / 1000
                 await wait_page_ready(page, "todo", domain="notices")
-
-                snapshot = await bounded(
-                    page.evaluate(_EXTRACT_GRID_JS), PROTOCOL_TIMEOUT_SECONDS, "extracting notice grid"
-                )
-                if not isinstance(snapshot, dict) or not isinstance(snapshot.get("rows"), list):
-                    raise ValueError("Notice grid was not rendered")
+                with profile_span("page-readiness", wait_kind="readiness", domain="notices", page_kind="todo"):
+                    snapshot = await bounded(
+                        stable_grid(), max(0, deadline - loop.time()), "waiting for stable notice grid"
+                    )
                 if page.main_frame.url != _TODO_URL:
                     raise ValueError("To-do document changed during extraction")
                 page_rows = snapshot["rows"]
