@@ -14,6 +14,7 @@ from campusctl.source_package import DetailSnapshot, ResourceReference
 from .assignments import EXTRACT_COURSE_CONTEXT_JS
 from .attachment_transfer import OfficialAttachmentTarget
 from .course_context import SECTION_RESPONSE_TIMEOUT_MS, _css_string, open_course_section, prepare_course_section
+from .login import MY_LECTURE_URL
 from .readiness import wait_page_ready
 
 _ORIGIN = "https://dcs-learning.cnu.ac.kr"
@@ -175,6 +176,11 @@ async def capture_assignment_detail(page: Any, config: dict[str, Any], selected_
         or selected_row.get("entity_id") != assignment_entity_id(course_id, task_id)
     ):
         raise _wrong_task()
+    await bounded(
+        page.goto(MY_LECTURE_URL, wait_until="commit"),
+        PROTOCOL_TIMEOUT_SECONDS,
+        "opening assignment course roster",
+    )
     try:
         await wait_page_ready(page, "roster", domain="assignments")
         await prepare_course_section(page, config, course_id, "task")

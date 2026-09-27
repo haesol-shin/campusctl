@@ -324,7 +324,7 @@ class FixtureHandler(BaseHTTPRequestHandler):
         elif path == "/api/v1/archive/getAttachFileList":
             self._respond({"body": [{"file_id": "file-1", "file_name": "Handout.pdf"}]})
         elif path == "/api/v1/board/std/notice/list":
-            self._respond({"header": {"code": 200}, "body": {"list": []}})
+            self._respond({"header": {"code": 200}, "body": {"total": 7, "list": [{"number": n} for n in range(1, 8)]}})
         else:
             self._respond("Unreviewed fixture request", status=404)
 

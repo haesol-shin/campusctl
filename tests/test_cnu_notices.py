@@ -194,8 +194,8 @@ class FakePage:
             async def json() -> dict[str, Any]:
                 if path == "/api/v1/course/addSessionCourseInfo":
                     return self.session_response()
-                if path not in {"/api/v1/board/notice/list/top", "/api/v1/board/notice/list"}:
-                    return {"items": []}
+                if path == "/api/v1/board/std/notice/list":
+                    return getattr(self, "todo_response", {"body": {"list": [], "total": 0}})
                 if (self.current, path) in self.response_overrides:
                     return self.response_overrides[self.current, path]
                 items = [response_item(item, self.current) for item in self.boards[self.current]]
@@ -534,6 +534,21 @@ def test_board_rejects_conflicting_context_and_ambiguous_name(monkeypatch: pytes
     assert error.value.code == "browser-timeout"
 
 
+def test_completed_empty_todo_grid_preserves_empty_course_rows(monkeypatch: pytest.MonkeyPatch) -> None:
+    page = FakePage()
+    page.handler = lambda route: route.continue_()
+    monkeypatch.setattr(notices, "_ORIGIN", L)
+    monkeypatch.setattr(notices, "_TODO_URL", L + "/std/todo")
+
+    async def collect() -> tuple[dict[str, list[dict[str, Any]]], set[str]]:
+        capture = await notices.open_notice_todo(page)
+        return await notices.collect_notice_todo(page, COURSES, capture=capture)
+
+    rows, failures = asyncio.run(collect())
+    assert rows == {"course-a": [], "course-b": []}
+    assert failures == set()
+
+
 def test_unsettled_global_todo_cannot_confirm_board_empty(monkeypatch: pytest.MonkeyPatch) -> None:
     page = FakePage()
     page.handler = lambda route: route.continue_()
@@ -549,6 +564,90 @@ def test_unsettled_global_todo_cannot_confirm_board_empty(monkeypatch: pytest.Mo
         assert not page.listeners
 
     asyncio.run(exercise())
+
+
+@pytest.mark.parametrize(("response_backed", "next_arrives"), [(False, True), (True, True), (False, False)])
+def test_todo_waits_for_rows_and_late_next_before_paginating(
+    monkeypatch: pytest.MonkeyPatch, response_backed: bool, next_arrives: bool
+) -> None:
+    class ProgressiveTodoPage(FakePage):
+        def __init__(self) -> None:
+            super().__init__()
+            self.page_index = 0
+            self.snapshot_reads = 0
+            self.todo_response = {"body": {"list": [{"number": 1}, {"number": 2}], "total": 3}}
+            self.todo_pages = [
+                [
+                    {"rendered": True, "empty": False, "rows": [first], "next": None},
+                    {"rendered": True, "empty": False, "rows": [first, second], "next": None},
+                    {
+                        "rendered": True,
+                        "empty": False,
+                        "rows": [first, second],
+                        "next": '.tabulator-page[data-page="next"]' if next_arrives else None,
+                    },
+                ],
+                [{"rendered": True, "empty": False, "rows": [third], "next": None}],
+            ]
+
+        async def evaluate(self, expression: str) -> Any:
+            if expression == notices._EXTRACT_GRID_JS:
+                self.snapshot_reads += 1
+                snapshots = self.todo_pages[self.page_index]
+                return snapshots.pop(0) if len(snapshots) > 1 else snapshots[0]
+            return await super().evaluate(expression)
+
+        async def click(self, selector: str) -> None:
+            if selector == '.tabulator-page[data-page="next"]':
+                self.page_index = 1
+                if response_backed:
+                    self.todo_response = {"body": {"list": [{"number": 3}], "total": 3}}
+                    await self.request("/api/v1/board/std/notice/list", "POST")
+                return
+            await super().click(selector)
+
+    first = {
+        "number": "1",
+        "course_label": "Example Course",
+        "title": "First",
+        "date": "2026-09-01 08:00",
+        "read_yn": "읽음",
+    }
+    second = {
+        "number": "2",
+        "course_label": "Example Course",
+        "title": "Second",
+        "date": "2026-09-01 09:00",
+        "read_yn": "읽지않음",
+    }
+    third = {
+        "number": "3",
+        "course_label": "Other Course",
+        "title": "Third",
+        "date": "2026-09-01 10:00",
+        "read_yn": "읽음",
+    }
+    monkeypatch.setattr(notices, "COURSE_MENU_TIMEOUT_MS", 300)
+    page = ProgressiveTodoPage()
+    page.handler = lambda route: route.continue_()
+    monkeypatch.setattr(notices, "_ORIGIN", L)
+    monkeypatch.setattr(notices, "_TODO_URL", L + "/std/todo")
+
+    async def collect() -> tuple[dict[str, list[dict[str, Any]]], set[str]]:
+        capture = await notices.open_notice_todo(page)
+        return await notices.collect_notice_todo(page, COURSES, capture=capture)
+
+    if next_arrives:
+        rows, failures = asyncio.run(collect())
+        assert failures == set()
+        assert [row["title"] for row in rows["course-a"]] == ["First", "Second"]
+        assert [row["title"] for row in rows["course-b"]] == ["Third"]
+    else:
+        with pytest.raises(CampusError) as error:
+            asyncio.run(collect())
+        assert error.value.code == "browser-timeout"
+    assert page.snapshot_reads >= 4
+    assert not page.listeners
 
 
 def test_multiple_legacy_todo_candidates_cannot_claim_one_board_notice() -> None:

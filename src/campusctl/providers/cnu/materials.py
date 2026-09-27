@@ -448,6 +448,30 @@ async def _archive_state(
     return state
 
 
+async def _wait_archive_state(
+    page: Any,
+    expected_page: int,
+    expected_total: int | None = None,
+    expected_course_id: str | None = None,
+) -> dict:
+    """Wait for the bound list response to finish rendering every expected post."""
+
+    async def complete() -> dict:
+        while True:
+            try:
+                return await _archive_state(page, expected_page, expected_total, expected_course_id)
+            except ValueError:
+                await asyncio.sleep(0.05)
+
+    with profile_span("page-readiness", wait_kind="readiness", domain="materials", page_kind="archive"):
+        try:
+            return await bounded(complete(), _WAIT_MS / 1000, "waiting for complete archive rows")
+        except CampusError as error:
+            if error.code != "browser-timeout" or expected_course_id is None:
+                raise
+            raise _failure("course-sync-failed", {"course_id": expected_course_id}) from None
+
+
 async def _select_page(page: Any, number: int) -> None:
     await _archive_navigation(page, lambda: page.evaluate(_PAGE_JS, number), document=False)
 
@@ -496,7 +520,7 @@ async def enumerate_archive(page: Any, course: Mapping[str, Any]) -> list[dict[s
     with profile_span("dom-ready", wait_kind="selector", domain="materials", page_kind="archive"):
         await _step(page.wait_for_selector("#table_list", timeout=_WAIT_MS), "waiting for archive table")
     with profile_span("archive-page", domain="materials"):
-        first = await _archive_state(page, 1, expected_course_id=course["course_id"])
+        first = await _wait_archive_state(page, 1, expected_course_id=course["course_id"])
     total = first["total_count"]
     pages = (total + first["page_size"] - 1) // first["page_size"]
     if pages > 100:
@@ -509,7 +533,9 @@ async def enumerate_archive(page: Any, course: Mapping[str, Any]) -> list[dict[s
         with profile_span("archive-page", domain="materials"):
             if page_number > 1:
                 await _select_page(page, page_number)
-            state = await _archive_state(page, page_number, total, expected_course_id=course["course_id"])
+                state = await _wait_archive_state(page, page_number, total, expected_course_id=course["course_id"])
+            else:
+                state = first
         posts = state["posts"]
         counted += state["row_count"]
         for post in posts:
@@ -559,7 +585,7 @@ async def enumerate_archive(page: Any, course: Mapping[str, Any]) -> list[dict[s
                         await _restore_archive_document(page)
                         if page_number > 1:
                             await _select_page(page, page_number)
-                        restored = await _archive_state(
+                        restored = await _wait_archive_state(
                             page,
                             page_number,
                             total,

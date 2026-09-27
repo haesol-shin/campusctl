@@ -65,6 +65,8 @@ class FakePage:
         self.responses = []
         self.page_number = 1
         self.elapsed_ms = 0
+        self.state_reads = 0
+        self.partial_states = 0
 
     def on(self, event, callback):
         self.listeners.setdefault(event, []).append(callback)
@@ -112,6 +114,7 @@ class FakePage:
             self.responses.append(response)
             self._emit("requestfinished", stale)
         self._request("/api/v1/archive/list", "POST")
+        self.state_reads = 0
 
     @asynccontextmanager
     async def expect_response(self, predicate, **_kwargs):
@@ -163,6 +166,10 @@ class FakePage:
         if "archiveMetadataState" in script:
             pages = self.case.get("pages", [self.case["posts"]])
             posts = [{"board_item_id": p["board_item_id"], "title": p["title"]} for p in pages[self.page_number - 1]]
+            self.state_reads += 1
+            if self.case.get("progressive_rows") and posts and self.state_reads == 1:
+                posts = posts[:-1]
+                self.partial_states += 1
             if self.case.get("restore_fails") and self.events.count(materials._ARCHIVE_MENU) > 0:
                 return {"completed": False, "posts": []}
             return {
@@ -345,6 +352,21 @@ def test_material_collector_validates_entry_response_and_preserves_full_records(
         ]
         assert page.page_number == 2
     assert page.listeners["request"] == []
+
+
+def test_archive_waits_for_progressive_rows_across_pages_and_restoration(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(materials, "_WAIT_MS", 200)
+    data = fixture()
+    case = next(case for case in data["cases"] if case["name"] == "multiple-posts")
+    posts = case["posts"]
+    page = FakePage(
+        {**case, "course": data["course"], "pages": [[posts[0]], [posts[1]]], "page_size": 1, "progressive_rows": True},
+        [],
+    )
+
+    rows = asyncio.run(materials.enumerate_archive(page, data["course"]))
+    assert {row["file_id"] for row in rows} == {"file-first", "file-next"}
+    assert page.partial_states >= 3
 
 
 def test_material_collector_rejects_duplicate_entry_list() -> None:
