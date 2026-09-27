@@ -138,7 +138,7 @@ def test_headless_fetch_publishes_synthetic_details_without_display(
 
     from playwright.sync_api import sync_playwright
 
-    from campusctl.providers.cnu import assignment_detail, notice_detail
+    from campusctl.providers.cnu import assignment_detail, login, notice_detail
     from campusctl.providers.cnu.assignment_detail import capture_assignment_detail
     from campusctl.providers.cnu.notice_detail import capture_notice_detail
     from campusctl.source_package import build_source_package
@@ -150,6 +150,8 @@ def test_headless_fetch_publishes_synthetic_details_without_display(
     monkeypatch.delenv("DISPLAY", raising=False)
     monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
     origin = "https://lms.invalid"
+    monkeypatch.setattr(login, "MY_LECTURE_URL", origin + "/std/myLecture")
+    monkeypatch.setattr(assignment_detail, "MY_LECTURE_URL", origin + "/std/myLecture")
     monkeypatch.setattr(assignment_detail, "_ORIGIN", origin)
     monkeypatch.setattr(notice_detail, "_ORIGIN", origin)
     monkeypatch.setattr(notice_detail, "MY_LECTURE_URL", origin + "/std/myLecture")
@@ -165,7 +167,9 @@ def test_headless_fetch_publishes_synthetic_details_without_display(
         "/std/task": (
             topbar
             + "<a href='/std/course'>Course</a>"
+            + "<table id='table_list'><tbody id='tbody'><tr><td>"
             + "<a data-act='detail' data-id='TB_L_REPORT101' href='/std/taskView'>Open</a>"
+            + "</td></tr></tbody></table>"
         ),
         "/std/taskView": (
             "<div data-id='TB_L_REPORT101'><div class='card-body'><h4>Synthetic assignment</h4>"
@@ -174,7 +178,7 @@ def test_headless_fetch_publishes_synthetic_details_without_display(
             "fetch('/api/v1/task/stdDetail',{method:'POST',body:'{}'});</script>"
         ),
         "/std/notice": (
-            "<table><tbody id='table-body'><tr><td>"
+            topbar + "<table><tbody id='table-body'><tr><td>"
             "<a href='noticeDetail?no=TB_L_BOARDITEM7001&curPage=1'>Synthetic notice</a>"
             "</td></tr></tbody></table>"
             "<script>fetch('/api/v1/board/notice/list/top',{method:'POST',body:'{}'});"
