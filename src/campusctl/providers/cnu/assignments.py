@@ -246,11 +246,12 @@ async def collect_assignment_rows(
     """Validate the already-entered task section without selecting or publishing."""
     activity = capture
     try:
-        await bounded(
-            asyncio.wait_for(activity.response_seen.wait(), SECTION_RESPONSE_TIMEOUT_MS / 1000),
-            SECTION_RESPONSE_TIMEOUT_MS / 1000 + PROTOCOL_TIMEOUT_SECONDS,
-            "waiting for the CNU task response",
-        )
+        with profile_span("response-completion", wait_kind="response", domain="assignments"):
+            await bounded(
+                asyncio.wait_for(activity.response_seen.wait(), SECTION_RESPONSE_TIMEOUT_MS / 1000),
+                SECTION_RESPONSE_TIMEOUT_MS / 1000 + PROTOCOL_TIMEOUT_SECONDS,
+                "waiting for the CNU task response",
+            )
         response = activity.responses[0]
         return await _collect_assignment_rows(page, course, activity, response)
     finally:
@@ -263,7 +264,7 @@ async def _collect_assignment_rows(
     """Validate first post-commit task XHR, task Referer, DOM, and response count."""
     if not activity.own_task_response(response):
         raise ValueError("Task response did not follow the committed task document")
-    with profile_span("response-completion", domain="assignments"):
+    with profile_span("response-completion", wait_kind="response", domain="assignments"):
         completion_error = await bounded(
             response.finished(), PROTOCOL_TIMEOUT_SECONDS, "finishing the CNU task response"
         )
@@ -288,17 +289,20 @@ async def _collect_assignment_rows(
     else:
         _check_response_course(body, course["course_id"])
         count = _response_count(body)
-    await bounded(activity.idle.wait(), PROTOCOL_TIMEOUT_SECONDS, "waiting for the CNU task page to be idle")
-    await bounded(
-        page.wait_for_load_state("networkidle", timeout=COURSE_WAIT_MS),
-        PROTOCOL_TIMEOUT_SECONDS,
-        "waiting for all CNU task page requests to settle",
-    )
-    await bounded(
-        page.wait_for_selector(TASK_TABLE_SELECTOR, state="attached", timeout=COURSE_WAIT_MS),
-        PROTOCOL_TIMEOUT_SECONDS,
-        "waiting for the CNU task table",
-    )
+    with profile_span("wait", wait_kind="timeout", domain="assignments"):
+        await bounded(activity.idle.wait(), PROTOCOL_TIMEOUT_SECONDS, "waiting for the CNU task page to be idle")
+    with profile_span("idle", wait_kind="load", domain="assignments"):
+        await bounded(
+            page.wait_for_load_state("networkidle", timeout=COURSE_WAIT_MS),
+            PROTOCOL_TIMEOUT_SECONDS,
+            "waiting for all CNU task page requests to settle",
+        )
+    with profile_span("dom-ready", wait_kind="selector", domain="assignments"):
+        await bounded(
+            page.wait_for_selector(TASK_TABLE_SELECTOR, state="attached", timeout=COURSE_WAIT_MS),
+            PROTOCOL_TIMEOUT_SECONDS,
+            "waiting for the CNU task table",
+        )
     page_course_id = await bounded(
         page.evaluate(EXTRACT_COURSE_CONTEXT_JS), PROTOCOL_TIMEOUT_SECONDS, "checking the active CNU task course"
     )

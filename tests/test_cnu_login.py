@@ -181,6 +181,39 @@ def test_existing_landing_skips_credentials_and_login(monkeypatch: pytest.Monkey
     assert not page.clicked
 
 
+def test_login_wait_spans_carry_the_active_document(monkeypatch: pytest.MonkeyPatch) -> None:
+    import io
+
+    from campusctl.browser import _SESSION_LABELS, _SessionLabels, profile_context
+    from campusctl.profiling import SpanRecorder
+
+    recorder = SpanRecorder(enabled=True)
+    labels = _SessionLabels(active_document=4, recorder=recorder)
+    page = FakePage(landing_visible=True)
+    monkeypatch.setattr(
+        login, "get_credentials", lambda _: (_ for _ in ()).throw(AssertionError("credentials must not be read"))
+    )
+
+    async def scenario() -> None:
+        with profile_context(recorder):
+            token = _SESSION_LABELS.set(labels)
+            try:
+                await login.ensure_logged_in(page, {})
+                labels.active_document = 7
+                with login._timed("response-completion", "response", "login", recorder, labels):
+                    pass
+            finally:
+                _SESSION_LABELS.reset(token)
+
+    _run(scenario())
+    profile = recorder.finish(stderr=io.StringIO())
+    probe = [span for span in profile["spans"] if span["phase"] != "response-completion"]
+    assert probe
+    assert {span["document"] for span in probe} == {4}
+    callback = next(span for span in profile["spans"] if span["phase"] == "response-completion")
+    assert callback["document"] == 7
+
+
 def test_visible_login_form_is_filled_and_submitted_through_the_page(monkeypatch: pytest.MonkeyPatch) -> None:
     page = FakePage()
     calls: list[dict[str, Any]] = []

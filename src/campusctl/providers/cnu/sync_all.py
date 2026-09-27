@@ -38,6 +38,12 @@ _SECTION_PATH = {
     "notices": "/std/notice",
     "materials": "/std/archive",
 }
+_PAGE_KIND = {
+    "lectures": "lecture",
+    "assignments": "assignments",
+    "notices": "notices",
+    "materials": "archive",
+}
 
 _SELECTION_PATH = "/api/v1/course/addSessionCourseInfo"
 
@@ -92,9 +98,10 @@ class _Stage:
 
 
 async def _settle(page: Any) -> None:
-    await browser.bounded(
-        page.wait_for_load_state("networkidle"), browser.PROTOCOL_TIMEOUT_SECONDS, "settling page requests"
-    )
+    with browser.profile_span("idle", wait_kind="load"):
+        await browser.bounded(
+            page.wait_for_load_state("networkidle"), browser.PROTOCOL_TIMEOUT_SECONDS, "settling page requests"
+        )
 
 
 async def _roster(page: Any, root: Path, headless: bool, domain: str) -> list[dict[str, Any]]:
@@ -102,14 +109,14 @@ async def _roster(page: Any, root: Path, headless: bool, domain: str) -> list[di
     try:
         try:
             with browser.profile_span("roster", domain=domain):
-                with browser.profile_span("document-commit", domain=domain):
+                with browser.profile_span("document-commit", wait_kind="navigation", domain=domain):
                     await browser.bounded(
                         page.goto(MY_LECTURE_URL, wait_until="domcontentloaded"),
                         browser.PROTOCOL_TIMEOUT_SECONDS,
                         "opening course roster",
                     )
                 trace.step = "wait"
-                with browser.profile_span("dom-ready", domain=domain):
+                with browser.profile_span("dom-ready", wait_kind="selector", domain=domain):
                     await browser.bounded(
                         page.wait_for_selector(COURSE_LINK_SELECTOR, state="attached"),
                         browser.PROTOCOL_TIMEOUT_SECONDS,
@@ -168,7 +175,10 @@ async def _select_course(page: Any, course: dict[str, Any], ordinal: int, domain
     page.on("request", on_request)
     page.on("framenavigated", on_navigate)
     try:
-        with browser.profile_span("course-selection", domain=domain, course=ordinal):
+        with (
+            browser.profile_span("course-selection", domain=domain, course=ordinal),
+            browser.profile_span("wait", wait_kind="action", domain=domain, course=ordinal),
+        ):
             await browser.bounded(
                 page.click(f'[data-act="moveLecture"][data-courseid={_css_string(course["course_id"])}]'),
                 browser.PROTOCOL_TIMEOUT_SECONDS,
@@ -176,11 +186,12 @@ async def _select_course(page: Any, course: dict[str, Any], ordinal: int, domain
             )
         browser.profile_count("course_selections")
         await _settle(page)
-        await browser.bounded(
-            page.wait_for_selector('a[href="/std/course"]', state="attached"),
-            browser.PROTOCOL_TIMEOUT_SECONDS,
-            "waiting for selected course menu",
-        )
+        with browser.profile_span("dom-ready", wait_kind="selector", domain=domain, course=ordinal):
+            await browser.bounded(
+                page.wait_for_selector('a[href="/std/course"]', state="attached"),
+                browser.PROTOCOL_TIMEOUT_SECONDS,
+                "waiting for selected course menu",
+            )
         topbar_id = await _wait_for_topbar_course_id(page)
         if (
             commits != 1
@@ -197,14 +208,16 @@ async def _select_course(page: Any, course: dict[str, Any], ordinal: int, domain
 
 
 async def _return_to_roster(page: Any) -> None:
-    await _settle(page)
-    previous = page.main_frame.url
-    await browser.bounded(
-        page.goto(MY_LECTURE_URL, wait_until="domcontentloaded", referer=previous),
-        browser.PROTOCOL_TIMEOUT_SECONDS,
-        "returning to the roster",
-    )
-    await _settle(page)
+    with browser.profile_labels(page_kind="roster", domain=None):
+        await _settle(page)
+        with browser.profile_span("document-commit", wait_kind="navigation"):
+            previous = page.main_frame.url
+            await browser.bounded(
+                page.goto(MY_LECTURE_URL, wait_until="domcontentloaded", referer=previous),
+                browser.PROTOCOL_TIMEOUT_SECONDS,
+                "returning to the roster",
+            )
+        await _settle(page)
 
 
 async def _section(
@@ -215,41 +228,58 @@ async def _section(
     courses: list[dict[str, Any]],
     todo: dict[str, list[dict[str, Any]]],
 ) -> list[dict[str, Any]]:
-    await _settle(page)
-    if domain == "lectures":
-        with browser.profile_span("document-commit", domain=domain, course=ordinal):
-            await browser.bounded(
-                page.click(COURSE_ROOM_URL_ANCHOR), browser.PROTOCOL_TIMEOUT_SECONDS, "opening lecture section"
+    with browser.profile_labels(domain=domain, course=ordinal, page_kind=_PAGE_KIND[domain]):
+        await _settle(page)
+        if domain == "lectures":
+            with (
+                browser.profile_span("document-commit", wait_kind="navigation"),
+                browser.profile_span("wait", wait_kind="action"),
+            ):
+                await browser.bounded(
+                    page.click(COURSE_ROOM_URL_ANCHOR), browser.PROTOCOL_TIMEOUT_SECONDS, "opening lecture section"
+                )
+            return await collect_lectures_rows(page, course, ordinal=ordinal)
+        if domain == "assignments":
+            capture = assignments.arm_assignment_capture(page)
+            with (
+                browser.profile_span("document-commit", wait_kind="navigation"),
+                browser.profile_span("wait", wait_kind="action"),
+            ):
+                await assignments.open_assignment_section(
+                    page, lambda: page.click('a[href="/std/task"]'), capture=capture
+                )
+            return await assignments.collect_assignment_rows(page, course, capture=capture)
+        if domain == "notices":
+            with browser.profile_span("dom-ready", wait_kind="selector"):
+                await browser.bounded(
+                    page.wait_for_selector('a[href="/std/notice"]', state="attached"),
+                    browser.PROTOCOL_TIMEOUT_SECONDS,
+                    "waiting for notice menu",
+                )
+            capture = notices.arm_notice_capture(page)
+            with (
+                browser.profile_span("document-commit", wait_kind="navigation"),
+                browser.profile_span("wait", wait_kind="action"),
+            ):
+                await notices.open_notice_section(page, lambda: page.click('a[href="/std/notice"]'), capture=capture)
+            return await notices.collect_notice_rows(
+                page, course, capture=capture, courses=courses, todo_rows=todo[course["course_id"]]
             )
-        return await collect_lectures_rows(page, course, ordinal=ordinal)
-    if domain == "assignments":
-        capture = assignments.arm_assignment_capture(page)
-        with browser.profile_span("document-commit", domain=domain, course=ordinal):
-            await assignments.open_assignment_section(page, lambda: page.click('a[href="/std/task"]'), capture=capture)
-        return await assignments.collect_assignment_rows(page, course, capture=capture)
-    if domain == "notices":
-        await browser.bounded(
-            page.wait_for_selector('a[href="/std/notice"]', state="attached"),
-            browser.PROTOCOL_TIMEOUT_SECONDS,
-            "waiting for notice menu",
-        )
-        capture = notices.arm_notice_capture(page)
-        with browser.profile_span("document-commit", domain=domain, course=ordinal):
-            await notices.open_notice_section(page, lambda: page.click('a[href="/std/notice"]'), capture=capture)
-        return await notices.collect_notice_rows(
-            page, course, capture=capture, courses=courses, todo_rows=todo[course["course_id"]]
-        )
-    if await _wait_for_topbar_course_id(page) != course["course_id"]:
-        raise ValueError("Archive menu belongs to another course")
-    await browser.bounded(
-        page.wait_for_selector('a[href="/std/archive"]', state="attached"),
-        browser.PROTOCOL_TIMEOUT_SECONDS,
-        "waiting for archive menu",
-    )
-    capture = await materials.arm_materials_capture(page)
-    with browser.profile_span("document-commit", domain=domain, course=ordinal):
-        await materials.open_materials_section(page, lambda: page.click('a[href="/std/archive"]'), capture=capture)
-    return await materials.collect_materials_rows(page, course, capture=capture)
+        if await _wait_for_topbar_course_id(page) != course["course_id"]:
+            raise ValueError("Archive menu belongs to another course")
+        with browser.profile_span("dom-ready", wait_kind="selector"):
+            await browser.bounded(
+                page.wait_for_selector('a[href="/std/archive"]', state="attached"),
+                browser.PROTOCOL_TIMEOUT_SECONDS,
+                "waiting for archive menu",
+            )
+        capture = await materials.arm_materials_capture(page)
+        with (
+            browser.profile_span("document-commit", wait_kind="navigation"),
+            browser.profile_span("wait", wait_kind="action"),
+        ):
+            await materials.open_materials_section(page, lambda: page.click('a[href="/std/archive"]'), capture=capture)
+        return await materials.collect_materials_rows(page, course, capture=capture)
 
 
 async def _todo(
@@ -371,7 +401,8 @@ async def sync_all(
                 await browser.settle_sso_popups(session, domain=domains[0])
                 session_step = "roster discovery"
                 try:
-                    roster = await _roster(page, root, headless, domains[0])
+                    with browser.profile_labels(page_kind="roster", domain=domains[0], course=None):
+                        roster = await _roster(page, root, headless, domains[0])
                 except CampusError as error:
                     if error.code == "course-discovery-failed":
                         discovery_failed = True
@@ -391,7 +422,8 @@ async def sync_all(
                 if "notices" in domains:
                     session_step = "todo snapshot"
                     try:
-                        todo_rows, todo_failures = await _todo(page, roster, course_id)
+                        with browser.profile_labels(page_kind="todo", domain="notices", course=None):
+                            todo_rows, todo_failures = await _todo(page, roster, course_id)
                     except Exception:
                         # A failed global read cannot attest to any selected notice board.
                         todo_failures = {item["course_id"] for item in selected_courses}
@@ -418,7 +450,8 @@ async def sync_all(
                                 "error",
                             ) from None
                     try:
-                        await _select_course(page, course, ordinal, domains[0])
+                        with browser.profile_labels(page_kind="course-entry", domain=domains[0], course=ordinal):
+                            await _select_course(page, course, ordinal, domains[0])
                     except Exception as error:
                         for domain in domains:
                             staged[domain].fail(domain, course, "course selection", error)

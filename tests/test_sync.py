@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -96,6 +97,27 @@ def test_lecture_collector_uses_committed_section_without_another_selection() ->
 def test_lecture_collector_empty() -> None:
     page = FakePage([], empty=True)
     assert asyncio.run(sync_module.collect_lectures_rows(page, COURSES[0])) == []
+
+
+def test_empty_lecture_timeout_keeps_failed_span_and_successful_profile() -> None:
+    from campusctl.browser import profile_context
+    from campusctl.profiling import SpanRecorder
+
+    recorder = SpanRecorder(enabled=True, scope=("lectures",))
+    page = FakePage([], empty=True)
+
+    async def scenario() -> list[dict[str, Any]]:
+        with profile_context(recorder):
+            return await sync_module.collect_lectures_rows(page, COURSES[0], ordinal=1)
+
+    assert asyncio.run(scenario()) == []
+    profile = recorder.finish(outcome="ok", stderr=io.StringIO())
+    assert profile["outcome"] == "ok"
+    wait = next(span for span in profile["spans"] if span["phase"] == "dom-ready")
+    assert wait["failed"] is True
+    assert wait["wait_kind"] == "selector"
+    assert wait["domain"] == "lectures"
+    assert wait["course"] == 1
 
 
 def test_missing_lecture_topbar_fails_after_bounded_wait(monkeypatch: pytest.MonkeyPatch) -> None:

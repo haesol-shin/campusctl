@@ -79,3 +79,57 @@ def test_bounded_and_untrusted_categories_rejected():
     result = recorder.finish(stderr=io.StringIO())
     assert result["dropped_events"] == 1
     assert result["counts"]["course_selections"] == 1
+
+
+def test_wait_coverage_cancellation_and_caps_use_exact_durations():
+    clock = Clock()
+    recorder = SpanRecorder(enabled=True, max_events=4, max_documents=1, clock=clock)
+    sink = io.StringIO()
+    with recorder.span("lock"):
+        clock.now = 10
+        with recorder.span("idle", wait_kind="load", page_kind="archive"):
+            clock.now = 40
+        clock.now = 20
+        with recorder.span("wait", wait_kind="function", page_kind="roster"):
+            clock.now = 50
+        clock.now = 80
+    with pytest.raises(TimeoutError), recorder.span("wait", wait_kind="timeout"):
+        clock.now = 90
+        raise TimeoutError
+    with pytest.raises(ValueError):
+        recorder.span("wait", wait_kind="secret.invalid").__enter__()
+    assert recorder.open_document(page_kind="roster") == 1
+    clock.now = 95
+    recorder.commit_document(1)
+    clock.now = 100
+    assert recorder.open_document(page_kind="todo") is None
+    clock.now = 110
+    payload = recorder.finish(stderr=sink)
+    assert payload["schema_version"] == 2
+    assert payload["coverage"] == {"lock_ns": 80, "covered_ns": 40, "unattributed_ns": 40}
+    idle = next(span for span in payload["spans"] if span["phase"] == "idle")
+    assert idle["inclusive_ns"] == 30 and idle["exclusive_ns"] == 30
+    assert idle["page_kind"] == "archive" and idle["wait_kind"] == "load"
+    cancelled = next(span for span in payload["spans"] if span["failed"])
+    assert cancelled["inclusive_ns"] == 10
+    assert payload["dropped_events"] == 1
+    assert payload["documents"][0]["end_reason"] == "next-document"
+    assert payload["documents"][0]["commit_ns"] == 95
+    assert payload["documents"][0]["end_ns"] == 100
+    assert payload["counts"]["documents"] == 1
+    assert "secret.invalid" not in sink.getvalue()
+    assert recorder.finish(stderr=sink) is payload
+    assert sink.getvalue().count("campusctl-profile:") == 1
+
+
+def test_disabled_document_methods_do_not_read_clock():
+    clock = Clock()
+    recorder = SpanRecorder(clock=clock)
+    assert recorder.open_document(page_kind="roster") is None
+    recorder.commit_document(1)
+    recorder.fail_document(1)
+    recorder.close_documents()
+    with recorder.span("wait", page_kind="login", wait_kind="selector", document=1):
+        recorder.count("documents")
+    assert recorder.finish(stderr=io.StringIO()) is None
+    assert clock.calls == 0

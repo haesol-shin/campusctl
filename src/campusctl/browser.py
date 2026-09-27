@@ -30,7 +30,44 @@ NORMAL_CHROME_USER_AGENT = (
 PLAYWRIGHT_FACTORY: Callable[[], Any] | None = None
 _PRE_BROWSER_CHECK: ContextVar[Callable[[], None] | None] = ContextVar("pre_browser_check", default=None)
 
+_UNSET = object()
 _SYNC_PROFILE: ContextVar[Any | None] = ContextVar("sync_profile", default=None)
+
+
+@dataclass
+class _SessionLabels:
+    """Explicit label snapshot for event callbacks. Not a task-local ContextVar view."""
+
+    domain: str | None = None
+    course: int | None = None
+    page_kind: str | None = None
+    active_document: int | None = None
+    recorder: Any = None
+
+
+@dataclass
+class _InheritedLabels:
+    domain: Any = _UNSET
+    course: Any = _UNSET
+    page_kind: Any = _UNSET
+    wait_kind: Any = _UNSET
+    document: Any = _UNSET
+
+
+_INHERITED: ContextVar[_InheritedLabels | None] = ContextVar("profile_inherited_labels", default=None)
+_SESSION_LABELS: ContextVar[_SessionLabels | None] = ContextVar("profile_session_labels", default=None)
+_DOCUMENT_PATHS = {
+    "/std/myLecture": "roster",
+    "/std/todo": "todo",
+    "/std/lecture": "course-entry",
+    "/std/course": "lecture",
+    "/std/task": "assignments",
+    "/std/taskView": "assignment-detail",
+    "/std/notice": "notices",
+    "/std/noticeDetail": "notice-detail",
+    "/std/archive": "archive",
+    "/user/login": "login",
+}
 
 
 @contextmanager
@@ -43,18 +80,249 @@ def profile_context(recorder: Any) -> Iterator[None]:
 
 
 def current_profile() -> Any | None:
-    return _SYNC_PROFILE.get()
+    recorder = _SYNC_PROFILE.get()
+    if recorder is not None:
+        return recorder
+    session = _SESSION_LABELS.get()
+    if session is not None:
+        return session.recorder
+    return None
 
 
-def profile_span(phase: str, *, domain: str | None = None, course: int | None = None) -> Any:
+def _pick_label(explicit: Any, inherited: Any, snapshot: Any, *, in_session: bool) -> Any:
+    if explicit is not _UNSET:
+        return explicit
+    if in_session:
+        return snapshot
+    if inherited is not _UNSET:
+        return inherited
+    return None
+
+
+@contextmanager
+def profile_labels(
+    *,
+    domain: Any = _UNSET,
+    course: Any = _UNSET,
+    page_kind: Any = _UNSET,
+    wait_kind: Any = _UNSET,
+    document: Any = _UNSET,
+) -> Iterator[None]:
+    """Inherit domain and course ordinals. Explicit null clears; omitted fields inherit."""
+    parent = _INHERITED.get() or _InheritedLabels()
+    resolved = _InheritedLabels(
+        domain=parent.domain if domain is _UNSET else domain,
+        course=parent.course if course is _UNSET else course,
+        page_kind=parent.page_kind if page_kind is _UNSET else page_kind,
+        wait_kind=parent.wait_kind if wait_kind is _UNSET else wait_kind,
+        document=parent.document if document is _UNSET else document,
+    )
+    token = _INHERITED.set(resolved)
+    session = _SESSION_LABELS.get()
+    previous = None
+    if session is not None:
+        previous = (session.domain, session.course, session.page_kind)
+        if domain is not _UNSET:
+            session.domain = domain
+        if course is not _UNSET:
+            session.course = course
+        if page_kind is not _UNSET:
+            session.page_kind = page_kind
+    try:
+        yield
+    finally:
+        _INHERITED.reset(token)
+        if session is not None and previous is not None:
+            session.domain, session.course, session.page_kind = previous
+
+
+def profile_span(
+    phase: str,
+    *,
+    domain: Any = _UNSET,
+    course: Any = _UNSET,
+    window: int | None = None,
+    page_kind: Any = _UNSET,
+    wait_kind: Any = _UNSET,
+    document: Any = _UNSET,
+) -> Any:
     recorder = current_profile()
-    return recorder.span(phase, domain=domain, course=course) if recorder is not None else nullcontext()
+    if recorder is None:
+        return nullcontext()
+    inherited = _INHERITED.get() or _InheritedLabels()
+    session = _SESSION_LABELS.get()
+    in_session = session is not None
+    if document is not _UNSET:
+        resolved_document = document
+    elif inherited.document is not _UNSET:
+        resolved_document = inherited.document
+    elif session is not None:
+        resolved_document = session.active_document
+    else:
+        resolved_document = None
+    resolved_wait = (
+        wait_kind if wait_kind is not _UNSET else None if inherited.wait_kind is _UNSET else inherited.wait_kind
+    )
+    return recorder.span(
+        phase,
+        domain=_pick_label(
+            domain, inherited.domain, None if session is None else session.domain, in_session=in_session
+        ),
+        course=_pick_label(
+            course, inherited.course, None if session is None else session.course, in_session=in_session
+        ),
+        window=window,
+        page_kind=_pick_label(
+            page_kind, inherited.page_kind, None if session is None else session.page_kind, in_session=in_session
+        ),
+        wait_kind=resolved_wait,
+        document=resolved_document,
+    )
 
 
 def profile_count(name: str, amount: int = 1) -> None:
     recorder = current_profile()
     if recorder is not None:
         recorder.count(name, amount)
+
+
+def _request_identity(request: Any) -> int:
+    impl = getattr(request, "_impl_obj", None)
+    if impl is None and hasattr(request, "_object"):
+        impl = request._object
+    return id(request if impl is None else impl)
+
+
+def _blank_document(url: str) -> bool:
+    return url == "about:blank" or url.startswith("about:blank#") or url == "about:blank/"
+
+
+def _document_page_kind(url: str) -> str:
+    return _DOCUMENT_PATHS.get(urllib.parse.urlsplit(url).path, "other")
+
+
+def _main_document_request(page: Any, request: Any) -> bool:
+    if getattr(request, "resource_type", None) != "document":
+        return False
+    navigation = getattr(request, "is_navigation_request", None)
+    if callable(navigation) and navigation() is False:
+        return False
+    frame = getattr(request, "frame", None)
+    if frame is None or frame is not getattr(page, "main_frame", None):
+        return False
+    url = getattr(request, "url", "")
+    return isinstance(url, str) and not _blank_document(url)
+
+
+class _DocumentTimeline:
+    """Passive main-frame document rows. Request objects are kept only for correlation."""
+
+    def __init__(self, recorder: Any, page: Any, labels: _SessionLabels) -> None:
+        self.recorder = recorder
+        self.page = page
+        self.labels = labels
+        self._ordinals: dict[int, int] = {}
+        self._bindings: list[tuple[str, Callable[..., Any], Any]] = []
+        self._closed = False
+
+    def attach(self) -> None:
+        attached: list[tuple[str, Callable[..., Any], Any]] = []
+        try:
+            for event, handler in (
+                ("request", self._on_request),
+                ("response", self._on_response),
+                ("requestfailed", self._on_failed),
+                ("framenavigated", self._on_frame),
+            ):
+                self.page.on(event, handler)
+                attached.append((event, handler, self.page))
+            commit = self._bind_commit_event()
+            if commit is not None:
+                attached.append(commit)
+        except Exception:
+            self._detach(attached)
+            raise
+        self._bindings = attached
+
+    def _bind_commit_event(self) -> tuple[str, Callable[..., Any], Any] | None:
+        frame = getattr(self.page, "main_frame", None)
+        impl = getattr(frame, "_impl_obj", None)
+        emitter = getattr(impl, "_event_emitter", None) if impl is not None else None
+        if emitter is None or not hasattr(emitter, "on") or not hasattr(emitter, "remove_listener"):
+            return None
+        emitter.on("navigated", self._on_impl_navigated)
+        return ("navigated", self._on_impl_navigated, emitter)
+
+    def detach(self) -> None:
+        self._detach(self._bindings)
+        self._bindings = []
+
+    @staticmethod
+    def _detach(bindings: list[tuple[str, Callable[..., Any], Any]]) -> None:
+        for event, handler, target in bindings:
+            with suppress(Exception):
+                target.remove_listener(event, handler)
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self.recorder.close_documents()
+        self.labels.active_document = None
+        self._ordinals.clear()
+
+    def _on_request(self, request: Any) -> None:
+        if self._closed or not _main_document_request(self.page, request):
+            return
+        ordinal = self.recorder.open_document(
+            page_kind=_document_page_kind(getattr(request, "url", "")),
+            domain=self.labels.domain,
+            course=self.labels.course,
+        )
+        if ordinal is None:
+            self.labels.active_document = None
+            return
+        self._ordinals[_request_identity(request)] = ordinal
+        self.labels.active_document = ordinal
+
+    def _on_response(self, response: Any) -> None:
+        """Correlate only. A response, including a late one, never commits a document."""
+        return
+
+    def _on_failed(self, request: Any) -> None:
+        if self._closed:
+            return
+        ordinal = self._ordinals.pop(_request_identity(request), None)
+        if ordinal is None:
+            return
+        self.recorder.fail_document(ordinal)
+        if self.labels.active_document == ordinal:
+            self.labels.active_document = None
+
+    def _commit(self, request: Any) -> None:
+        if request is None or self._closed:
+            return
+        ordinal = self._ordinals.pop(_request_identity(request), None)
+        if ordinal is None:
+            return
+        self.recorder.commit_document(ordinal)
+
+    def _on_impl_navigated(self, event: Any) -> None:
+        if self._closed or not isinstance(event, dict) or event.get("error"):
+            return
+        document = event.get("newDocument")
+        if not isinstance(document, dict):
+            return
+        self._commit(document.get("request"))
+
+    def _on_frame(self, frame: Any) -> None:
+        if (
+            self._closed
+            or frame is not getattr(self.page, "main_frame", None)
+            or getattr(frame, "same_document", False)
+        ):
+            return
+        self._commit(getattr(frame, "committed_request", None))
 
 
 @contextmanager
@@ -119,7 +387,7 @@ class BrowserSession:
 
 async def settle_sso_popups(session: BrowserSession, *, domain: str | None = None, timeout: float = 8.0) -> None:
     """Allow roster SSO popups to finish before course traversal."""
-    with profile_span("sso-settle", domain=domain):
+    with profile_span("sso-settle", domain=domain, wait_kind="timeout"):
         profile_count("sso_settles")
         try:
             async with asyncio.timeout(timeout):
@@ -185,7 +453,7 @@ async def close_resource(resource: Any) -> None:
     """Best-effort, bounded cleanup for a Playwright page or context."""
     if resource is None:
         return
-    with suppress(Exception):
+    with suppress(Exception), profile_span("wait", wait_kind="timeout"):
         await bounded(resource.close(), CLEANUP_TIMEOUT_SECONDS, "closing a browser resource")
 
 
@@ -287,7 +555,10 @@ async def _fetch_cdp_response(endpoint: str) -> tuple[dict[str, Any], urllib.par
 
 async def resolve_cdp_ws_url(endpoint: str) -> str:
     """Resolve a CDP WebSocket URL using a bounded, size-limited HTTP request."""
-    payload, endpoint_parts = await asyncio.wait_for(_fetch_cdp_response(endpoint), timeout=PROTOCOL_TIMEOUT_SECONDS)
+    with profile_span("wait", wait_kind="timeout"):
+        payload, endpoint_parts = await asyncio.wait_for(
+            _fetch_cdp_response(endpoint), timeout=PROTOCOL_TIMEOUT_SECONDS
+        )
     ws_url = payload.get("webSocketDebuggerUrl")
     if not isinstance(ws_url, str) or not ws_url.startswith(("ws://", "wss://")):
         raise ValueError("CDP endpoint did not provide a WebSocket URL")
@@ -383,28 +654,29 @@ async def _bounded_cleanup(awaitable: Any) -> None:
     task = asyncio.ensure_future(awaitable)
     loop = asyncio.get_running_loop()
     deadline = loop.time() + CLEANUP_TIMEOUT_SECONDS
-    try:
-        await asyncio.wait_for(asyncio.shield(task), timeout=CLEANUP_TIMEOUT_SECONDS)
-    except TimeoutError:
-        task.cancel()
-        task.add_done_callback(_consume_cleanup_result)
-    except asyncio.CancelledError:
-        current = asyncio.current_task()
-        if current is None or not current.cancelling():
-            return
-        remaining = deadline - loop.time()
-        if remaining > 0:
-            try:
-                await asyncio.wait_for(asyncio.shield(task), timeout=remaining)
-            except BaseException:
-                task.cancel()
-                task.add_done_callback(_consume_cleanup_result)
-        else:
+    with profile_span("wait", wait_kind="timeout"):
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=CLEANUP_TIMEOUT_SECONDS)
+        except TimeoutError:
             task.cancel()
             task.add_done_callback(_consume_cleanup_result)
-        raise
-    except Exception:
-        pass
+        except asyncio.CancelledError:
+            current = asyncio.current_task()
+            if current is None or not current.cancelling():
+                return
+            remaining = deadline - loop.time()
+            if remaining > 0:
+                try:
+                    await asyncio.wait_for(asyncio.shield(task), timeout=remaining)
+                except BaseException:
+                    task.cancel()
+                    task.add_done_callback(_consume_cleanup_result)
+            else:
+                task.cancel()
+                task.add_done_callback(_consume_cleanup_result)
+            raise
+        except Exception:
+            pass
 
 
 async def _stop_playwright(manager: Any, playwright: Any) -> None:
@@ -460,12 +732,14 @@ async def open_session(
         if mode == "local" and not headless:
             _check_display()
 
+        label_state = _SessionLabels(recorder=current_profile())
+        label_token = _SESSION_LABELS.set(label_state)
+        timeline: _DocumentTimeline | None = None
         manager = None
         playwright = None
         context = None
         page = None
         owns_page = False
-        document_listener = None
         sso_tracking = None
         primary_error: BaseException | None = None
         try:
@@ -483,7 +757,7 @@ async def open_session(
                         PROTOCOL_TIMEOUT_SECONDS,
                         "resolving the browser endpoint",
                     )
-                    with profile_span("launch-connect"):
+                    with profile_span("launch-connect", wait_kind="timeout"):
                         browser = await bounded(
                             playwright.chromium.connect_over_cdp(ws_url, timeout=PROTOCOL_TIMEOUT_SECONDS * 1000),
                             PROTOCOL_TIMEOUT_SECONDS,
@@ -505,7 +779,8 @@ async def open_session(
                 if require_owned_page or not pages:
                     # Combined sync owns a fresh page even when CDP has parked tabs.
                     # Cleanup closes this page, leaving parked tabs untouched.
-                    page = await bounded(context.new_page(), PROTOCOL_TIMEOUT_SECONDS, "opening a browser page")
+                    with profile_span("launch-connect", wait_kind="timeout"):
+                        page = await bounded(context.new_page(), PROTOCOL_TIMEOUT_SECONDS, "opening a browser page")
                     owns_page = True
                 else:
                     page = pages[0]
@@ -514,7 +789,7 @@ async def open_session(
                 profile_dir = root / "profile" / str(config.get("provider", "cnu"))
                 ensure_private_dir(profile_dir.parent)
                 try:
-                    with profile_span("launch-connect"):
+                    with profile_span("launch-connect", wait_kind="timeout"):
                         context = await bounded(
                             playwright.chromium.launch_persistent_context(
                                 user_data_dir=str(profile_dir),
@@ -534,11 +809,11 @@ async def open_session(
                         "error",
                     ) from None
                 pages = context.pages
-                page = (
-                    pages[0]
-                    if pages
-                    else await bounded(context.new_page(), PROTOCOL_TIMEOUT_SECONDS, "opening a browser page")
-                )
+                if pages:
+                    page = pages[0]
+                else:
+                    with profile_span("launch-connect", wait_kind="timeout"):
+                        page = await bounded(context.new_page(), PROTOCOL_TIMEOUT_SECONDS, "opening a browser page")
 
             if operation in {
                 "lectures.sync",
@@ -551,14 +826,9 @@ async def open_session(
             }:
                 sso_tracking = _track_sso_popups(context)
             recorder = current_profile()
-            if recorder is not None and recorder.enabled and hasattr(page, "on"):
-                main_frame = page.main_frame
-
-                def document_listener(frame: Any) -> None:
-                    if frame is main_frame:
-                        recorder.count("documents")
-
-                page.on("framenavigated", document_listener)
+            if recorder is not None and getattr(recorder, "enabled", False) and hasattr(page, "on"):
+                timeline = _DocumentTimeline(recorder, page, label_state)
+                timeline.attach()
             try:
                 with profile_span("user-agent"):
                     await apply_normal_user_agent(page)
@@ -587,19 +857,24 @@ async def open_session(
             primary_error = error
             raise
         finally:
-            with profile_span("teardown"):
-                try:
+            try:
+                if timeline is not None:
+                    timeline.close()
+                with profile_span("teardown"):
                     try:
-                        if sso_tracking is not None:
-                            sso_tracking[2]()
-                        if document_listener is not None:
-                            page.remove_listener("framenavigated", document_listener)
-                        if mode == "local":
-                            await close_resource(context)
-                        elif owns_page:
-                            await close_resource(page)
-                    finally:
-                        await _stop_playwright(manager, playwright)
-                except BaseException:
-                    if primary_error is None:
-                        raise
+                        try:
+                            if sso_tracking is not None:
+                                sso_tracking[2]()
+                            if timeline is not None:
+                                timeline.detach()
+                            if mode == "local":
+                                await close_resource(context)
+                            elif owns_page:
+                                await close_resource(page)
+                        finally:
+                            await _stop_playwright(manager, playwright)
+                    except BaseException:
+                        if primary_error is None:
+                            raise
+            finally:
+                _SESSION_LABELS.reset(label_token)
