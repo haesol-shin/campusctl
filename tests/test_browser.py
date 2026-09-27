@@ -55,6 +55,13 @@ class VirtualClock:
 
     async def wait_for(self, awaitable: Awaitable[T], seconds: float) -> T:
         task = asyncio.ensure_future(awaitable)
+        if seconds <= 0:
+            if task.done():
+                return await task
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+            raise TimeoutError
         timer = asyncio.create_task(self.sleep(seconds))
         try:
             done, _ = await asyncio.wait((task, timer), return_when=asyncio.FIRST_COMPLETED)
@@ -327,6 +334,36 @@ def test_bounded_virtual_external_cancellation_propagates_to_operation() -> None
             with pytest.raises(asyncio.CancelledError):
                 await operation
             assert cancelled.is_set()
+            assert not clock.sleepers
+
+    _run(scenario())
+
+
+def test_bounded_virtual_nonpositive_timeout_matches_real_wait_for() -> None:
+    async def scenario() -> None:
+        clock = VirtualClock()
+        loop = asyncio.get_running_loop()
+        completed: asyncio.Future[str] = loop.create_future()
+        completed.set_result("ready")
+
+        with use_clock(clock):
+            assert await browser.bounded(completed, 0, "reading completed data") == "ready"
+            assert await browser.bounded(completed, -1, "reading completed data") == "ready"
+            started = False
+
+            async def pending() -> None:
+                nonlocal started
+                started = True
+                await asyncio.Event().wait()
+
+            for seconds in (0, -1):
+                request = asyncio.create_task(pending())
+                with pytest.raises(CampusError) as caught:
+                    await browser.bounded(request, seconds, "reading pending data")
+                assert caught.value.code == "browser-timeout"
+                assert request.cancelled()
+                assert not started
+            assert clock.now() == 0
             assert not clock.sleepers
 
     _run(scenario())
