@@ -119,6 +119,7 @@ def _document(
 <script>fetch('/api/v1/task/stdList',{method:'POST',body:JSON.stringify({course_id:sessionStorage.selected})});</script>"""
         )
     elif path == "/std/todo":
+        # The global to-do page deliberately has no selected-course menu.
         rows = "".join(
             f"""<div class="tabulator-row"><span class="tabulator-cell" tabulator-field="no">{i}</span>
 <span class="tabulator-cell" tabulator-field="course_nm">Fixture Course {i}</span>
@@ -474,8 +475,8 @@ def test_seven_courses_one_session_and_full_normalized_catalogs(
         paths = Counter((method, path) for method, path, _ in server.requests)
         assert config["_fixture_login_calls"] == ["login"]
         assert sync_all._fixture_roster_calls == [7]
-        # One discovery; roster returns between selections require six more navigations.
-        assert paths[("GET", "/std/myLecture")] == 8
+        # Authentication, discovery, post-to-do return, and six inter-course returns.
+        assert paths[("GET", "/std/myLecture")] == 9
         assert paths[("GET", "/std/todo")] == 1
         assert paths[("POST", "/api/v1/board/std/notice/list")] == 1
         assert [
@@ -483,6 +484,15 @@ def test_seven_courses_one_session_and_full_normalized_catalogs(
             for method, path, cid in server.requests
             if (method, path) == ("POST", "/api/v1/course/addSessionCourseInfo")
         ] == list(IDS)
+        first_todo = next(
+            index for index, (method, path, _) in enumerate(server.requests) if (method, path) == ("GET", "/std/todo")
+        )
+        first_selection = next(
+            index
+            for index, (method, path, _) in enumerate(server.requests)
+            if (method, path) == ("POST", "/api/v1/course/addSessionCourseInfo")
+        )
+        assert first_todo < first_selection
         for path in ("/std/lecture", "/std/course", "/std/notice"):
             assert paths[("GET", path)] == 7
         assert paths[("GET", "/std/task")] in {7, 8}  # Browser history may restore from cache.
@@ -501,10 +511,7 @@ def test_seven_courses_one_session_and_full_normalized_catalogs(
             ]
             assert section_positions == sorted(section_positions)
             assert visits.count("/std/archive") == 2
-            if ordinal == 0:
-                assert visits.index("/std/task") < visits.index("/std/todo") < visits.index("/std/notice")
-            else:
-                assert "/std/todo" not in visits
+            assert "/std/todo" not in visits
         assert all("log" not in path.lower() and "video" not in path.lower() for _, path, _ in server.requests)
         monkeypatch.setenv("CAMPUSCTL_DATA_DIR", str(tmp_path))
         assert cli.main(["notices", "list", "--json"]) == 0
@@ -708,6 +715,7 @@ def test_filtered_selection_and_unknown_course_do_not_claim_full_enrollment(
         assert codes == ["course-not-found"]
         assert all(result["domains"][domain]["status"] == "not-started" for domain in DOMAINS[1:])
         assert {domain: (tmp_path / "catalog" / f"{domain}.json").read_bytes() for domain in DOMAINS} == before
+        assert sum(path == "/std/todo" for _, path, _ in server.requests) == 1
 
 
 def test_discovery_failure_preserves_rows_and_marks_every_catalog_unknown(
@@ -994,6 +1002,7 @@ def test_standalone_provider_wrapper_preserves_selection_and_rows(
             for method, path, cid in server.requests
             if (method, path) == ("POST", "/api/v1/course/addSessionCourseInfo")
         ] == [IDS[0]]
+        assert sum(path == "/std/todo" for _, path, _ in server.requests) == (1 if domain == "notices" else 0)
         assert config["_fixture_login_calls"] == ["login"]
 
 
@@ -1106,7 +1115,7 @@ def test_first_course_todo_failure_preserves_notice_and_continues_archive(
         assert sum(path == "/std/archive" and method == "GET" for method, path, _ in server.requests) == 14
 
 
-def test_failed_todo_navigation_rebinds_course_before_archive_menu(
+def test_failed_todo_navigation_restores_roster_before_archive_menu(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     with fixture_server() as server:
@@ -1119,6 +1128,11 @@ def test_failed_todo_navigation_rebinds_course_before_archive_menu(
         assert "at todo extraction" in result["domains"]["notices"]["errors"][0]["message"]
         assert result["domains"]["materials"]["status"] == "ok"
         assert ("GET", "/std/archive", None) in server.requests
+        todo_index = next(i for i, (_, path, _) in enumerate(server.requests) if path == "/std/todo")
+        selection_index = next(
+            i for i, (_, path, _) in enumerate(server.requests) if path == "/api/v1/course/addSessionCourseInfo"
+        )
+        assert any(path == "/std/myLecture" for _, path, _ in server.requests[todo_index + 1 : selection_index])
         materials_catalog = read_domain_catalog("materials", domain_catalog_path("materials", tmp_path))
         assert materials_catalog["materials"] == [_expected_row("materials", IDS[0], 1)]
 

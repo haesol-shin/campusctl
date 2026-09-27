@@ -58,6 +58,11 @@ def _fetch_error(step: str, error: Exception) -> CampusError:
         if error.message == f"Timed out while {detail_step}." and detail_step in _DETAIL_TIMEOUT_STEPS:
             label = "opening course notice board" if detail_step == "opening notice board" else detail_step
             return CampusError(code, f"Notices fetch: {label} timed out.", "Check the browser and retry.", status)
+    if step == "detail capture" and isinstance(error, CampusError) and code == "entity-unknown":
+        from campusctl.providers.cnu.notice_detail import NoticeDetailError
+
+        if isinstance(error, NoticeDetailError):
+            return CampusError(code, f"Notices fetch: detail capture: {error.message}", error.remediation, status)
     remediation = {
         "catalog load": "Sync notices again and retry.",
         "configuration load": "Check campusctl configuration and retry.",

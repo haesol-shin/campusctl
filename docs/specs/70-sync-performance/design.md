@@ -12,7 +12,7 @@
 
 - **Course selection.** Click the roster row once. The selection is proven when exactly one selection POST precedes exactly one `/std/lecture` commit in the main frame, and the rendered topbar course ID equals the roster course. The topbar is polled within the seven-second course-menu timeout because it renders after head assets.
 - **Sections.** Lectures first, then assignments, notices and archive, each entered by clicking its course menu link as a user would. Each collector reads its committed section page, checks the page's course, its own responses and DOM, and returns rows or a course failure. The lecture collector requires a committed `/std/course` whose topbar course matches before reading `.learningRow` rows.
-- **To-do.** Read once, after the first course selection and before the first notice board. A to-do failure marks that run's notices stale without stopping other domains.
+- **To-do.** Read once after roster discovery and before the first course selection, then return to the roster. A to-do failure marks that run's notices stale without stopping other domains.
 - **CDP.** Combined sync opens its own page and closes it at the end; existing tabs are left untouched.
 
 The LMS controls its page requests during sync and fetch. No operation-scoped request interceptor, route table or suppression is installed. Selected attachment transfers remain bound to the clicked official file and checked for response type, signature and size.

@@ -216,14 +216,6 @@ async def _section(
     todo: dict[str, list[dict[str, Any]]],
 ) -> list[dict[str, Any]]:
     await _settle(page)
-    if urlsplit(page.main_frame.url).path == "/std/todo":
-        await browser.bounded(
-            page.go_back(wait_until="domcontentloaded"),
-            browser.PROTOCOL_TIMEOUT_SECONDS,
-            f"returning to selected course menu for {domain}",
-        )
-        if await _wait_for_topbar_course_id(page) != course["course_id"]:
-            raise ValueError(f"{domain} menu belongs to another course")
     if domain == "lectures":
         with browser.profile_span("document-commit", domain=domain, course=ordinal):
             await browser.bounded(
@@ -394,10 +386,25 @@ async def sync_all(
                         "Check the course ID and retry.",
                         "user-action",
                     )
-                selected_before = False
                 todo_rows: dict[str, list[dict[str, Any]]] = {}
                 todo_failures: set[str] = set()
-                todo_completed = False
+                if "notices" in domains:
+                    session_step = "todo snapshot"
+                    try:
+                        todo_rows, todo_failures = await _todo(page, roster, course_id)
+                    except Exception:
+                        # A failed global read cannot attest to any selected notice board.
+                        todo_failures = {item["course_id"] for item in selected_courses}
+                    try:
+                        await _return_to_roster(page)
+                    except Exception as error:
+                        raise CampusError(
+                            "course-sync-failed",
+                            f"{domains[0]} roster return: {_error_detail(error)}",
+                            "Retry sync after the course page settles.",
+                            "error",
+                        ) from None
+                selected_before = False
                 session_step = "course traversal"
                 for ordinal, course in enumerate(selected_courses, 1):
                     if selected_before:
@@ -421,14 +428,6 @@ async def sync_all(
                         continue
                     selected_before = True
                     for domain_index, domain in enumerate(domains):
-                        if domain == "notices" and not todo_completed:
-                            try:
-                                todo_rows, todo_failures = await _todo(page, roster, course_id)
-                            except Exception:
-                                # A failed to-do read cannot attest to notice coverage; the
-                                # next section rebinds the selected course before opening its menu.
-                                todo_failures = {item["course_id"] for item in selected_courses}
-                            todo_completed = True
                         if domain == "notices" and course["course_id"] in todo_failures:
                             staged[domain].fail(domain, course, "todo extraction")
                             continue

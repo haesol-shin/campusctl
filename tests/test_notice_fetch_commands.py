@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
+from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -37,6 +39,40 @@ def _setup_catalog(root: Path) -> dict[str, Any]:
     }
     (catalog_dir / "notices.json").write_text(json.dumps(catalog_data), encoding="utf-8")
     return catalog_data
+
+
+def test_notice_fetch_detail_entity_unknown_names_failing_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from campusctl import browser
+    from campusctl.providers.cnu import login, notice_detail
+    from campusctl.providers.cnu.notice_detail import NoticeDetailError
+
+    @asynccontextmanager
+    async def session(*_args: Any, **_kwargs: Any) -> Any:
+        yield SimpleNamespace(page=object())
+
+    async def logged_in(*_args: Any, **_kwargs: Any) -> None:
+        pass
+
+    async def settled(*_args: Any, **_kwargs: Any) -> None:
+        pass
+
+    async def detail(*_args: Any, **_kwargs: Any) -> None:
+        raise NoticeDetailError(
+            "entity-unknown", "Notice detail: notice info course_id does not match the selected course."
+        )
+
+    monkeypatch.setattr(browser, "open_session", session)
+    monkeypatch.setattr(browser, "settle_sso_popups", settled)
+    monkeypatch.setattr(login, "ensure_logged_in", logged_in)
+    monkeypatch.setattr(notice_detail, "capture_notice_detail", detail)
+    with pytest.raises(CampusError) as caught:
+        asyncio.run(notices._fetch_notice({}, tmp_path, {}))
+    assert caught.value.code == "entity-unknown"
+    assert caught.value.message == (
+        "Notices fetch: detail capture: Notice detail: notice info course_id does not match the selected course."
+    )
 
 
 def test_notice_fetch_json_and_human(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -25,21 +25,15 @@ class Fixture(HTMLParser):
     def __init__(self) -> None:
         super().__init__()
         self.links: list[str] = []
-        self.image: str | None = None
-        self.view_counts: list[int] = []
         self.read_state_claim = False
+        self.view_counts: list[int] = []
         self.file_claim = False
-        self.detail_native: str | None = None
         self._views = False
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         fields = dict(attrs)
         if tag == "a" and "noticeDetail?no=" in (fields.get("href") or ""):
             self.links.append(fields["href"] or "")
-        if tag == "img":
-            self.image = fields.get("src")
-        if tag == "article":
-            self.detail_native = fields.get("data-boarditem-no")
         self._views = fields.get("data-field") == "views"
         self.read_state_claim |= "read_yn" in fields
         self.file_claim |= "data-file-id" in fields
@@ -58,6 +52,10 @@ class FakePage:
         fixture: Fixture,
         *,
         wrong_info: bool = False,
+        wrong_course: bool = False,
+        info_title: str = "Example notice",
+        content: str | None = None,
+        attachments: list[dict[str, object]] | None = None,
         row_addtime: str = "2026-09-01 09:00",
         row_insert_dt: str = "2026-09-01",
         board_number: int = 7,
@@ -65,6 +63,18 @@ class FakePage:
     ) -> None:
         self.fixture = fixture
         self.wrong_info = wrong_info
+        self.wrong_course = wrong_course
+        self.info_title = info_title
+        self.content = (
+            content
+            if content is not None
+            else (
+                '<p>First instruction.</p><p><img src="/assets/example-diagram.png" alt="Example diagram"></p>'
+                '<p>Read <a href="https://external.example.invalid/info?token=synthetic">example guidance</a>.</p>'
+                "<p>Second instruction.</p>"
+            )
+        )
+        self.attachments = attachments if attachments is not None else []
         self.row_addtime = row_addtime
         self.row_insert_dt = row_insert_dt
         self.board_number = board_number
@@ -122,15 +132,14 @@ class FakePage:
             )
         elif selector.startswith("tbody#table-body a["):
             self.url = urljoin(self.url, self.fixture.links[0])
-            self._respond(
-                "/api/v1/board/notice/info",
-                {
-                    "data": {
-                        "boarditem_no": "TB_L_BOARDITEM7002" if self.wrong_info else NATIVE,
-                        "course_id": "course-example",
-                    }
-                },
-            )
+            info = {
+                "boarditem_no": "TB_L_BOARDITEM7002" if self.wrong_info else NATIVE,
+                "course_id": "another.invalid" if self.wrong_course else "course-example",
+                "boarditem_title": self.info_title,
+                "boarditem_content": self.content,
+                "attach_file_list": self.attachments,
+            }
+            self._respond("/api/v1/board/notice/info", info)
             self._respond("/api/v1/board/cmt/list", {"list": []})
 
     @staticmethod
@@ -172,30 +181,17 @@ class FakePage:
         return None
 
     async def evaluate(self, script: str) -> object:
-        if "table-body > tr" in script:
-            return [{"links": [url]} for url in self.fixture.links]
-        assert "#noticeDetail" in script
-        return {
-            "native_id": self.fixture.detail_native,
-            "title": "Example notice",
-            "parts": [
-                {"kind": "text", "text": "First instruction.\n"},
-                {
-                    "kind": "image",
-                    "url": ORIGIN + (self.fixture.image or ""),
-                    "label": "Example diagram",
-                    "name": "example-diagram.png",
-                },
-                {"kind": "text", "text": "Read "},
-                {"kind": "link", "text": "example guidance"},
-                {"kind": "text", "text": ".\nSecond instruction."},
-            ],
-        }
+        assert "table-body > tr" in script, "Unobserved detail DOM must not be read"
+        return [{"links": [url]} for url in self.fixture.links]
 
 
 def fixture_page(
     *,
     wrong_info: bool = False,
+    wrong_course: bool = False,
+    info_title: str = "Example notice",
+    content: str | None = None,
+    attachments: list[dict[str, object]] | None = None,
     addtime: str = "2026-09-01 09:00",
     insert_dt: str = "2026-09-01",
     board_number: int = 7,
@@ -203,12 +199,15 @@ def fixture_page(
 ) -> FakePage:
     fixture = Fixture()
     fixture.feed(FIXTURE.read_text(encoding="utf-8"))
-    assert fixture.detail_native == NATIVE
     assert fixture.view_counts[0] + 1 == fixture.view_counts[-1]
     assert not fixture.read_state_claim and not fixture.file_claim
     return FakePage(
         fixture,
         wrong_info=wrong_info,
+        wrong_course=wrong_course,
+        info_title=info_title,
+        content=content,
+        attachments=attachments,
         row_addtime=addtime,
         row_insert_dt=insert_dt,
         board_number=board_number,
@@ -244,11 +243,14 @@ def test_selected_notice_detail_capture_readonly() -> None:
     assert snapshot.source_url == ORIGIN + "/std/noticeDetail?no=TB_L_BOARDITEM7001&curPage=1"
     assert snapshot.parts[0] == "# Example notice\n\n"
     assert "First instruction." in snapshot.parts[1]
-    assert snapshot.parts[2] == ResourceReference(
-        "image", ORIGIN + "/assets/example-diagram.png", "example-diagram.png", None, "Example diagram", None, None
-    )
+    images = [part for part in snapshot.parts if isinstance(part, ResourceReference) and part.kind == "image"]
+    assert images == [
+        ResourceReference(
+            "image", ORIGIN + "/assets/example-diagram.png", "example-diagram.png", None, "Example diagram", None, None
+        )
+    ]
     assert "example guidance [link URL omitted]" in snapshot.parts
-    assert "Second instruction." in snapshot.parts[-1]
+    assert any(isinstance(part, str) and "Second instruction." in part for part in snapshot.parts)
     assert page.actions[-1].startswith('tbody#table-body a[href="noticeDetail?no=TB_L_BOARDITEM7001')
     assert page.actions[:4] == [
         "roster",
@@ -257,6 +259,94 @@ def test_selected_notice_detail_capture_readonly() -> None:
         'a[href="/std/notice"]',
     ]
     assert not any("read" in action.lower() or "upload" in action.lower() for action in page.actions)
+    assert not page.listeners
+
+
+def test_notice_title_comes_from_verified_info_not_catalog() -> None:
+    page = fixture_page(info_title="Updated <notice>")
+    snapshot = asyncio.run(capture_notice_detail(page, selected()))
+    assert snapshot.parts[0] == "# Updated \\<notice\\>\n\n"
+
+
+def test_html_content_omits_scripts_external_images_and_media(tmp_path: Path) -> None:
+    from campusctl.source_package import build_source_package
+
+    page = fixture_page(
+        content=(
+            "<div>Read &amp; learn<script>secret script</script>"
+            '<a href="javascript:alert(1)">linked guidance</a>'
+            '<img src="https://other.invalid/private.png" alt="external image">'
+            '<video><source src="/media/clip.mp4"></video></div>'
+        )
+    )
+    snapshot = asyncio.run(capture_notice_detail(page, selected()))
+    assert "Read & learn" in snapshot.parts
+    assert "linked guidance [link URL omitted]" in snapshot.parts
+    assert "secret script" not in str(snapshot.parts)
+    resources = [part for part in snapshot.parts if isinstance(part, ResourceReference)]
+    assert [part.kind for part in resources] == ["image", "video"]
+    assert resources[0].source_url == snapshot.source_url
+    assert resources[1].source_url == ORIGIN + "/media/clip.mp4"
+
+    async def no_untrusted_download(*_args: Any, **_kwargs: Any) -> None:
+        pytest.fail("Unverified HTML resources must not be downloaded")
+
+    page.context.request.get = no_untrusted_download
+    package = asyncio.run(
+        build_source_package(
+            page,
+            snapshot,
+            entity_id=selected()["entity_id"],
+            kind="notice",
+            course_id="course-example",
+            course_label="Example Course",
+            root=tmp_path,
+        )
+    )
+    assert package["completeness"] == "partial"
+    assert [item["reason"] for item in package["omitted_resources"]] == [
+        "unsupported-media-type",
+        "unsupported-media-type",
+    ]
+
+
+@pytest.mark.parametrize(
+    "hidden",
+    [
+        "<noscript>Fallback<wbr>text</noscript>",
+        "<noscript>Fallback<wbr/>text</noscript>",
+        '<noscript>Fallback<embed src="/bad"><param name="bad"></noscript>',
+        "<noscript><span>Fallback</noscript>",
+        "<noscript/>",
+    ],
+)
+def test_skipped_html_does_not_hide_following_notice_content(tmp_path: Path, hidden: str) -> None:
+    from campusctl.source_package import build_source_package
+
+    page = fixture_page(content=f"<p>Before</p>{hidden}<p>Required deadline: Friday</p>")
+    row = selected()
+    snapshot = asyncio.run(capture_notice_detail(page, row))
+    package = asyncio.run(
+        build_source_package(
+            page,
+            snapshot,
+            entity_id=row["entity_id"],
+            kind="notice",
+            course_id=row["course"]["id"],
+            course_label=row["course"]["label"],
+            root=tmp_path,
+        )
+    )
+    content = Path(package["content_path"]).read_text(encoding="utf-8")
+    assert package["completeness"] == "complete"
+    assert "Before" in content and "Required deadline: Friday" in content
+    assert "Fallback" not in content
+
+
+def test_unclosed_skipped_html_rejects_notice_instead_of_publishing_incomplete_content() -> None:
+    page = fixture_page(content="<p>Before</p><noscript>Fallback<wbr><p>Required deadline: Friday</p>")
+    with pytest.raises(CampusError, match="notice info HTML skipped element is unclosed"):
+        asyncio.run(capture_notice_detail(page, selected()))
     assert not page.listeners
 
 
@@ -326,9 +416,16 @@ def test_wrong_selected_notice_fails_before_transfer() -> None:
     assert not page.listeners
 
 
+def test_mismatched_detail_course_rejected() -> None:
+    page = fixture_page(wrong_course=True)
+    with pytest.raises(CampusError, match="notice info course_id does not match"):
+        asyncio.run(capture_notice_detail(page, selected()))
+    assert not page.listeners
+
+
 def test_mismatched_detail_response_rejected() -> None:
     page = fixture_page(wrong_info=True)
-    with pytest.raises(CampusError, match="another board item"):
+    with pytest.raises(CampusError, match="notice info boarditem_no does not match"):
         asyncio.run(capture_notice_detail(page, selected()))
     assert not page.listeners
 
@@ -341,23 +438,7 @@ def test_malformed_addtime_falls_back_to_insert_dt() -> None:
 
 
 def test_ordinary_link_named_download_stays_link_label_and_complete(tmp_path: Path) -> None:
-    page = fixture_page()
-    orig_evaluate = page.evaluate
-
-    async def evaluate_with_download_link(script: str) -> object:
-        if "#noticeDetail" in script:
-            return {
-                "native_id": page.fixture.detail_native,
-                "title": "Notice with download link",
-                "parts": [
-                    {"kind": "text", "text": "Click here to "},
-                    {"kind": "link", "text": "download syllabus"},
-                    {"kind": "text", "text": "."},
-                ],
-            }
-        return await orig_evaluate(script)
-
-    page.evaluate = evaluate_with_download_link
+    page = fixture_page(content='<p>Click here to <a href="https://other.invalid/private">download syllabus</a>.</p>')
     target = {**selected(), "has_attachments": False}
     snapshot = asyncio.run(capture_notice_detail(page, target))
     attachment_refs = [p for p in snapshot.parts if isinstance(p, ResourceReference) and p.kind == "attachment"]
@@ -382,13 +463,17 @@ def test_ordinary_link_named_download_stays_link_label_and_complete(tmp_path: Pa
 
 
 def test_notice_attachment_with_unverified_url_remains_omitted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    page = fixture_page()
-    target = {**selected(), "has_attachments": True}
+    page = fixture_page(
+        attachments=[
+            {"boarditem_attach_file_no": "TB_L_FILE999", "file_name": "worksheet.pdf"},
+            {"boarditem_attach_file_no": "TB_L_FILE1000"},
+        ]
+    )
+    target = selected()
     snapshot = asyncio.run(capture_notice_detail(page, target))
     attachment_refs = [p for p in snapshot.parts if isinstance(p, ResourceReference) and p.kind == "attachment"]
-    assert len(attachment_refs) == 1
-    assert attachment_refs[0].label == "Notice attachment"
-    assert attachment_refs[0].official_target is None
+    assert [ref.label for ref in attachment_refs] == ["worksheet.pdf", "Notice attachment"]
+    assert all(ref.official_target is None for ref in attachment_refs)
     unverified = replace(
         attachment_refs[0],
         source_url="/unverified/file?id=TB_L_FILE999",
@@ -421,7 +506,7 @@ def test_notice_attachment_with_unverified_url_remains_omitted(tmp_path: Path, m
         )
     )
     assert pkg["completeness"] == "partial"
-    assert len(pkg["omitted_resources"]) == 1
+    assert len(pkg["omitted_resources"]) == 2
     assert pkg["omitted_resources"][0]["reason"] == "unverified-notice-attachment"
     assert pkg["omitted_resources"][0]["source_ref"] == {
         "origin": ORIGIN,

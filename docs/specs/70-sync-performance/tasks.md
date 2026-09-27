@@ -6,9 +6,9 @@
 | --- | --- | --- |
 | Profiling recorder, CLI flag and harness | `src/campusctl/profiling.py`, `tools/profile_sync.py`, instrumentation in browser and providers | Done |
 | Domain collectors | `providers/cnu/{assignments,notices,materials,sync}.py` | Done |
-| Combined pass and single-domain cutover | `providers/cnu/sync_all.py`, `src/campusctl/sync.py`, `tests/test_sync_all.py` | Done; stops live on the first course |
+| Combined pass and single-domain cutover | `providers/cnu/sync_all.py`, `src/campusctl/sync.py`, `tests/test_sync_all.py` | Done; seven-course synthetic pass green, live recheck pending |
 | Guard removal and menu-click section entry | `providers/cnu/sync_all.py`, `providers/cnu/ui_policy.py`, domain commands | Step 1 of the [v0.4.0 plan](../README.md#v040-completion-plan) |
-| Live acceptance | none; evidence only | Step 2 of the plan |
+| Live acceptance | none; evidence only | Step 2 recorded a partial run; live recheck pending after the traversal repair |
 
 ## Evidence
 
