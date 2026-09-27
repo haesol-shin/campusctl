@@ -181,3 +181,32 @@ def test_prune_failure_keeps_saved_record(tmp_path: Path, monkeypatch: pytest.Mo
     target = diagnostics._write_record({"schema_version": 1}, "lectures.sync", tmp_path)
     assert target.exists()
     assert len(list(directory.glob("roster-*.json"))) == 21
+
+
+def test_stalled_page_snapshot_is_cancelled_without_writing_private_data(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import campusctl.providers.cnu.roster_diagnostics as diagnostics
+
+    monkeypatch.setattr(diagnostics, "_COLLECT_TIMEOUT_S", 0.02)
+    cancelled = False
+
+    class StalledPage:
+        url = "https://fixture.invalid/roster?token=private"
+
+        async def evaluate(self, script: str) -> None:
+            nonlocal cancelled
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled = True
+                raise
+
+    result = asyncio.run(
+        capture_roster_failure(StalledPage(), operation="lectures.sync", step="wait", elapsed_s=1, root=tmp_path)
+    )
+    assert result is None
+    assert cancelled
+    assert not (tmp_path / "diagnostics").exists()
+    captured = capsys.readouterr()
+    assert captured.out == captured.err == ""

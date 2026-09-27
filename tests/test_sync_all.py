@@ -8,7 +8,7 @@ import json
 import threading
 from collections import Counter
 from collections.abc import Iterator
-from contextlib import contextmanager, suppress
+from contextlib import asynccontextmanager, contextmanager, suppress
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -1228,3 +1228,41 @@ def test_later_invalid_catalog_blocks_all_publication_and_names_later_domain(
             for method, path, cid in server.requests
             if (method, path) == ("POST", "/api/v1/course/addSessionCourseInfo")
         ] == [IDS[0]]
+
+
+def test_catalogs_are_published_only_after_browser_session_closes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_session = sync_all.browser.open_session
+    original_write = sync_all.write_catalog
+    original_domain_write = sync_all.write_domain_catalog
+    closed = False
+
+    @asynccontextmanager
+    async def tracked_session(*args: Any, **kwargs: Any) -> Any:
+        nonlocal closed
+        async with original_session(*args, **kwargs) as session:
+            yield session
+        closed = True
+
+    def write_lectures(value: dict[str, Any], target: Path) -> Path:
+        assert closed, "published lectures before browser close"
+        return original_write(value, target)
+
+    def write_assignments(domain: str, value: dict[str, Any], target: Path) -> Path:
+        assert closed, "published assignments before browser close"
+        return original_domain_write(domain, value, target)
+
+    monkeypatch.setattr(sync_all.browser, "open_session", tracked_session)
+    monkeypatch.setattr(sync_all, "write_catalog", write_lectures)
+    monkeypatch.setattr(sync_all, "write_domain_catalog", write_assignments)
+    with fixture_server() as server:
+        config = _install_fixture(monkeypatch, server)
+        result, errors = run_sync(config, tmp_path, ("lectures", "assignments"), IDS[0], headless=True)
+    assert errors is None
+    assert result["domains"]["lectures"]["status"] == "ok"
+    assert result["domains"]["assignments"]["status"] == "ok"
+    assert read_catalog(catalog_path(tmp_path))["lectures"] == [_expected_row("lectures", IDS[0], 1)]
+    assert read_domain_catalog("assignments", domain_catalog_path("assignments", tmp_path))["assignments"] == [
+        _expected_row("assignments", IDS[0], 1)
+    ]

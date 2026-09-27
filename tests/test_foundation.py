@@ -1020,3 +1020,32 @@ def test_lock_contention_is_nonblocking_across_processes_and_can_be_reacquired(t
     for _ in range(2):
         with lock.exclusive_lock(lock_path):
             pass
+
+
+def test_session_lock_is_released_when_operation_fails(tmp_path: Path) -> None:
+    target = tmp_path / "nested" / "session.lock"
+    with pytest.raises(RuntimeError, match="synthetic operation failure"), lock.exclusive_lock(target):
+        raise RuntimeError("synthetic operation failure")
+
+    # Another process must be able to take the same OS lock, not just this thread.
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.pathsep.join(
+        filter(None, (str(Path(__file__).resolve().parents[1] / "src"), env.get("PYTHONPATH")))
+    )
+    contender = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; from campusctl.lock import exclusive_lock; "
+            "from pathlib import Path; "
+            "with_lock = exclusive_lock(Path(sys.argv[1])); "
+            "with_lock.__enter__(); with_lock.__exit__(None, None, None)",
+            str(target),
+        ],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert contender.returncode == 0, contender.stderr
