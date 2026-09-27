@@ -2,17 +2,25 @@
 
 All notable changes to campusctl are documented here. This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Release dates follow the local date convention (KST, Asia/Seoul).
 
-## [Unreleased]
+## [0.4.0] - 2026-09-27
+
+### Added
+- Publish full-ID assignment and notice detail fetch commands with local readable source packages
+- Report package completeness, omitted resources and selected notice-reading side effects
+- Add guided setup, cached status and lecture health, numbered course selection and single-file materials download selection
+- Add global headed/headless browser options for supported operations and sync profiling on stderr
+- Add `lectures play --replay` to replay explicitly selected completed or recorded lectures in the official player after confirmation, with `replay_requested` and `player_opened` result fields
+- Save a private diagnostic snapshot when roster discovery fails
 
 ### Changed
-- Sync selected domains in one browser session with one course selection per course; verify committed course identity before publishing rows
-- Let the LMS load its own page requests during sync and fetch, and open notice and archive sections through their menus
-- Name the failing domain and step in sync and fetch errors while retaining selected-file binding and attachment response validation
+- Sync all four metadata domains in one browser session with one course selection per course, verifying each course's identity before publishing rows and retaining stale rows per course and domain
+- Let LMS pages issue their own requests during sync and fetch while keeping selected-file binding and attachment response checks for downloads
+- Open course sections through their rendered menus and name the failing domain and step in sync and fetch errors
 
 ### Fixed
-- Read the global to-do before selecting a course so all enrolled notice boards and archives remain reachable
-- Read selected notice content from verified info responses instead of unobserved detail-page selectors, and report failing checks without exposing provider identities
-- Preserve visible notice content after skipped HTML void elements and fail on unclosed skipped markup
+- Read the global to-do before selecting a course so every notice board and archive stays reachable
+- Read selected notice content from its verified info response and keep visible content after skipped HTML elements
+- Keep roster diagnostic records when old-record pruning hits a transient Windows file lock
 
 ## [0.3.2] - 2026-09-26
 
