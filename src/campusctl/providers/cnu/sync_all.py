@@ -228,8 +228,8 @@ async def _section(
     courses: list[dict[str, Any]],
     todo: dict[str, list[dict[str, Any]]],
 ) -> list[dict[str, Any]]:
-    await _settle(page)
     with browser.profile_labels(domain=domain, course=ordinal, page_kind=_PAGE_KIND[domain]):
+        await _settle(page)
         if domain == "lectures":
             with (
                 browser.profile_span("document-commit", wait_kind="navigation"),

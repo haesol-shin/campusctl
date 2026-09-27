@@ -32,7 +32,6 @@ _PRE_BROWSER_CHECK: ContextVar[Callable[[], None] | None] = ContextVar("pre_brow
 
 _UNSET = object()
 _SYNC_PROFILE: ContextVar[Any | None] = ContextVar("sync_profile", default=None)
-_CALLBACK_RECORDER: Any = None
 
 
 @dataclass
@@ -43,6 +42,7 @@ class _SessionLabels:
     course: int | None = None
     page_kind: str | None = None
     active_document: int | None = None
+    recorder: Any = None
 
 
 @dataclass
@@ -72,20 +72,21 @@ _DOCUMENT_PATHS = {
 
 @contextmanager
 def profile_context(recorder: Any) -> Iterator[None]:
-    global _CALLBACK_RECORDER
-    previous = _CALLBACK_RECORDER
-    _CALLBACK_RECORDER = recorder
     token = _SYNC_PROFILE.set(recorder)
     try:
         yield
     finally:
         _SYNC_PROFILE.reset(token)
-        _CALLBACK_RECORDER = previous
 
 
 def current_profile() -> Any | None:
     recorder = _SYNC_PROFILE.get()
-    return _CALLBACK_RECORDER if recorder is None else recorder
+    if recorder is not None:
+        return recorder
+    session = _SESSION_LABELS.get()
+    if session is not None:
+        return session.recorder
+    return None
 
 
 def _pick_label(explicit: Any, inherited: Any, snapshot: Any, *, in_session: bool) -> Any:
@@ -731,7 +732,7 @@ async def open_session(
         if mode == "local" and not headless:
             _check_display()
 
-        label_state = _SessionLabels()
+        label_state = _SessionLabels(recorder=current_profile())
         label_token = _SESSION_LABELS.set(label_state)
         timeline: _DocumentTimeline | None = None
         manager = None

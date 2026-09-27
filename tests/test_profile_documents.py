@@ -340,3 +340,74 @@ def test_playwright_redirect_commit_uses_request_identity(tmp_path):
     assert committed[0]["page_kind"] == "archive"
     assert payload["counts"]["documents"] == 1
     assert any(row["commit_ns"] is None and row["end_reason"] == "next-document" for row in payload["documents"])
+
+
+def test_unrelated_task_does_not_record_into_another_profile():
+    import contextvars
+
+    recorder = SpanRecorder(enabled=True, scope=("lectures",))
+    seen = []
+
+    async def outsider() -> None:
+        seen.append(browser.current_profile())
+        with profile_span("extract", domain="lectures"):
+            pass
+
+    async def scenario() -> None:
+        with profile_context(recorder):
+            await asyncio.create_task(outsider(), context=contextvars.Context())
+
+    asyncio.run(scenario())
+    assert seen == [None]
+    profile = recorder.finish(stderr=io.StringIO())
+    assert profile["spans"] == []
+
+
+def test_session_labels_carry_only_that_sessions_recorder():
+    owned = SpanRecorder(enabled=True)
+    labels = _SessionLabels(recorder=owned)
+    token = browser._SESSION_LABELS.set(labels)
+    try:
+        assert browser.current_profile() is owned
+    finally:
+        browser._SESSION_LABELS.reset(token)
+    assert browser.current_profile() is None
+
+
+def test_section_settle_uses_domain_labels(monkeypatch):
+    from campusctl.providers.cnu import sync_all
+
+    recorder = SpanRecorder(enabled=True, scope=("lectures",))
+    page = SimpleNamespace(main_frame=SimpleNamespace(url="https://lms.example.invalid/std/lecture"))
+
+    async def settle(_state: str) -> None:
+        return None
+
+    async def click(_selector: str) -> None:
+        return None
+
+    async def collect(*_args, **_kwargs):
+        return []
+
+    page.wait_for_load_state = settle
+    page.click = click
+    monkeypatch.setattr(sync_all, "collect_lectures_rows", collect)
+
+    async def scenario() -> None:
+        with profile_context(recorder):
+            await sync_all._section(
+                page,
+                2,
+                "lectures",
+                {"course_id": "course-a", "label": "Course A"},
+                [],
+                {},
+            )
+
+    asyncio.run(scenario())
+    profile = recorder.finish(stderr=io.StringIO())
+    idle = next(span for span in profile["spans"] if span["phase"] == "idle")
+    assert idle["domain"] == "lectures"
+    assert idle["course"] == 2
+    assert idle["page_kind"] == "lecture"
+    assert idle["wait_kind"] == "load"

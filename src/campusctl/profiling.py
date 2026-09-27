@@ -161,8 +161,8 @@ class SpanRecorder:
     """Bounded per-run spans. Integer course/window/document labels are ephemeral ordinals only.
 
     ``enabled=False`` does not read the clock or allocate event buffers. ``finish``
-    closes active spans as failed, returns the safe schema, and writes exactly one
-    prefixed stderr line when enabled. It is idempotent.
+    closes active spans as failed, keeps the caller-supplied outcome, and writes
+    exactly one prefixed stderr line when enabled. It is idempotent.
     """
 
     def __init__(
@@ -346,8 +346,6 @@ class SpanRecorder:
             if span.end is None:
                 span.end = end
                 span.failed = True
-            if span.failed:
-                outcome = "failed"
             if span.parent is not None:
                 parent = self._spans[span.parent]
                 assert parent.end is not None

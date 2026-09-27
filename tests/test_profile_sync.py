@@ -1,4 +1,5 @@
 import importlib.util
+import io
 import json
 import os
 import subprocess
@@ -241,6 +242,22 @@ def test_rejects_unsafe_or_uncontrolled_runs(tmp_path, change):
     assert not (tmp_path / "private").exists()
 
 
+def test_successful_command_accepts_a_handled_wait_failure():
+    from campusctl.profiling import SpanRecorder
+
+    recorder = SpanRecorder(enabled=True)
+    with (
+        pytest.raises(TimeoutError),
+        recorder.span("dom-ready", wait_kind="selector", domain="lectures", page_kind="lecture"),
+    ):
+        raise TimeoutError
+    profile = recorder.finish(outcome="ok", stderr=io.StringIO())
+    safe = module._safe_profile(profile)
+    assert safe["outcome"] == "ok"
+    assert safe["spans"][0]["failed"] is True
+    assert module._accepted_profile(safe) is True
+
+
 def test_overhead_gate_reports_attribution_and_rejects_noise_as_unresolved():
     report = module.measure_overhead(trials=5)
     assert report["schema_version"] == 1
@@ -248,6 +265,6 @@ def test_overhead_gate_reports_attribution_and_rejects_noise_as_unresolved():
     for shape in ("observed", "cpu"):
         measured = report["shapes"][shape]
         assert measured["off_vs_on"]["verdict"] == "pass", measured
-        assert measured["previous_vs_on"]["verdict"] in {"pass", "unresolved"}
+        assert "previous_vs_on" not in measured
         assert measured["attribution"]["coverage"]["unattributed_ns"] >= 0
         assert measured["attribution"]["dropped_events"] == 0

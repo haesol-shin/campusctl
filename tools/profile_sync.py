@@ -130,6 +130,11 @@ def _group(name: str) -> str:
     return "python"
 
 
+def _accepted_profile(profile: dict | None) -> bool:
+    """Command success accepts a profile even when a handled wait span failed."""
+    return profile is None or (profile.get("outcome") == "ok" and profile.get("dropped_events") == 0)
+
+
 def _exact_int(value: object, *, minimum: int = 0) -> bool:
     return type(value) is int and value >= minimum
 
@@ -340,9 +345,7 @@ def _run(argv: list[str], *, data_root: Path | None = None, domains: tuple[str, 
                     profile = _safe_profile(json.loads(line.removeprefix("campusctl-profile: ")))
                 except json.JSONDecodeError:
                     profile = None
-    complete = proc.returncode == 0 and result is not None
-    if profile is not None:
-        complete = complete and profile["outcome"] == "ok" and profile["dropped_events"] == 0
+    complete = proc.returncode == 0 and result is not None and _accepted_profile(profile)
     catalogs = None
     if complete and data_root is not None and domains:
         catalogs = _catalogs(data_root, domains)
@@ -543,7 +546,7 @@ def _burn(rounds: int) -> int:
 
 
 def _overhead_fixture(argv: list[str]) -> int:
-    if len(argv) != 2 or argv[0] not in {"off", "on", "previous"} or argv[1] not in {"observed", "cpu"}:
+    if len(argv) != 2 or argv[0] not in {"off", "on"} or argv[1] not in {"observed", "cpu"}:
         return 2
     mode, shape = argv
     courses, documents, restores, burn_rounds = _overhead_shape(shape)
@@ -564,7 +567,13 @@ def _overhead_fixture(argv: list[str]) -> int:
     if recorder is not None:
         recorder.close_documents()
         finished = recorder.finish()
-        if finished is None or finished["dropped_events"]:
+        committed = 0 if finished is None else sum(row["commit_ns"] is not None for row in finished["documents"])
+        restore_count = (
+            0
+            if finished is None
+            else sum(span["count"] for span in finished["spans"] if span["phase"] == "archive-restore")
+        )
+        if finished is None or finished["dropped_events"] or committed != documents or restore_count != restores:
             return 4
     print(
         json.dumps(
@@ -578,13 +587,20 @@ def _overhead_fixture(argv: list[str]) -> int:
     return 0
 
 
+def _shares(total: int, parts: int) -> list[int]:
+    base, extra = divmod(total, parts)
+    return [base + (1 if index < extra else 0) for index in range(parts)]
+
+
 def _overhead_pass(digest, encoded, courses, documents, restores, recorder, mode) -> int:
-    for course in range(1, courses + 1):
+    doc_shares = _shares(documents, courses)
+    restore_shares = _shares(restores, courses)
+    for course, doc_count, restore_count in zip(range(1, courses + 1), doc_shares, restore_shares, strict=True):
         parsed = json.loads(encoded)
         digest += len(parsed["rows"]) + course
-        for document in range(documents):
+        for document in range(doc_count):
             parsed = json.loads(encoded)
-            digest += parsed["rows"][document % 40]["n"]
+            digest += parsed["rows"][document % len(parsed["rows"])]["n"]
             token = encoded.encode()
             for _round in range(6):
                 token = hashlib.sha256(token).digest()
@@ -593,15 +609,17 @@ def _overhead_pass(digest, encoded, courses, documents, restores, recorder, mode
                 ordinal = recorder.open_document(page_kind="archive", domain="materials", course=course)
                 if ordinal is not None:
                     recorder.commit_document(ordinal)
-        for _restore in range(restores):
+        for _restore in range(restore_count):
             digest += 1 + parsed["rows"][0]["n"]
-            if recorder is None:
+            if recorder is None or mode != "on":
                 continue
-            phase_labels = {"domain": "materials", "course": course}
-            if mode == "on":
-                phase_labels["page_kind"] = "archive"
-                phase_labels["wait_kind"] = "load"
-            with recorder.span("archive-restore", **phase_labels):
+            with recorder.span(
+                "archive-restore",
+                domain="materials",
+                course=course,
+                page_kind="archive",
+                wait_kind="load",
+            ):
                 pass
     return digest
 
@@ -664,9 +682,9 @@ def measure_overhead(*, trials: int = 5) -> dict:
     harness = [sys.executable, str(Path(__file__).resolve()), "--fixture-overhead"]
     shapes = {}
     for shape in ("observed", "cpu"):
-        arms = {mode: [] for mode in ("off", "on", "previous")}
+        arms = {mode: [] for mode in ("off", "on")}
         for index in range(trials):
-            order = ("off", "on", "previous") if index % 2 == 0 else ("on", "off", "previous")
+            order = ("off", "on") if index % 2 == 0 else ("on", "off")
             for mode in order:
                 row = _run([*harness, mode, shape])
                 result = None if row["_result"] is None else row["_result"][0]
@@ -681,7 +699,6 @@ def measure_overhead(*, trials: int = 5) -> dict:
                 )
         shapes[shape] = {
             "off_vs_on": _paired_ratio(arms["off"], arms["on"]),
-            "previous_vs_on": _paired_ratio(arms["previous"], arms["on"]),
             "attribution": next((row["attribution"] for row in reversed(arms["on"]) if row["attribution"]), None),
         }
     return {"schema_version": 1, "host": _host_conditions(), "shapes": shapes}
