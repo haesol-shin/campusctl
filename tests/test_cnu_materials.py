@@ -365,7 +365,8 @@ def fixture() -> dict:
     return json.loads(_FIXTURE.read_text(encoding="utf-8"))
 
 
-def test_archive_fixture_cases() -> None:
+def test_archive_fixture_cases(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(materials, "_WAIT_MS", 100)
     data = fixture()
     assert data["course"]["course_id"] == "course-synthetic-a"
     assert {c["name"] for c in data["cases"]} == {
@@ -412,6 +413,7 @@ def test_archive_fixture_cases() -> None:
                     ("file-next", "next.pdf", "board-next"),
                 ]
                 assert page.events.count(materials._ARCHIVE_MENU) == 0
+                assert not any(response.request.url.endswith(materials._ARCHIVE_LIST) for response in page.responses)
                 assert not page.modal_open
                 assert page.backdrop is None
             if case["name"] == "completed-empty":
@@ -543,7 +545,10 @@ def test_material_collector_rejects_duplicate_entry_list() -> None:
         ("failed-restore", "course-sync-failed"),
     ],
 )
-def test_material_collector_fails_entire_course_without_detail_fallback(case_name: str, error_code: str) -> None:
+def test_material_collector_fails_entire_course_without_detail_fallback(
+    case_name: str, error_code: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(materials, "_WAIT_MS", 100)
     data = fixture()
     case = next(case for case in data["cases"] if case["name"] == case_name)
     events: list[str] = []
@@ -660,6 +665,9 @@ def test_each_proof_failure_reloads_the_existing_archive(mutation: str) -> None:
     assert page.events.count(materials._ARCHIVE_MENU) == 2
     assert _phase_count(profile, "archive-restore") == 2
     assert _phase_count(profile, "document-commit") == 2
+    assert not page.modal_open
+    assert page.backdrop is None
+    assert not page.body_modal_open
     assert all(handle.disposed for handle in page.handles)
     assert page.listeners["request"] == []
 
