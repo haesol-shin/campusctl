@@ -86,10 +86,10 @@ If you set `PLAYWRIGHT_BROWSERS_PATH`, use the same value when installing Chromi
 
 ## Pin a version
 
-Install the pinned `v0.3.2` release with:
+Install the pinned `v0.4.0` release with:
 
 ```bash
-uv tool install --with-executables-from playwright git+https://github.com/haesol-shin/campusctl@v0.3.2
+uv tool install --with-executables-from playwright git+https://github.com/haesol-shin/campusctl@v0.4.0
 ```
 
 ## Update or uninstall
