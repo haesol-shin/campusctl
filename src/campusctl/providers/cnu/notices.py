@@ -20,6 +20,8 @@ from .readiness import _route_matches, wait_page_ready
 _ORIGIN = "https://dcs-learning.cnu.ac.kr"
 _TODO_URL = f"{_ORIGIN}/std/todo"
 _NOTICE_LIST_PATH = "/api/v1/board/std/notice/list"
+_GRID_QUIET_SECONDS = 0.5
+_GRID_NO_CONTROL_QUIET_SECONDS = 1.5
 # TB_L_BOARDITEM followed by digits is an observed native post ID, not a legacy identity.
 _NATIVE_POST_ID = re.compile(r"TB_L_BOARDITEM[0-9]+\Z")
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}(?:\s+\d{2}:\d{2})?\Z")
@@ -27,7 +29,8 @@ _NUMBER = re.compile(r"[0-9]+\Z")
 _ROLE = frozenset({"교수", "교수자", "조교", "관리자", "Instructor", "Teaching Assistant", "Administrator"})
 _EXTRACT_GRID_JS = """() => {
     const grid = document.querySelector('#noticeList');
-    if (!grid) return {rendered: false, empty: false, rows: [], next: null};
+    if (!grid) return {rendered: false, empty: false, rows: [], next: null,
+        next_present: false, next_disabled: false, pagination_present: false};
     const rows = [...grid.querySelectorAll('.tabulator-row')].map(row => {
         const cell = field => row.querySelector(`.tabulator-cell[tabulator-field="${field}"]`)?.innerText;
         const link = row.querySelector('[data-boarditem_no], a[href*="noticeDetail?no="]');
@@ -39,10 +42,19 @@ _EXTRACT_GRID_JS = """() => {
     const empty = grid.querySelector('#noticeNoData');
     const next = grid.querySelector('.tabulator-page[data-page="next"]');
     const more = grid.querySelector('[data-act="loadMore"], .load-more');
-    const active = element => element && !element.disabled &&
-        !element.classList.contains('disabled') && getComputedStyle(element).display !== 'none';
+    const pagination = grid.querySelector('.tabulator-paginator, .tabulator-pages');
+    const disabled = element => !!element && (element.disabled ||
+        element.classList.contains('disabled') ||
+        element.getAttribute('aria-disabled') === 'true' ||
+        element.parentElement?.classList.contains('disabled'));
+    const active = element => !!element && !disabled(element) &&
+        getComputedStyle(element).display !== 'none' &&
+        getComputedStyle(element).visibility !== 'hidden';
     return {rendered: !!grid.querySelector('.tabulator') || rows.length > 0,
         empty: !!empty && getComputedStyle(empty).display !== 'none', rows,
+        next_present: !!next || !!more,
+        next_disabled: (!!next || !!more) && (!next || disabled(next)) && (!more || disabled(more)),
+        pagination_present: !!pagination || !!next || !!more,
         next: active(next) ? '.tabulator-page[data-page="next"]' :
             active(more) ? (more.matches('[data-act="loadMore"]') ? '[data-act="loadMore"]' : '.load-more') : null};
 }"""
@@ -349,29 +361,21 @@ async def open_notice_todo(page: Any) -> _TodoCapture:
         raise
 
 
-def _todo_response_counts(payload: Any) -> tuple[int, int]:
-    """Bind a rendered to-do page to its list size and total coverage."""
-    if not isinstance(payload, dict):
-        raise ValueError("To-do response has no count")
-    body = payload.get("body", payload)
-    if not isinstance(body, dict):
-        raise ValueError("To-do response has no count")
-    items = next((body[key] for key in ("list", "rows", "items") if key in body), None)
-    total = next((body[key] for key in ("tot_cnt", "total", "totalCount", "total_count") if key in body), None)
-    if (
-        not isinstance(items, list)
-        or any(not isinstance(item, dict) for item in items)
-        or type(total) is not int
-        or total < len(items)
-    ):
-        raise ValueError("To-do response has no verified page and total count")
+def _todo_response_coverage(payload: Any) -> tuple[int, int] | None:
+    """Count server-delivered items without equating them to rendered grid rows."""
+    if not isinstance(payload, dict) or not isinstance(payload.get("body"), dict):
+        return None
+    body = payload["body"]
+    items, total = body.get("list"), body.get("tot_cnt")
+    if not isinstance(items, list) or type(total) is not int or total < len(items):
+        return None
     return len(items), total
 
 
 async def _grid_snapshot(page: Any, capture: _TodoCapture) -> list[dict[str, Any]]:
     """Read each committed grid page after its own response and render gate."""
 
-    async def completed(start: int, *, required: bool) -> tuple[int, int] | None:
+    async def completed(start: int, *, required: bool) -> tuple[bool, tuple[int, int] | None]:
         async def response_for(request: Any) -> Any:
             while True:
                 matching = [response for source, response in capture.responses if source is request]
@@ -389,7 +393,7 @@ async def _grid_snapshot(page: Any, capture: _TodoCapture) -> list[dict[str, Any
         if capture.stale_response or len(window) > 1 or (required and len(window) != 1):
             raise ValueError("Notice request was stale, absent or duplicated")
         if not window:
-            return  # UI-only pagination is allowed only after DOM advancement.
+            return False, None  # UI-only pagination is allowed only after DOM advancement.
         request = window[0]
         if request.method != "POST" or request.frame != page.main_frame:
             raise ValueError("Notice request did not originate in the main frame")
@@ -411,7 +415,7 @@ async def _grid_snapshot(page: Any, capture: _TodoCapture) -> list[dict[str, Any
         payload = await bounded(response.json(), PROTOCOL_TIMEOUT_SECONDS, "validating the notice list response")
         if capture.stale_response or len([order for order, _ in capture.requests if order > start]) != 1:
             raise ValueError("Notice list changed during completion")
-        return _todo_response_counts(payload)
+        return True, _todo_response_coverage(payload)
 
     async def advanced(previous: tuple[str, ...]) -> None:
         async def changed() -> None:
@@ -426,6 +430,46 @@ async def _grid_snapshot(page: Any, capture: _TodoCapture) -> list[dict[str, Any
         with profile_span("page-readiness", wait_kind="readiness", domain="notices", page_kind="todo"):
             await bounded(changed(), COURSE_MENU_TIMEOUT_MS / 1000, "waiting for the next notice page")
 
+    async def stable_grid(*, require_next: bool) -> dict[str, Any]:
+        loop = asyncio.get_running_loop()
+        signature: tuple[Any, ...] | None = None
+        unchanged_since = 0.0
+        while True:
+            snapshot = await page.evaluate(_EXTRACT_GRID_JS)
+            if isinstance(snapshot, dict) and isinstance(snapshot.get("rows"), list):
+                page_rows = snapshot["rows"]
+                if page_rows or snapshot.get("empty") is True:
+                    next_present = snapshot.get("next_present") is True or snapshot.get("next") is not None
+                    pagination_present = snapshot.get("pagination_present") is True or next_present
+                    current = (
+                        len(page_rows),
+                        tuple(str(item) for item in page_rows),
+                        snapshot.get("next"),
+                        snapshot.get("empty") is True,
+                        next_present,
+                        snapshot.get("next_disabled") is True,
+                        pagination_present,
+                    )
+                    now = loop.time()
+                    if current != signature:
+                        signature, unchanged_since = current, now
+                    elif now - unchanged_since >= _GRID_QUIET_SECONDS:
+                        if snapshot.get("next") is not None or (
+                            not require_next and snapshot.get("next_disabled") is True
+                        ):
+                            return snapshot
+                        if (
+                            not require_next
+                            and not pagination_present
+                            and now - unchanged_since >= _GRID_NO_CONTROL_QUIET_SECONDS
+                        ):
+                            return snapshot
+                else:
+                    signature = None
+            else:
+                signature = None
+            await asyncio.sleep(0.05)
+
     try:
         async with asyncio.timeout(120):
             if capture.committed_sequence is None:
@@ -434,45 +478,29 @@ async def _grid_snapshot(page: Any, capture: _TodoCapture) -> list[dict[str, Any
             rows: list[dict[str, Any]] = []
             seen_pages: set[tuple[str, ...]] = set()
             previous: tuple[str, ...] | None = None
-            total: int | None = None
-            page_size: int | None = None
+            response_items = 0
+            response_total: int | None = None
+            coverage_available = True
             while True:
                 if previous is not None:
                     await advanced(previous)
-                response_counts = await completed(window_start, required=previous is None)
-                if response_counts is not None:
-                    count, response_total = response_counts
-                    if total is not None and response_total != total:
-                        raise ValueError("To-do response total changed during pagination")
-                    total = response_total
-                    if page_size is None:
-                        page_size = count
-                if total is None or page_size is None:
-                    raise ValueError("To-do response has no verified total")
-                expected_rows = response_counts[0] if response_counts is not None else min(page_size, total - len(rows))
-                if expected_rows < 0 or (expected_rows == 0 and total > len(rows)):
-                    raise ValueError("To-do response page size is invalid")
+                has_response, coverage = await completed(window_start, required=previous is None)
+                if has_response and coverage_available:
+                    if coverage is None:
+                        # One missing total makes cumulative response coverage unknowable.
+                        coverage_available = False
+                        response_total = None
+                    else:
+                        count, response_total = coverage
+                        response_items += count
+                loop = asyncio.get_running_loop()
+                deadline = loop.time() + COURSE_MENU_TIMEOUT_MS / 1000
                 await wait_page_ready(page, "todo", domain="notices")
-
-                async def complete_grid(expected_rows: int, total: int, current_rows: int) -> dict[str, Any]:
-                    while True:
-                        snapshot = await page.evaluate(_EXTRACT_GRID_JS)
-                        if isinstance(snapshot, dict) and isinstance(snapshot.get("rows"), list):
-                            page_rows = snapshot["rows"]
-                            has_more = current_rows + expected_rows < total
-                            if (
-                                len(page_rows) == expected_rows
-                                and (not has_more or snapshot.get("next") is not None)
-                                and (page_rows or snapshot.get("empty") is True)
-                            ):
-                                return snapshot
-                        await asyncio.sleep(0.05)
-
                 with profile_span("page-readiness", wait_kind="readiness", domain="notices", page_kind="todo"):
                     snapshot = await bounded(
-                        complete_grid(expected_rows, total, len(rows)),
-                        COURSE_MENU_TIMEOUT_MS / 1000,
-                        "waiting for complete notice grid",
+                        stable_grid(require_next=response_total is not None and response_items < response_total),
+                        max(0, deadline - loop.time()),
+                        "waiting for stable notice grid",
                     )
                 if page.main_frame.url != _TODO_URL:
                     raise ValueError("To-do document changed during extraction")
@@ -489,12 +517,8 @@ async def _grid_snapshot(page: Any, capture: _TodoCapture) -> list[dict[str, Any
                 seen_pages.add(fingerprint)
                 rows.extend(page_rows)
                 next_page = snapshot.get("next")
-                if len(rows) == total:
-                    if next_page is not None:
-                        raise ValueError("To-do pagination exceeds verified total")
-                    return rows
                 if next_page is None:
-                    raise ValueError("To-do pagination ended before verified total")
+                    return rows
                 if len(seen_pages) >= 100:
                     raise ValueError("Notice pagination exceeded 100 pages")
                 if next_page not in {'.tabulator-page[data-page="next"]', '[data-act="loadMore"]', ".load-more"}:
