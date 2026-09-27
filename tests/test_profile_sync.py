@@ -259,11 +259,20 @@ def test_successful_command_accepts_a_handled_wait_failure():
 
 
 @pytest.fixture(scope="module")
-def overhead_sample():
-    sample = module._run([sys.executable, str(HARNESS), "--fixture-overhead", "on", "observed"])
-    assert sample["complete"]
-    assert sample["attribution"] is not None
-    return sample
+def overhead_samples():
+    samples = {
+        shape: {
+            mode: module._run([sys.executable, str(HARNESS), "--fixture-overhead", mode, shape])
+            for mode in ("off", "on")
+        }
+        for shape in ("observed", "cpu")
+    }
+    for arms in samples.values():
+        assert arms["off"]["complete"] and arms["on"]["complete"]
+        assert arms["off"]["_result"] == arms["on"]["_result"]
+        assert arms["on"]["profile"]["dropped_events"] == 0
+        assert arms["on"]["attribution"] is not None
+    return samples
 
 
 @pytest.mark.parametrize(
@@ -275,9 +284,8 @@ def overhead_sample():
     ],
 )
 def test_overhead_gate_reports_attribution_and_rejects_noise_as_unresolved(
-    monkeypatch, overhead_sample, on_walls, verdict, ratio, dispersion
+    monkeypatch, overhead_samples, on_walls, verdict, ratio, dispersion
 ):
-    result = overhead_sample["_result"]
 
     # Each shape starts a fresh sequence; the tool alternates execution order.
     def run(argv):
@@ -285,11 +293,8 @@ def test_overhead_gate_reports_attribution_and_rejects_noise_as_unresolved(
         index = calls[shape][mode]
         calls[shape][mode] += 1
         return {
-            "complete": True,
+            **overhead_samples[shape][mode],
             "wall_ns": (100 if mode == "off" else on_walls[index]),
-            "profile": None if mode == "off" else overhead_sample["profile"],
-            "attribution": None if mode == "off" else overhead_sample["attribution"],
-            "_result": result,
         }
 
     calls = {shape: {"off": 0, "on": 0} for shape in ("observed", "cpu")}
