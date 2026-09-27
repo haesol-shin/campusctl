@@ -53,6 +53,40 @@ def _fetch_error(step: str, error: Exception) -> CampusError:
     return CampusError(code, f"Assignments fetch: {step} failed.", remediation, status)
 
 
+def _selected_ids(args: argparse.Namespace) -> list[str]:
+    raw = getattr(args, "entity_ids", None)
+    if raw is None:
+        single = getattr(args, "entity_id", None)
+        raw = None if single is None else [single]
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list) or not raw or any(not isinstance(item, str) or not item.strip() for item in raw):
+        raise UsageError("Assignments fetch selection: an entity ID is required")
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        if item not in seen:
+            seen.add(item)
+            ordered.append(item)
+    return ordered
+
+
+def _matching_rows(catalog: dict[str, Any], entity_ids: list[str]) -> list[dict[str, Any]]:
+    records = catalog.get("assignments", [])
+    rows: list[dict[str, Any]] = []
+    for entity_id in entity_ids:
+        matching = [row for row in records if row.get("entity_id") == entity_id]
+        if len(matching) != 1:
+            raise CampusError(
+                "entity-unknown",
+                "Assignments fetch selection: selected ID is not in the catalog.",
+                "Select one full ID from 'campusctl assignments list'.",
+                "user-action",
+            )
+        rows.append(matching[0])
+    return rows
+
+
 def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     assignments = subparsers.add_parser("assignments", help="inspect cached assignments")
     assignments.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
@@ -61,9 +95,9 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     listing.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
     listing.add_argument("--course", help="limit results to one course ID")
     listing.add_argument("--refresh", action="store_true")
-    fetch = commands.add_parser("fetch", help="package one selected assignment detail")
+    fetch = commands.add_parser("fetch", help="package selected assignment details")
     fetch.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
-    fetch.add_argument("entity_id", metavar="ENTITY_ID", help="full ID from assignments list")
+    fetch.add_argument("entity_ids", nargs="+", metavar="ENTITY_ID", help="full IDs from assignments list")
     fetch.add_argument("--out", type=Path, metavar="DIR", help="new package directory")
 
 
@@ -79,58 +113,56 @@ def dispatch(args: argparse.Namespace) -> tuple[dict[str, Any], CampusError | li
             "assignments": rows,
         }, None
     if command == "fetch":
-        entity_id = getattr(args, "entity_id", None)
-        if not isinstance(entity_id, str) or not entity_id.strip():
-            raise UsageError("Assignments fetch selection: an entity ID is required")
-        root = data_dir()
-        cat_path = domain_catalog_path("assignments", root)
-        if not cat_path.exists():
+        return _dispatch_fetch(args)
+    raise UsageError("an assignments command is required")
+
+
+def _dispatch_fetch(args: argparse.Namespace) -> tuple[dict[str, Any], CampusError | list[CampusError] | None]:
+    entity_ids = _selected_ids(args)
+    root = data_dir()
+    cat_path = domain_catalog_path("assignments", root)
+    if not cat_path.exists():
+        raise CampusError(
+            "catalog-missing",
+            "Assignments fetch catalog lookup: catalog is missing.",
+            "Run 'campusctl sync --only assignments' to create it.",
+            "user-action",
+        )
+    try:
+        catalog = read_domain_catalog("assignments", cat_path)
+    except Exception as exc:
+        raise _fetch_error("catalog load", exc) from exc
+    rows = _matching_rows(catalog, entity_ids)
+    out_path = getattr(args, "out", None)
+    if out_path is not None and len(rows) > 1:
+        raise UsageError("Assignments fetch selection: --out applies to one selected ID.")
+    if out_path is not None:
+        destination = Path(out_path)
+        if destination.exists() or destination.is_symlink():
             raise CampusError(
-                "catalog-missing",
-                "Assignments fetch catalog lookup: catalog is missing.",
-                "Run 'campusctl sync --only assignments' to create it.",
+                "output-path-conflict",
+                "Assignments fetch output selection: output path already exists.",
+                "Choose a nonexistent destination path with --out.",
                 "user-action",
             )
-        try:
-            catalog = read_domain_catalog("assignments", cat_path)
-        except Exception as exc:
-            raise _fetch_error("catalog load", exc) from exc
-        matching = [r for r in catalog.get("assignments", []) if r.get("entity_id") == entity_id]
-        if len(matching) != 1:
-            raise CampusError(
-                "entity-unknown",
-                "Assignments fetch selection: selected ID is not in the catalog.",
-                "Select one full ID from 'campusctl assignments list'.",
-                "user-action",
-            )
-        row = matching[0]
-        out_path = getattr(args, "out", None)
-        if out_path is not None:
-            p = Path(out_path)
-            if p.exists() or p.is_symlink():
-                raise CampusError(
-                    "output-path-conflict",
-                    "Assignments fetch output selection: output path already exists.",
-                    "Choose a nonexistent destination path with --out.",
-                    "user-action",
-                )
-        import asyncio
+    import asyncio
 
-        from campusctl.browser_options import preflight_browser_mode
-        from campusctl.config import load_config
+    from campusctl.browser_options import preflight_browser_mode
+    from campusctl.config import load_config
 
-        try:
-            config = load_config()
-        except Exception as exc:
-            raise _fetch_error("configuration load", exc) from exc
-        headless_override = getattr(args, "headless_override", None)
-        try:
-            mode = preflight_browser_mode(config, "assignments.fetch", override=headless_override)
-        except CampusError as exc:
-            raise CampusError(
-                exc.code, f"Assignments fetch browser preflight: {exc.message}", exc.remediation, exc.status
-            ) from exc
-        pkg = asyncio.run(_fetch_assignment(config, root, row, out=out_path, headless=mode))
+    try:
+        config = load_config()
+    except Exception as exc:
+        raise _fetch_error("configuration load", exc) from exc
+    headless_override = getattr(args, "headless_override", None)
+    try:
+        mode = preflight_browser_mode(config, "assignments.fetch", override=headless_override)
+    except CampusError as exc:
+        raise CampusError(
+            exc.code, f"Assignments fetch browser preflight: {exc.message}", exc.remediation, exc.status
+        ) from exc
+    if len(rows) == 1:
+        package = asyncio.run(_fetch_assignment(config, root, rows[0], out=out_path, headless=mode))
         errors = (
             [
                 CampusError(
@@ -139,11 +171,12 @@ def dispatch(args: argparse.Namespace) -> tuple[dict[str, Any], CampusError | li
                     status="user-action",
                 )
             ]
-            if pkg.get("completeness") == "partial"
+            if package.get("completeness") == "partial"
             else None
         )
-        return {"source_package": pkg}, errors
-    raise UsageError("an assignments command is required")
+        return {"source_package": package}, errors
+    items, errors = asyncio.run(_fetch_assignment_queue(config, root, rows, headless=mode))
+    return {"items": items}, errors
 
 
 async def _fetch_assignment(
@@ -193,6 +226,33 @@ async def _fetch_assignment(
         raise _fetch_error("browser session", exc) from exc
 
 
+async def _fetch_assignment_queue(
+    config: dict[str, Any],
+    root: Path,
+    rows: list[dict[str, Any]],
+    *,
+    headless: bool,
+) -> tuple[list[dict[str, Any]], list[CampusError] | None]:
+    from campusctl.commands.fetch_queue import run_fetch_queue
+    from campusctl.providers.cnu.assignment_detail import capture_assignment_detail
+
+    async def capture(page: Any, row: dict[str, Any]) -> Any:
+        return await capture_assignment_detail(page, config, row)
+
+    return await run_fetch_queue(
+        config,
+        root,
+        rows,
+        headless=headless,
+        operation="assignments.fetch",
+        domain="assignments",
+        kind="assignment",
+        label="Assignments",
+        capture=capture,
+        fetch_error=_fetch_error,
+    )
+
+
 async def sync(
     config: dict[str, Any], root: Path, course_id: str | None, *, headless: bool = False
 ) -> tuple[dict[str, Any], list[CampusError]]:
@@ -210,6 +270,37 @@ def _updated(value: object) -> str:
         return value
 
 
+def _package_lines(package: dict[str, Any]) -> list[str]:
+    lines = [
+        f"Assignment source: {package['entity_id']}",
+        f"Package: {package['path']}",
+        f"Content: {package['content_path']}",
+        f"Completeness: {package['completeness']}",
+    ]
+    for omitted in package.get("omitted_resources", []):
+        reason = omitted.get("reason", "omitted")
+        name = omitted.get("original_name") or omitted.get("resource_id", "resource")
+        lines.append(f"Omitted: {reason} — {name}")
+    return lines
+
+
+def _render_items(items: list[dict[str, Any]]) -> list[str]:
+    lines: list[str] = []
+    for item in items:
+        if lines:
+            lines.append("")
+        package = item.get("source_package")
+        if isinstance(package, dict):
+            lines.extend(_package_lines(package))
+        else:
+            lines.append(f"Assignment source: {item.get('entity_id', '')}")
+        lines.append(f"Outcome: {item.get('outcome', 'failed')}")
+        reason = item.get("reason_code")
+        if isinstance(reason, str) and reason:
+            lines.append(f"Reason: {reason}")
+    return lines
+
+
 def render(command: str, result: dict[str, Any], width: int) -> list[str]:
     del width  # IDs are deliberately not truncated or split, including on narrow terminals.
     if command == "sync.assignments":
@@ -222,20 +313,13 @@ def render(command: str, result: dict[str, Any], width: int) -> list[str]:
             f"{assignments} {'assignment' if assignments == 1 else 'assignments'}."
         ]
     if command == "assignments.fetch":
-        pkg = result.get("source_package")
-        if not pkg:
+        items = result.get("items")
+        if isinstance(items, list):
+            return _render_items(items)
+        package = result.get("source_package")
+        if not package:
             return []
-        lines = [
-            f"Assignment source: {pkg['entity_id']}",
-            f"Package: {pkg['path']}",
-            f"Content: {pkg['content_path']}",
-            f"Completeness: {pkg['completeness']}",
-        ]
-        for omitted in pkg.get("omitted_resources", []):
-            reason = omitted.get("reason", "omitted")
-            name = omitted.get("original_name") or omitted.get("resource_id", "resource")
-            lines.append(f"Omitted: {reason} — {name}")
-        return lines
+        return _package_lines(package)
     if command != "assignments.list" or "assignments" not in result:
         return []
     rows = result["assignments"]

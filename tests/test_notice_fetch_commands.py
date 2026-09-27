@@ -205,7 +205,11 @@ def test_notice_fetch_json_and_human(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert "Notices fetch output selection" in exc_conf.value.message
     assert str(existing_file) not in exc_conf.value.message
 
-    # Unsupported effective headless fails before navigation
+    # CDP headless is rejected before navigation; local headless is a candidate.
+    monkeypatch.setattr(
+        "campusctl.config.load_config",
+        lambda: {"browser": {"cdp_endpoint": "http://browser.invalid:9222"}},
+    )
     args_headless = SimpleNamespace(
         notices_command="fetch", entity_id="cnu_notice:course-1:2026-09-25:1", out=None, headless_override=True
     )
@@ -213,6 +217,7 @@ def test_notice_fetch_json_and_human(tmp_path: Path, monkeypatch: pytest.MonkeyP
         notices.dispatch(args_headless)
     assert exc_hl.value.code == "headless-unavailable"
     assert "Notices fetch browser preflight" in exc_hl.value.message
+    monkeypatch.setattr("campusctl.config.load_config", lambda: {})
 
     # Busy session
     async def mock_fetch_busy(*_args: Any, **_kwargs: Any) -> dict[str, Any]:

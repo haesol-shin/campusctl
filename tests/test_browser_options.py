@@ -44,7 +44,15 @@ def test_pending_operations_refuse_before_lock_or_browser(tmp_path: Path, monkey
     assert HEADLESS_SUPPORT["materials.download"] is True
     monkeypatch.setattr(browser, "_playwright_manager", lambda: pytest.fail("browser started"))
     data_dir = tmp_path / "data"
-    for operation in ("lectures.sync", "assignments.sync", "notices.sync", "materials.sync", "materials.download"):
+    for operation in (
+        "lectures.sync",
+        "assignments.sync",
+        "notices.sync",
+        "materials.sync",
+        "materials.download",
+        "assignments.fetch",
+        "notices.fetch",
+    ):
         assert operation_headless_supported(operation)
         assert preflight_browser_mode({"browser": {"headless": True}}, operation) is True
     pending = ("lectures.play",)
@@ -104,5 +112,71 @@ def test_actual_local_headless_chromium_without_display(tmp_path: Path, monkeypa
             {"browser": {"headless": True}}, data_dir=data_dir, operation="materials.download"
         ) as session:
             assert await session.page.evaluate("2 + 3") == 5
+
+    asyncio.run(scenario())
+
+
+def test_doctor_exposes_fetch_headless_candidate_keys(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CAMPUSCTL_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setenv("CAMPUSCTL_DATA_DIR", str(tmp_path / "data"))
+    from campusctl.cli import doctor_result
+
+    result, _error = doctor_result()
+    support = result["browser"]["headless_support"]
+    assert support["assignments.fetch"] is True
+    assert support["notices.fetch"] is True
+    assert support["lectures.play"] is False
+
+
+@pytest.mark.skipif(os.name == "nt", reason="no-display assertion is POSIX-only")
+def test_headless_fetch_publishes_synthetic_details_without_display(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("playwright.async_api")
+    from playwright.sync_api import sync_playwright
+
+    from campusctl.source_package import DetailSnapshot, build_source_package
+
+    with sync_playwright() as manager:
+        if not Path(manager.chromium.executable_path).is_file():
+            pytest.skip("local Playwright Chromium not installed")
+
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+
+    async def scenario() -> None:
+        cases = (
+            ("assignments.fetch", "assignment", "cnu_assignment:course-1:task-101", "task-101"),
+            ("notices.fetch", "notice", "cnu_notice:course-1:2026-09-25:1", "notice-1"),
+        )
+        for operation, kind, entity_id, marker in cases:
+            root = tmp_path / kind
+            async with open_session({"browser": {"headless": True}}, data_dir=root, operation=operation) as session:
+                html = (
+                    f"data:text/html,<title>Synthetic</title><main data-selected-id='{marker}'>Selected {marker}</main>"
+                )
+                await session.page.goto(html)
+                selected = await session.page.locator("main").get_attribute("data-selected-id")
+                text = await session.page.locator("main").inner_text()
+                assert selected == marker
+                assert marker in text
+                package = await build_source_package(
+                    session.page,
+                    DetailSnapshot(
+                        source_url=f"https://lms.invalid/std/{kind}",
+                        provider_native_id=marker,
+                        parts=(f"{text}\n",),
+                    ),
+                    entity_id=entity_id,
+                    kind=kind,
+                    course_id="course-1",
+                    course_label="Synthetic Course",
+                    root=root,
+                )
+            assert package["entity_id"] == entity_id
+            assert marker in Path(package["content_path"]).read_text(encoding="utf-8")
+            manifest = __import__("json").loads(Path(package["manifest_path"]).read_text(encoding="utf-8"))
+            assert manifest["entity_id"] == entity_id
+            assert manifest["kind"] == kind
 
     asyncio.run(scenario())

@@ -6,13 +6,16 @@ from typing import Any
 
 from campusctl.envelope import CampusError
 
-# Release integration changes a value only after recording that operation's live gate.
+# Candidate fetch entries are enabled so the next live run can exercise them.
+# They are not a release until that run records successful local headless fetch.
 HEADLESS_SUPPORT: dict[str, bool] = {
     "lectures.sync": True,
     "assignments.sync": True,
     "notices.sync": True,
     "materials.sync": True,
     "materials.download": True,
+    "assignments.fetch": True,
+    "notices.fetch": True,
     "lectures.play": False,
 }
 

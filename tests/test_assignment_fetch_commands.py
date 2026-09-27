@@ -171,7 +171,11 @@ def test_assignment_fetch_json_and_human(tmp_path: Path, monkeypatch: pytest.Mon
     assert "Assignments fetch output selection" in exc_conf.value.message
     assert str(existing_file) not in exc_conf.value.message
 
-    # Unsupported effective headless fails before navigation
+    # CDP headless is rejected before navigation; local headless is a candidate.
+    monkeypatch.setattr(
+        "campusctl.config.load_config",
+        lambda: {"browser": {"cdp_endpoint": "http://browser.invalid:9222"}},
+    )
     args_headless = SimpleNamespace(
         assignments_command="fetch", entity_id="cnu_assignment:course-1:task-101", out=None, headless_override=True
     )
@@ -179,6 +183,7 @@ def test_assignment_fetch_json_and_human(tmp_path: Path, monkeypatch: pytest.Mon
         assignments.dispatch(args_headless)
     assert exc_hl.value.code == "headless-unavailable"
     assert "Assignments fetch browser preflight" in exc_hl.value.message
+    monkeypatch.setattr("campusctl.config.load_config", lambda: {})
 
     # Busy session
     async def mock_fetch_busy(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
