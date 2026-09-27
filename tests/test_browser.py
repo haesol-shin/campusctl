@@ -3,9 +3,10 @@ from __future__ import annotations
 import asyncio
 import json
 import socket
+from collections.abc import Awaitable
 from contextlib import suppress
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 import pytest
 
@@ -13,6 +14,67 @@ from campusctl import browser
 from campusctl.envelope import CampusError
 from campusctl.lock import exclusive_lock
 from campusctl.profiling import SpanRecorder
+from campusctl.wait_clock import current_clock, use_clock
+
+T = TypeVar("T")
+
+
+class VirtualClock:
+    def __init__(self) -> None:
+        self.timestamp = 0.0
+        self.sleepers: list[tuple[float, asyncio.Future[None]]] = []
+
+    def now(self) -> float:
+        return self.timestamp
+
+    def monotonic(self) -> float:
+        return self.timestamp
+
+    async def sleep(self, seconds: float) -> None:
+        if seconds <= 0:
+            await asyncio.sleep(0)
+            return
+        future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        deadline = self.timestamp + seconds
+        self.sleepers.append((deadline, future))
+        try:
+            await future
+        finally:
+            self.sleepers.remove((deadline, future))
+
+    def sleep_sync(self, seconds: float) -> None:
+        self.advance(seconds)
+
+    def advance(self, seconds: float) -> None:
+        if seconds < 0:
+            raise ValueError("Virtual time cannot move backwards")
+        self.timestamp += seconds
+        for deadline, future in tuple(self.sleepers):
+            if deadline <= self.timestamp and not future.done():
+                future.set_result(None)
+
+    async def wait_for(self, awaitable: Awaitable[T], seconds: float) -> T:
+        task = asyncio.ensure_future(awaitable)
+        timer = asyncio.create_task(self.sleep(seconds))
+        try:
+            done, _ = await asyncio.wait((task, timer), return_when=asyncio.FIRST_COMPLETED)
+            if task in done:
+                return await task
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+            raise TimeoutError
+        finally:
+            timer.cancel()
+            if not task.done():
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
+
+
+async def settle() -> None:
+    for _ in range(4):
+        await asyncio.sleep(0)
 
 
 class FakeCdpSession:
@@ -173,6 +235,99 @@ def test_bounded_timeout_is_safe_and_names_operation() -> None:
         assert caught.value.code == "browser-timeout"
         assert caught.value.status == "error"
         assert "connecting to a test browser" in caught.value.message
+
+    _run(scenario())
+
+
+def test_bounded_virtual_timeout_cancels_pending_operation_at_exact_deadline() -> None:
+    async def scenario() -> None:
+        clock = VirtualClock()
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
+
+        async def pending() -> None:
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+        with use_clock(clock):
+            operation = asyncio.create_task(browser.bounded(pending(), 1.5, "connecting to a test browser"))
+            await started.wait()
+            await settle()
+            clock.advance(1.49)
+            await settle()
+            assert not operation.done()
+            assert not cancelled.is_set()
+            clock.advance(0.01)
+            with pytest.raises(CampusError) as caught:
+                await operation
+            assert caught.value.code == "browser-timeout"
+            assert caught.value.status == "error"
+            assert "connecting to a test browser" in caught.value.message
+            assert cancelled.is_set()
+            assert clock.now() == pytest.approx(1.5)
+            assert not clock.sleepers
+
+    _run(scenario())
+
+
+def test_bounded_virtual_completion_and_task_local_clock_reset() -> None:
+    async def scenario() -> None:
+        real = current_clock()
+        loop = asyncio.get_running_loop()
+        assert abs(real.now() - loop.time()) < 1
+        assert abs(real.monotonic() - loop.time()) < 1
+        clock = VirtualClock()
+        sibling = asyncio.create_task(asyncio.sleep(0, result=current_clock()))
+
+        async def work() -> str:
+            await current_clock().sleep(0.25)
+            return "complete"
+
+        with use_clock(clock):
+            assert current_clock() is clock
+            operation = asyncio.create_task(browser.bounded(work(), 1.5, "fetching synthetic data"))
+            await settle()
+            clock.advance(0.24)
+            await settle()
+            assert not operation.done()
+            clock.sleep_sync(0.01)
+            assert await operation == "complete"
+            assert clock.monotonic() == pytest.approx(0.25)
+            assert not clock.sleepers
+        assert current_clock() is real
+        assert await sibling is real
+        with pytest.raises(RuntimeError), use_clock(clock):
+            raise RuntimeError("reset on failure")
+        assert current_clock() is real
+
+    _run(scenario())
+
+
+def test_bounded_virtual_external_cancellation_propagates_to_operation() -> None:
+    async def scenario() -> None:
+        clock = VirtualClock()
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
+
+        async def pending() -> None:
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+        with use_clock(clock):
+            operation = asyncio.create_task(browser.bounded(pending(), 4, "connecting"))
+            await started.wait()
+            await settle()
+            operation.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await operation
+            assert cancelled.is_set()
+            assert not clock.sleepers
 
     _run(scenario())
 

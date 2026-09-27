@@ -18,6 +18,7 @@ from campusctl.envelope import CampusError
 from campusctl.lock import exclusive_lock
 from campusctl.paths import data_dir as default_data_dir
 from campusctl.paths import ensure_private_dir
+from campusctl.wait_clock import current_clock
 
 PROTOCOL_TIMEOUT_SECONDS: float = 10.0
 CLEANUP_TIMEOUT_SECONDS: float = 5.0
@@ -439,7 +440,7 @@ def _track_sso_popups(context: Any) -> tuple[set[Any], set[asyncio.Task[Any]], C
 
 async def bounded(awaitable: Any, seconds: float, what: str) -> Any:
     try:
-        return await asyncio.wait_for(awaitable, timeout=seconds)
+        return await current_clock().wait_for(awaitable, seconds)
     except TimeoutError:
         raise CampusError(
             "browser-timeout",
