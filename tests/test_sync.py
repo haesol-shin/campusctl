@@ -159,6 +159,7 @@ def test_rowless_lecture_redirect_does_not_publish_empty_course() -> None:
     with pytest.raises(ValueError, match="document changed"):
         asyncio.run(sync_module.collect_lectures_rows(page, COURSES[0]))
 
+
 def test_lecture_rows_from_a_course_that_changes_during_extraction_are_rejected() -> None:
     class SwitchedCoursePage(FakePage):
         async def evaluate(self, script: str) -> Any:
@@ -169,7 +170,6 @@ def test_lecture_rows_from_a_course_that_changes_during_extraction_are_rejected(
     page = SwitchedCoursePage([_row("new-a")])
     with pytest.raises(ValueError, match="belongs to another course"):
         asyncio.run(sync_module.collect_lectures_rows(page, COURSES[0]))
-
 
 
 def test_lecture_collector_keeps_non_counted_recorded_rows_out_of_incomplete_count() -> None:

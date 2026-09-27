@@ -1024,9 +1024,8 @@ def test_lock_contention_is_nonblocking_across_processes_and_can_be_reacquired(t
 
 def test_session_lock_is_released_when_operation_fails(tmp_path: Path) -> None:
     target = tmp_path / "nested" / "session.lock"
-    with pytest.raises(RuntimeError, match="synthetic operation failure"):
-        with lock.exclusive_lock(target):
-            raise RuntimeError("synthetic operation failure")
+    with pytest.raises(RuntimeError, match="synthetic operation failure"), lock.exclusive_lock(target):
+        raise RuntimeError("synthetic operation failure")
 
     # Another process must be able to take the same OS lock, not just this thread.
     env = os.environ.copy()
