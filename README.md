@@ -9,13 +9,13 @@
 
 <p align="center"><em>Keep track of your campus lectures from the terminal — or through your AI agent.</em></p>
 
-`campusctl` is a local CLI for tracking lectures, assignments, course notices, and materials in the Chungnam National University (CNU) LMS, its only supported provider. It keeps local catalogs and opens a visible browser for LMS operations.
+`campusctl` is a local CLI for tracking lectures, assignments, course notices, and materials in the Chungnam National University (CNU) LMS, its only supported provider. It keeps local catalogs and opens Chromium for LMS operations.
 
 ## Highlights
 
-- Sync enrolled courses and lecture rows with one command: `campusctl sync`.
-- List unfinished lectures with status and deadlines: `campusctl lectures list`.
-- Check assignment deadlines and submission state, course-board notices, and downloadable materials after syncing each domain.
+- Sync lectures, assignments, notices, and materials in one combined pass: `campusctl sync` selects each course once.
+- List unfinished lectures and inspect lecture health and cached coursework: `campusctl lectures list`, `campusctl status`.
+- Refresh a particular domain with `sync --only DOMAIN` or `list --refresh`.
 - Download one selected material into your OS Downloads folder under `campusctl/<course label>/`.
 - Play a lecture in CNU's official player through a visible browser, one at a time; campusctl checks the LMS state afterward.
 - JSON output for scripts and agents.
@@ -47,7 +47,7 @@ uv tool install --with-executables-from playwright git+https://github.com/haesol
 uv tool update-shell
 ```
 
-After installing, open a new terminal. Run `campusctl setup` to install or check Chromium. If no browser is installed, setup asks before downloading it: “campusctl needs a Chromium browser for playback and sync. Download and install it now? [Y/n]”
+After installing, open a new terminal. Run `campusctl setup` for guided configuration, browser installation, credentials, and an optional first sync. In noninteractive or JSON mode, setup checks or installs Chromium without prompting; use `campusctl config init --username ID` and `campusctl auth set` separately.
 
 On Linux, install the browser's system dependencies if needed:
 
@@ -59,27 +59,25 @@ This may require administrator access. For PATH setup, Linux system libraries, b
 
 ## Quickstart
 
-The CLI prompts are in English. For a new configuration, run `campusctl config init` in a terminal. It asks for your CNU login ID (`CNU login ID:`), then whether to save the password (`Save your password now? [Y/n]`, default yes). If you agree, enter it at `LMS password:`; input is hidden. If you decline, run `campusctl auth set` yourself before syncing. If Chromium is missing, it asks `campusctl needs a Chromium browser for playback and sync. Download and install it now? [Y/n]` (default yes); if you decline, run `campusctl setup` before syncing.
+Run guided setup in a terminal. Password input is hidden and stored in the OS keyring by default; never pass a password as an argument. The first full sync is optional during setup.
 
 ```console
-$ campusctl config init
+$ campusctl setup
 $ campusctl sync
+$ campusctl status
 $ campusctl lectures list
-```
-
-To check another domain, sync it first, then list its cached records. Copy a material's full ID from the list to download just that file:
-
-```console
-$ campusctl sync --only assignments
+$ campusctl courses list
 $ campusctl assignments list
-$ campusctl sync --only notices
 $ campusctl notices list
-$ campusctl sync --only materials
 $ campusctl materials list
-$ campusctl materials download <ENTITY_ID>
+$ campusctl materials download 1
 ```
 
-Downloaded files go to your OS Downloads folder under `campusctl/<course label>/`; use `--out DIR` to choose another folder. Sync and material download can run without a visible browser through the global flag, for example `campusctl --headless sync` or `campusctl --headless materials download <ENTITY_ID>`, with a local Chromium profile; CDP browser sessions and playback cannot use `--headless`.
+`sync` refreshes all four metadata domains in one browser session, selecting each course once; `--only lectures,notices` narrows the domains. A failing course or domain retains its previous catalog rows and is reported as partial, not freshly checked. Lists read local catalogs without network access unless you pass `--refresh`. Use `campusctl --profile sync` to print phase timings on stderr; these timings make no performance guarantee.
+
+In human output, `courses list` numbers courses for `--course NUMBER`; a unique course-name fragment is also accepted. `materials list` numbers files for `materials download NUMBER`; a bare download opens a single-file picker in an interactive terminal. Numbers refer to the last printed list and fail if its catalog changes. Full IDs work without a printed list and are required with `--json`. Downloads save one selected official attachment under your OS Downloads folder at `campusctl/<course label>/`; use `--out DIR` for another directory.
+
+Global `--headless` and `--headed` precede the command, overriding `browser.headless` in configuration; headed is the default. For example, `campusctl --headless sync` and `campusctl --headless materials download <ENTITY_ID>` use a local Chromium profile. A configured CDP session cannot use headless mode. Official-player playback remains headed.
 
 Add `--json` when scripts or agents need JSON output; terminal output is human-readable by default.
 
@@ -127,7 +125,7 @@ The catalog and browser profile stay in campusctl's local data directory; the lo
 
 ## Upgrading
 
-From v0.2.1, run `uv tool upgrade campusctl` to get the new domain commands; refresh each domain with `sync --only` before listing. From v0.1, terminal output is human-readable by default; add `--json` for scripts and agents.
+Run `uv tool upgrade campusctl` to update. Run `campusctl sync` to refresh all four catalogs; use `--only` to limit a refresh.
 
 ## Documentation
 
@@ -162,7 +160,7 @@ In your OS Downloads folder under `campusctl/<course label>/` (including a redir
 
 #### Can I read assignment or notice details here?
 
-Not yet. v0.3 lists metadata, not detail text; detail reading is planned for v0.4.0. Notices come from each course board; read state is shown only when the to-do view has a match, otherwise it is unknown. If a course has more than 10 notices, notice sync reports `notice-board-paginated` for that course and retains its previous cached rows. Check the LMS for that course.
+The published commands list metadata only. Selected-detail fetch commands are not registered; notices come from each course board, and read state is unknown when no matching to-do row exists. A board with additional pages reports `notice-board-paginated` for that course and retains its previous rows; check the LMS for that course.
 
 ## License
 

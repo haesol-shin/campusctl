@@ -1,6 +1,6 @@
 # campusctl v0.3 command-line contract
 
-`campusctl` is a local CLI for the CNU LMS. Browser playback uses a persistent, visible Chromium session by default or an explicitly configured CDP endpoint. `lectures play` operates only on explicitly supplied lecture IDs; `sync` processes all courses by default or one selected with `--course`, while list commands read local catalogs. The default sync domain remains lectures. Scheduling, assignment submission and detail text for assignments and notices are not included.
+`campusctl` is a local CLI for the CNU LMS. `sync` collects lectures, assignments, notices, and materials by default in one session, with one verified course selection per course. `--only` narrows the domains; list and status commands use local catalogs. Playback and download require an explicitly selected item. Assignment/notice detail fetch is not registered.
 
 For installation and browser setup, see the [installation guide](../installation.md).
 Domain-specific commands and cache/error behavior: [assignments](assignments.md), [notices](notices.md), [materials](materials.md).
@@ -8,46 +8,44 @@ Domain-specific commands and cache/error behavior: [assignments](assignments.md)
 ## Commands
 
 ```text
+campusctl [--headless|--headed] [--profile] [--json] COMMAND
 campusctl --version [--json]
 campusctl config init [--username ID] [--json]
 campusctl doctor [--json]
 campusctl setup [--json]
 campusctl auth set [--json]
 campusctl auth status [--check] [--json]
-campusctl sync [--only lectures|assignments|notices|materials] [--course ID] [--json]
-campusctl courses list [--json]
-campusctl lectures list [--all] [--course ID] [--json]
-campusctl lectures play ENTITY_ID... [--speed 1.0|1.25|1.5] [--json]
-campusctl assignments list [--course ID] [--json]
-campusctl notices list [--course ID] [--json]
-campusctl materials list [--course ID] [--json]
-campusctl materials download ENTITY_ID [--out DIRECTORY] [--json]
+campusctl sync [--only lectures,assignments,notices,materials] [--course ID] [--json]
+campusctl status [--course ID] [--json]
+campusctl courses list [--refresh] [--json]
+campusctl lectures list [--all] [--course ID] [--refresh] [--json]
+campusctl lectures play ENTITY_ID... [--speed 1.0|1.25|1.5] [--replay] [--json]
+campusctl assignments list [--course ID] [--refresh] [--json]
+campusctl notices list [--course ID] [--refresh] [--json]
+campusctl materials list [--course ID] [--refresh] [--json]
+campusctl materials download [ENTITY_ID|NUMBER] [--out DIRECTORY] [--json]
 ```
 
 Output mode is resolved before argument parsing. `--json` anywhere in the arguments always selects JSON. Otherwise, `CAMPUSCTL_OUTPUT=json` selects JSON and `CAMPUSCTL_OUTPUT=human` selects human output; any other value is ignored and falls back to auto mode. Auto mode selects human output when stdout is a terminal and JSON otherwise. Long options must be spelled exactly; abbreviations are disabled. Help (`--help`/`-h`) remains human-readable and exits with status 0. `--version` returns the version in `result.version`.
 
-This is a v0.1 → v0.2 output-mode change: v0.1 emitted JSON by default, while v0.2 defaults to human output on a terminal. Pass `--json` or pipe stdout while output mode is auto to keep JSON output.
-
-- Configuration and setup prompts are allowed only when stdin and stdout are both terminals and human output mode is selected. `CAMPUSCTL_OUTPUT=human` can request human output for redirected reports, but does not enable these prompts without both terminals. The explicit password prompt for `auth set` is the exception: it requires terminal stdin, even when output mode is JSON or stdout is redirected.
-- `setup` installs or checks the local Chromium browser. A missing configuration is allowed; an existing invalid configuration returns its `config-invalid` error. CDP and custom-executable configurations are not replaced with a managed local browser. The command does not take the browser-session lock.
+- Configuration and setup prompts require terminal stdin and stdout and human output mode. Explicit `auth set` password input requires terminal stdin even with JSON output or redirected stdout.
+- `setup` guides a dual-TTY human through configuration, browser installation, hidden credential entry/check, and an optional first full sync. Noninteractive or JSON setup checks or installs local Chromium without interactive configuration.
 - `auth set` prompts whenever stdin is a terminal, regardless of output mode or stdout; its response still uses the selected output mode. It saves only to a secure keyring backend. Without terminal stdin it returns `auth-tty-required`. For `credentials.provider = "command"`, it explains that the helper supplies credentials and does not save a password.
 - `config init` creates a default CNU configuration at the resolved path and never overwrites an existing file. An existing file returns `user-action` code `config-exists`, exit 2, unless an interactive recovery saves missing keyring credentials.
 - With interactive human output, `config init` prompts for a missing login ID, offers password saving with default yes, then offers Chromium setup with default yes when the local managed browser is missing. Password input is hidden. The final `Next:` command reflects the current state: missing password → `campusctl auth set`; missing local browser → `campusctl setup`; otherwise → `campusctl sync`. If a configured `browser.executable_path` is unavailable, setup is not offered; `Next:` explains how to fix or remove that setting in the configuration file, and `campusctl auth set` remains the final step when a password is missing. A newly created file exits 0 unless password saving or browser installation fails. Existing files can use the same password recovery without being rewritten.
 - In JSON mode, `config init` suppresses prompts and never installs the browser. When the target file is missing, non-interactive use requires `--username`; otherwise the command returns invalid usage, exit 2. An existing-file check takes precedence. Login IDs must be non-empty and contain no control characters; invalid IDs return `config-invalid`, exit 2. Passwords are never accepted as arguments or environment variables.
-- `setup` returns status `ok` with `result.browser.installed`, `result.browser.action` (`installed`, `already-installed`, `declined`, `skipped-cdp`, or `skipped-custom-executable`), and `result.next`. A ready local browser or a configured CDP browser returns `["campusctl sync"]`; a declined install or unavailable custom executable returns an empty `next`. For example, a successful install returns `{"browser":{"installed":true,"action":"installed"},"next":["campusctl sync"]}`. `next` indicates browser readiness only; when setup ran without a configuration, run `campusctl config init` before syncing. Installer failure returns `error`, code `browser-install-failed`, exit 1. An existing invalid config returns its config error, including `config-invalid` (exit 2). In interactive human mode it asks before installing; otherwise it runs without a prompt.
+- Noninteractive `setup` reports `result.browser` and `result.next` after checking/installing Chromium; dual-TTY human setup also reports `result.steps` for guided configuration, browser, credentials, check and optional sync. Declined required steps return `setup-incomplete`; installer failures return `browser-install-failed`. Existing invalid configuration remains unchanged.
 - `auth status` reports provider, configured state, and keyring backend class or helper executable basename. It never executes a helper unless `--check` is supplied. On keyring, `--check` performs the normal read-only presence check; missing saved credentials return `user-action` code `credentials-not-configured`, preserving provider/backend/configured in the result. A keyring backend failure returns its user-action error and preserves provider with `configured: null` because password presence could not be determined. With the command provider, `--check` runs the helper and reports `ok` or `failed`; a failed check returns status `error`, exit 1, and `credential-helper-failed`, while retaining provider, configured, helper, and `check: "failed"` in the result.
-- `sync` defaults to lectures; `--only` selects lectures, assignments, notices, or materials. The global `--headless` flag is supported for every sync domain with a local Chromium profile; with a configured CDP browser it is refused with `headless-unavailable`. For lectures, `--course` limits a sync to one enrolled course; an unknown ID returns `user-action` code `course-not-found` without changing the catalog. It scrapes only lecture rows whose `moduletype` is `LV`. A course whose lecture-row wait times out is a successful empty course. A per-course failure yields `partial` and retains the previous records for that course. See the domain contracts for other domains' sync semantics.
-- `courses list` reads course records from the local lecture catalog.
-- `lectures list` shows incomplete lecture rows by default; `--all` includes LMS-complete and fully watched `recorded` rows. `--course` filters by course ID; an unknown course ID returns an empty list. It includes every `LV` media type; `video` and `youtube` are playable, while `offline` and `other` are not.
-- `lectures play` accepts one or more `ENTITY_ID`s and optional `--speed` (`1.0`, `1.25`, or `1.5`); without an override it uses `playback.default_speed`. YouTube uses native autoplay only at `1.0`; a configured or explicitly requested speed other than `1.0` returns `playback-speed-unavailable` before its player modal opens. The command validates every ID against the local catalog before opening a browser. `offline` and `other` media reject the whole request with `user-action`, exit 2, and `lecture-not-playable`, whose message lists `video` and `youtube` as supported types; a catalog record without `media` returns `catalog-outdated`. Unknown IDs return `lecture-unknown`, non-lecture IDs return `lecture-unsupported`, and complete or recorded IDs return `lecture-complete`; `result` has no `items` array. Valid duplicates are processed once in first-seen order. For each valid ID, the command enters its course room and reads authoritative row state and displayed progress. State `F` yields `already-complete`, updates that local record to complete, and continues without opening a player. Otherwise, if state is not `F`, `attendance_counted` is false, and parsed displayed progress reaches the required duration, the outcome is `recorded`; the command updates that local record and continues without opening a player. These live row outcomes precede player speed checks. Otherwise, `video` plays in the official visible Panopto player and `youtube` plays in the official visible player through native autoplay only. YouTube frame discovery accepts a nested frame whose host is `youtube.com` or `youtube-nocookie.com` and whose path begins `/embed/`, with a 30-second deadline. Native autoplay is confirmed only when read-only video state shows `currentTime` advance while `paused` is false within 30 seconds; an absent `<video>` element is retried within that window, and no YouTube player control is clicked. Failure to confirm autoplay returns `failed` with `youtube-autoplay-blocked`. During playback YouTube state is read every 30 seconds; playback paused for over two minutes or not advancing for over two minutes fails with `playback-failed`. Natural end is `ended` or `currentTime >= duration - 1`; after YouTube natural end, the command waits 60 seconds before closing through the normal UI. After either player closes, row state and displayed progress are polled every 30 seconds for up to 10 minutes. State `F` yields `completed`. When state is not `F`, `attendance_counted` is false, and parsed watched progress is at least the required duration, the result is `recorded`; the first such observation is terminal, and it reports the official row's full-watch/no-attendance status, not that this invocation necessarily played it. Other non-`F` states continue polling until a qualifying state appears or the deadline produces `unverified`. `recorded` does not stop the queue. `completed` and `already-complete` report LMS state only; campusctl does not award attendance credit. Each provider-observed completion or recorded outcome updates only that catalog record atomically under the session lock. Playback failure, unavailable speed, or unverified completion pauses the queue and returns `partial`, exit 1, with the corresponding error; remaining IDs are `not-started`. No provider progress-recalculation operation is invoked.
-  If the matching nested YouTube frame does not appear within 30 seconds, the item fails with `playback-failed`.
-  The visible YouTube video's `playbackRate` is read-only: it is checked before autoplay and alongside state at each 30-second poll. Any observed value other than `1.0` fails with `playback-speed-unavailable`; campusctl never changes it.
+- `sync` selects all four metadata domains by default, or the canonical-order comma-separated subset in `--only`. One session reads the roster and to-do, selects each course once, and collects the selected sections through their rendered menus. No attachment download, fetch or playback occurs. A failed domain/course retains its previous rows and marks them stale; other domains continue. Multi-domain JSON uses `result.domains[domain]` with each domain's `status`, `result`, and `errors`. `--profile` before sync writes phase measurements to stderr; it does not change the result. The global `--headless` and `--headed` override Boolean `browser.headless` (headed by default); local Chromium supports headless sync and material download, while CDP and playback require headed mode.
+- `courses list` reads a deduplicated roster from available local domain catalogs and displays numbered course IDs in human mode; `--refresh` first syncs lectures.
+- `lectures list` shows incomplete lecture rows by default; `--all` includes complete and `recorded` rows. `--refresh` first syncs lectures; `--course` uses the shared selector (human ID, last-printed number or unique name; JSON exact ID). Unknown filters return `course-not-found`. All `LV` media are listed; `video` and `youtube` are playable, `offline` and `other` are not.
+- `lectures play` requires explicit full lecture IDs, validates the entire request before browser startup and runs the official player serially in a headed browser. `video` and `youtube` are playable; `offline` and `other` return `lecture-not-playable`. Closed lectures return `lecture-not-open`; completed/recorded lectures return `lecture-complete` unless `--replay` explicitly requests them. Interactive replay requires one dual-TTY confirmation (default no); JSON replay is an explicit caller attestation and does not prompt. `--speed` permits `1.0`, `1.25`, or `1.5`, subject to player support; YouTube relies on native autoplay at `1.0` only. Campusctl never seeks, fakes progress, forces a YouTube rate or captures media. Official row state determines completion or `recorded` full-watch/not-counted status, without implying attendance credit. A failed or unverified item stops the queue and leaves later items `not-started`.
 
 Press Ctrl-C to interrupt the active playback queue. The command exits without a JSON response; completed catalog updates remain, and player, browser-session, and lock cleanup is attempted before exit.
 
 ### LMS collection
 
-Sync and selected-detail fetch use one browser session and follow the LMS menus to open course sections. They do not filter page requests. Each operational sync/fetch error names its domain and failing step in the human message and JSON `errors[].message`; a failed course retains its previous catalog rows. Selected attachment transfers still verify the clicked file identity, response type/signature, and size before publishing bytes.
+Sync opens sections through the rendered course menu and lets pages issue their own requests. Each operational sync error names its domain and failing step in human output and JSON `errors[].message`; a failed course retains its previous catalog rows. Selected attachment transfers verify the clicked file identity, response type/signature, and size before publishing bytes.
 
 ## Command results
 
@@ -64,17 +62,17 @@ In JSON mode, successful configuration creation has status `ok` and returns `{"c
   "data_dir": "<data-directory>",
   "provider": "cnu",
   "credentials": {"provider": "keyring", "configured": false},
-  "browser": {"mode": "local", "playwright_importable": true, "chromium_installed": true},
+  "browser": {"mode": "local", "headless": false, "headless_support": {"lectures.sync": true, "assignments.sync": true, "notices.sync": true, "materials.sync": true, "materials.download": true, "lectures.play": false}, "playwright_importable": true, "chromium_installed": true},
   "display_available": true,
   "playback": {"default_speed": 1.0, "supported_speeds": [1.0, 1.25, 1.5]},
   "catalog": {"present": false, "generated_at": null},
-  "capabilities": {"sync": ["lectures", "assignments", "materials", "notices"], "lectures": ["list", "play"], "assignments": ["list"], "materials": ["list", "download"], "notices": ["list"]}
+  "capabilities": {"sync": ["lectures", "assignments", "notices", "materials"], "lectures": ["list", "play"], "status": ["local"], "assignments": ["list"], "materials": ["list", "download"], "notices": ["list"]}
 }
 ```
 
 `auth set` returns `{"provider":"keyring","configured":true}` after storing a password. `auth status` returns provider and configured state, plus the keyring backend class or helper executable basename. Without `--check`, a keyring with no saved password returns status `ok` and `configured: false`; with `--check`, it returns `user-action` code `credentials-not-configured` with provider, backend, and configured fields in `result`. A keyring backend failure returns its `user-action` error with provider and `configured: null`, since password presence could not be determined. For the command provider, status includes the helper basename; `--check` adds `check: "ok"` or `"failed"`. `configured` records that the helper command is set, regardless of whether its check succeeds. When the helper check fails, the envelope has status `error` and exit code 1 with code `credential-helper-failed`, while retaining the `provider`, `helper`, `configured`, and `check` fields in `result`.
 
-For lecture sync, `sync --only lectures` returns `courses`, `lectures`, `incomplete`, `failed_courses`, and `catalog.generated_at`. `courses`, `lectures`, and `incomplete` count successfully scraped courses, their lecture rows, and rows whose completion is `incomplete`; `recorded` rows are excluded from the incomplete count. Each failed course is an object with `course_id` and `label`. A complete sync has status `ok`; one or more course failures has status `partial`, exit 1, and one `course-sync-failed` error per failed course. The safe error message names only the course ID and label. See the linked domain contracts for other sync results.
+For `sync --only lectures`, the result returns `courses`, `lectures`, `incomplete`, `failed_courses`, and `catalog.generated_at`. For multi-domain sync, `result.domains` contains each requested domain's corresponding result and status; completed domains and failed courses are distinguishable. Counts exclude retained stale rows. Course failures produce `partial`/1 with errors naming the domain and step. Domain contracts describe their fields and errors.
 
 `courses list` returns the cache metadata and course records:
 
@@ -88,7 +86,7 @@ For lecture sync, `sync --only lectures` returns `courses`, `lectures`, `incompl
 {"cache":{"generated_at":"<UTC timestamp>","path_present":true},"lectures":[]}
 ```
 
-`lectures play` returns an `items` array in first-seen order after catalog validation and browser-session startup. Catalog, lock, or browser-session errors before the session opens use the normal error envelope without per-item records. Each item contains `entity_id`, `outcome` (`completed`, `recorded`, `unverified`, `already-complete`, `failed`, or `not-started`), numeric `elapsed_seconds`, `watch_time`, and `provider_state`. `completed` means state `F` was observed after playback; `already-complete` means it was observed before player opening. `recorded` means the authoritative row state was not `F`, `attendance_counted` was false, and parsed displayed watched progress reached the required duration. It may be observed before this invocation opens a player (then `elapsed_seconds` is `0.0` and `watch_time` is `null`) or after playback; it reports the LMS's full-watch/no-attendance row status, not that this invocation watched it or that attendance was credited. It does not stop the queue. `unverified` means the post-play poll observed neither `F` nor that non-counted full-watch condition; `failed` means playback or a required player operation failed; `not-started` means the queue stopped before that ID or login prevented playback. `elapsed_seconds` is rounded to one decimal and measures only the playback loop, or is `0.0` when no loop ran. `watch_time` formats available playback-loop elapsed time as `HH:MM:SS`, is `null` when no watch time is available, and is not LMS progress telemetry. `provider_state` is the last authoritative row state observed, or `null` if none was read.
+`lectures play` returns `items` in first-seen order after catalog validation and browser startup. Each item includes `entity_id`, `outcome` (`completed`, `recorded`, `unverified`, `already-complete`, `failed`, or `not-started`), `elapsed_seconds`, `watch_time`, `provider_state`, `replay_requested` and `player_opened`. `recorded` means the official row shows full watched progress but no attendance credit; it may predate this invocation. Replay does not count as a played success unless its official player opened. Failures before browser startup use an ordinary error envelope without item records.
 
 ```json
 {"items":[{"entity_id":"cnu_lecture:<course-id>:<row-id>","outcome":"completed","elapsed_seconds":42.0,"watch_time":"00:00:42","provider_state":"F"}]}
@@ -100,7 +98,7 @@ Every item with outcome `failed` includes a `reason_code` matching the CLI error
 
 ## Browser and session
 
-Local mode uses headed Chromium with a persistent profile at `<data-dir>/profile/cnu`; `browser.executable_path` can select a local Chromium binary. CDP mode uses `browser.cdp_endpoint` and never silently falls back to local mode. An unreachable endpoint is a `user-action` error with code `browser-endpoint-unreachable`.
+Local mode uses headed Chromium by default with a persistent profile at `<data-dir>/profile/cnu`; `browser.headless` or the global CLI override selects headless only for supported operations. `browser.executable_path` can select a local Chromium binary. CDP mode uses `browser.cdp_endpoint` and never silently falls back to local mode; headless with CDP returns `headless-unavailable`. An unreachable endpoint returns `browser-endpoint-unreachable`.
 
 Browser-mutating commands hold one non-blocking exclusive lock for the whole operation. Its default path is `<data-dir>/session.lock`; `browser.lock_path` can override it. If another process holds the lock, the command returns `busy` with exit code 75.
 
@@ -141,7 +139,7 @@ In JSON mode, unknown exceptions are returned with code `internal` and their exc
 
 ### Error codes
 
-- `usage-error`, `not-implemented`, `unsupported-domain`, `course-not-found`, `course-sync-failed`
+- `usage-error`, `not-implemented`, `unsupported-domain`, `course-not-found`, `course-discovery-failed`, `course-sync-failed`, `item-identity-missing`, `notice-identity-ambiguous`, `notice-board-paginated`, `selection-missing`, `selection-stale`, `selection-invalid`, `course-index-unavailable`, `course-id-required`
 - `config-missing`, `config-invalid`, `config-exists`
 - `auth-tty-required`, `auth-command-provider`, `auth-empty-password`
 - `credentials-username-missing`, `credentials-not-configured`
@@ -151,6 +149,7 @@ In JSON mode, unknown exceptions are returned with code `internal` and their exc
 - `catalog-missing`, `catalog-invalid`, `catalog-schema-unsupported`, `catalog-outdated`, `catalog-write-failed`
 - `browser-not-installed` remediation is `Run 'campusctl setup' to install the browser.`; `browser-install-failed` reports installer failure with status `error`, exit 1.
 - `browser-endpoint-unreachable`, `lecture-unknown`, `lecture-not-open`, `lecture-complete`, `lecture-unsupported`, `lecture-not-playable`, `login-failed`, `login-action-required`, `lms-unavailable`, `playback-failed`, `playback-unverified`, `youtube-autoplay-blocked`, `playback-speed-unavailable`
+- `headless-unavailable`, `entity-unknown`, `unsupported-media-type`, `file-too-large`, `download-failed`, `output-path-conflict`; `policy-blocked` applies only to rejected selected-file transfers, not page requests
 - `internal`
 
 ## Paths and configuration
@@ -167,12 +166,12 @@ username = "<login-id>"
 
 [credentials]
 provider = "keyring" # or "command"
-# command = ["/absolute/path/to/credential-helper", "--profile", "<profile>"]
+# command = ["<absolute-helper-path>", "--profile", "<profile>"]
 
 [browser]
-# cdp_endpoint = "http://127.0.0.1:9223/json/version"
-# lock_path = "/absolute/path/to/shared-browser.lock"
-# executable_path = "/absolute/path/to/chromium"
+# cdp_endpoint = "https://browser.invalid/json/version"
+# lock_path = "<absolute-lock-path>"
+# executable_path = "<absolute-chromium-path>"
 
 [playback]
 default_speed = 1.0

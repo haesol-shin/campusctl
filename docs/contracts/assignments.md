@@ -9,7 +9,7 @@ campusctl [--headless|--headed] sync --only assignments [--course COURSE_ID] [--
 campusctl assignments list [--course COURSE_ID] [--json]
 ```
 
-`sync` without `--only` still syncs lectures. Assignment sync runs for all enrolled courses unless filtered to an enrolled course ID. It holds the single non-blocking browser session lock and uses a visible session by default. The global `--headless` flag runs it headless with a local Chromium profile; with a configured CDP browser it is refused with `headless-unavailable` before browser or catalog access, and it never falls back to headed execution. The list reads only `<data-dir>/catalog/assignments.json`, without configuration, session, lock, or network access. An unknown list course filter yields an empty assignment array; an unknown filtered sync course returns `course-not-found`.
+Bare `sync` refreshes all four metadata domains in one combined pass; `--only assignments` limits it to assignments. The pass selects each course once, enters its task section through the rendered menu, and lets its page requests proceed normally. Assignment sync holds the single non-blocking browser lock, uses headed mode by default and supports global `--headless` with local Chromium; CDP headless returns `headless-unavailable`. `list` reads only `<data-dir>/catalog/assignments.json` without browser/network/lock; `--refresh` runs assignment sync first. Human `--course` accepts a full ID, last-printed course number or unique name fragment; JSON requires a full ID. Unknown filters return `course-not-found`.
 
 Assignment sync enters each course before arming the task-list response wait around the task-menu click. The first post-commit task list, its task-page Referer, and the active topbar course must agree; an opaque encrypted request body is not treated as a plaintext course ID.
 
@@ -64,7 +64,7 @@ Successful sync `result` has `{"courses":2,"assignments":2,"failed_courses":[],"
 
 ## Stale cache and errors
 
-A successful course replaces all its cached rows, including when an empty task list is confirmed by successful course-specific data completion and an idle empty table. An unaddressable assignment ID fails the **whole course**: its previous rows remain and `failed_courses` marks it stale. Other successful courses can still commit, yielding `partial`/exit 1. An incomplete request, busy page, or unrelated empty widget never clears assignments. A partial full sync retains formerly cached courses whose removal cannot yet be confirmed (`removal-deferred`). A full enrollment discovery failure preserves rows and the previous catalog timestamp but marks `enrollment_state` as `unknown`. Filtered sync changes only its selected course. List cache metadata exposes unknown enrollment and failures even when the filtered list is empty; human output warns about both.
+A successful course replaces all its rows, including a confirmed empty task list. Missing native identity fails the whole course: previous rows stay stale and `failed_courses` identifies the course. An incomplete response, busy page or unrelated empty widget never clears assignments. Other courses and domains continue after a domain-specific failure; partial full sync defers removal of previously cached courses. Discovery failure retains rows and previous timestamp while marking enrollment unknown. Errors name the domain and failing step, without exposing request data.
 
 | Status / exit | Assignment codes and action |
 | --- | --- |

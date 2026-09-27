@@ -1,53 +1,9 @@
-# Assignments implementation tasks (PR2)
+# Assignment verification
 
-Use [spec.md](spec.md), [design.md](design.md), [Foundation design](../00-foundation/design.md), and the [constitution](../constitution.md). Tasks start after PR1.1 installs the named suppression/static-asset interceptor in `providers/cnu/ui_policy.py`; PR1's policy accepts exact routes but does not yet accept PR1.1 `suppress` and `static_resource_types` (`src/campusctl/providers/cnu/ui_policy.py:72-121,124-163`; `src/campusctl/commands/__init__.py:11-13,27-83`). `[P]` means disjoint-file task with no unmet implementation dependency; implementation lanes do not edit each other's files. Use sanitized owner-approved `assignments.sync` pins in this spec; no further route/empty-markup evidence gate. All verification uses fixtures and targeted tests; no formatter, linter, project-wide suite, live LMS, or external notifier mutation during a lane.
+[Requirements](spec.md) · [Design](design.md)
 
-## Phase 1 — Setup
-
-- [ ] T001 [P] [US1] Create sanitized assignment table fixtures in `tests/fixtures/assignments/rows.html`: native `a[data-act="detail"][data-id="TB_L_REPORT{digits}"]` format (replace `{digits}` with synthetic numbers), valid row beside absent-`data-id` link, blank/malformed/duplicate IDs, hidden row, completed badge/status, null due and raw `<table class="table mb-0" data-page-size="10" id="table_list"><tbody id="tbody"></tbody></table>`. Fake the course-specific `stdList` XHR separately: pending, failed, successful zero-item and successful nonempty; include idle and busy page states, plus unrelated `#alarmList .table_dataBlank`. Do **not** invent a required `#todoListNoData` task marker. T003/T005 consume them (verify after T005: `pytest -q tests/test_assignments_provider.py::test_pending_empty_tbody_waits_for_render`).
-- [ ] T002 [P] [US3] Freeze legacy identity/field expectations from owner-held sanitized parser and ledger evidence dated 2026-09-25 in `tests/test_assignments_compat.py` (verify: `pytest -q tests/test_assignments_compat.py::test_assignment_native_fields_match_legacy_mapping`).
-
-Checkpoint: Owner-held sanitized task HTML dated 2026-09-25 and reviewed pins ground fixtures; sanitized report §4.1's alleged task-specific marker is contradicted by reviewed HTML and remains a non-blocking clarification. Real IDs, course names/titles, tokens and raw account content never enter fixtures/specs. PR1.1 is the only upstream interceptor dependency; do not defer publication for the unknown marker.
-
-## Phase 2 — Foundational (blocking)
-
-- [ ] T003 [US1] Extract `a[data-act="detail"]` candidates independently of `[data-id]`, normalize title/due/status, and reject absent/blank/duplicate or malformed (not `TB_L_REPORT{digits}`) IDs for the **whole course** in `src/campusctl/providers/cnu/assignments.py`, writing behavioral tests in `tests/test_assignments_provider.py` (verify: `pytest -q tests/test_assignments_provider.py::test_absent_data_id_fails_whole_course`; `pytest -q tests/test_assignments_provider.py::test_assignment_rows_and_identity_failure`).
-- [ ] T004 [P] [US2] Implement module-owned approved `CAPABILITY["policy"]` exactly as [design.md](design.md) lists: L-only `assignments.sync` guarded bootstrap, task-list, myLecture/lecture/task background API and properties routes (both properties paths with `query:{"_":"cachebuster"}`), three named Panopto suppressions, GET-only L static `script`/`stylesheet`/`font`/`image`, `selected_file_routes:[]`, `allowed_media:[]`, `max_bytes:null`. Add `register`/`dispatch`/`render`/`sync` hooks and cache-only list/renderer in `src/campusctl/commands/assignments.py` with `tests/test_assignments_cli.py`; never add API pins to provider/shared registry (verify: `pytest -q tests/test_assignments_cli.py::test_cached_list_modes_and_policy_gate`).
-
-Checkpoint: Provider and command APIs match foundation signatures and separate tests. The approved pins come from the owner decision, not a fabricated/unapproved policy; T003 and T004 run in disjoint implementation lanes against the frozen contract.
-
-## Phase 3 — US1: Refresh assignments
-
-- [ ] T005 [US1] Implement bounded sync: call `ensure_logged_in` once before PR1.1 `install_ui_request_interceptor`, then use navigation-only `enter_course_section` for each course on that authenticated page under the guard; GET `/std/myLecture` remains pinned for roster/re-entry. Parse attached hidden rows in `src/campusctl/providers/cnu/assignments.py`; count an empty course only after its `POST /api/v1/task/stdList` XHR succeeds, the page is idle and `tbody#tbody` has zero rows (prefer successful response body's row count when available), never from `#alarmList .table_dataBlank`. Pass complete headers/`redirected_from`, record `UiRequestDiagnostics.suppressed_count`/`suppressed_reasons`, call `interceptor.raise_if_denied()` before any catalog publication and `await interceptor.close()` in cleanup. Use existing lock/per-course merge/discovery failure handling; only **named** suppression outcomes continue, `policy-blocked` denies the entire sync, and an expired session's redirect/login navigation fails `login-action-required` or existing login error without re-login/retry (verify: `pytest -q tests/test_assignments_provider.py::test_full_partial_filtered_and_unknown_merges`; `pytest -q tests/test_assignments_provider.py::test_pending_empty_tbody_waits_for_render`; `pytest -q tests/test_assignments_provider.py::test_range_header_rejected_on_allowed_get`; `pytest -q tests/test_assignments_provider.py::test_suppressed_panopto_and_unpinned_request_denial`).
-- [ ] T006 [US1] Wire command `async sync(..., headless=False)` to provider passing its single `CAPABILITY["policy"]`; reject unverified headless before session/catalog access in `src/campusctl/commands/assignments.py` (verify: `pytest -q tests/test_assignments_cli.py::test_headless_refusal_and_sync_counts`).
-
-Checkpoint: Successful course-specific `stdList` completion and an idle zero-row `tbody#tbody` clear cached rows even without any task-specific empty marker; a pending/failed XHR, busy page or the unrelated alarm-list empty widget **never** clears rows. Failed/unaddressable courses retain old rows, unknown enrollment preserves timestamp; three named Panopto requests abort before network with counted suppression reasons, while any other unpinned page request or Range/redirect/media violation aborts the entire sync without catalog write. Fixture both properties GETs with valid `_` cachebuster and reject extra, duplicate or malformed queries; other data routes reject query. Login runs once before guard; expiration later fails closed without retry. T005 follows T003 in provider lane; T006 follows T004 in command lane, concurrently with T005.
-
-## Phase 4 — US2: Inspect assignments
-
-- [ ] T007 [US2] Finish course-filtered cache-only JSON list and human status/due/full-ID/stale rendering in `src/campusctl/commands/assignments.py` (verify: `pytest -q tests/test_assignments_cli.py::test_narrow_list_full_ids_and_stale_warning`).
-- [ ] T008 [US2] Verify foundation `discover_domain_modules()` automatically exposes the approved `assignments` module and skips an unapproved one, without changes to `src/campusctl/cli.py`, in `tests/test_assignments_integration.py` (verify: `pytest -q tests/test_assignments_integration.py::test_discovery_gate_and_assignment_cli`).
-- [ ] T009 [US2] Verify foundation routes `sync.assignments` and `assignments.list` through module rendering without changes to `src/campusctl/presentation.py`, in `tests/test_assignments_integration.py` (verify: `pytest -q tests/test_assignments_integration.py::test_human_assignment_renderer_has_full_ids`).
-
-Checkpoint: T008–T009 follow T005–T007 and the PR1.1 interceptor prerequisite. There are **zero PR2 edits** to CLI/presentation registries; discovery, capability composition, dispatch and renderer routing use foundation hooks. Only the implemented list operation is advertised.
-
-## Phase 5 — US3: Preserve legacy assignment identity
-
-- [ ] T010 [US3] Verify catalog row fields and ID against the legacy upsert argument mapping and submitted/due fixture expectations in `tests/test_assignments_compat.py` (verify: `pytest -q tests/test_assignments_compat.py::test_submitted_and_null_due_legacy_mapping`).
-
-Checkpoint: The later adapter can consume `course.id`, `course.label`, `task_id`, `title`, `due_date`, `is_submitted` directly; no campusctl DB access, ID parsing, or changed external task-action identity. Before cutover, the adapter separately exercises the real legacy upsert API with an isolated preseeded SQLite fixture.
-
-## Phase 6 — Polish and release gate
-
-- [ ] T011 [US2] Publish the assignments command, JSON schema, stale semantics, headless gate, approved capability policy and human sample in `docs/contracts/assignments.md` only (verify: `pytest -q tests/test_assignments_integration.py::test_published_assignment_cli_contract`).
-- [ ] T012 [US1] Exercise the actual fixture-backed CLI sync/list path, busy lock, unverified headless refusal, partial course, missing `data-id` rollback, Range-header policy abort, and narrow human output in `tests/test_assignments_integration.py` (verify: `pytest -q tests/test_assignments_integration.py`).
-
-Checkpoint: T011–T012 are sequential after domain integration; approved auto-discovery, capability pins and per-domain contract publish atomically in one reviewed PR, with no shared `cli.py`, `presentation.py` or `docs/contracts/cli.md` edits. No live LMS during implementation. Headless remains refused until the separately approved post-PR2–4 compatibility check. No detail operations, files, video or stream capture.
-
-## Dependencies & parallel lanes
-
-- **Prerequisite:** PR1 identity/catalog/course-context/discovery/CLI-renderer hooks and PR1.1 `UiRequestPolicy` suppress/static-asset schema plus `install_ui_request_interceptor`, `UiRequestDiagnostics`, `UiRequestInterceptor`. Route/effect and task empty-state evidence is owner-approved in the decision file and sanitized report; no pending approval gate for PR2 list-only publication.
-- **Lane A — provider implementation:** T001 → T003 → T005; owns `src/campusctl/providers/cnu/assignments.py`, `tests/fixtures/assignments/rows.html`, `tests/test_assignments_provider.py`. Sequential within lane; independent of Lane B after contract freeze.
-- **Lane B — command implementation:** T004 → T006 → T007; owns `src/campusctl/commands/assignments.py`, `tests/test_assignments_cli.py`. Sequential within lane; parallel with Lane A.
-- **Lane C — compatibility implementation:** T002 → T010; owns only `tests/test_assignments_compat.py`. Parallel with A/B; no external legacy notifier edits.
-- **Lane D — integration:** T008 → T009 → T011 → T012; owns only `tests/test_assignments_integration.py` and `docs/contracts/assignments.md`. Sequential after A/B and PR1.1; zero edits to shared `src/campusctl/cli.py`, `src/campusctl/presentation.py`, or `docs/contracts/cli.md`.
+- Verify submitted/unsubmitted and hidden rows retain separate task ID, full entity ID and displayed due text
+- Verify absent, malformed and duplicate native IDs retain previous course rows as stale while other courses commit
+- Verify a completed empty task response clears prior rows only after the course task table settles
+- Verify the combined pass enters the task menu after one verified course selection, reports named step failures and issues no detail/submission action
+- Run the [live run protocol](../live-run.md) for changes to LMS behavior
