@@ -65,9 +65,18 @@ SCHEMA_VERSION = 2
 CHECKS = frozenset({"page-readiness", "course-identity", "todo-grid", "archive-state", "modal-binding"})
 DIAGNOSTIC_COUNT_NAMES = frozenset(
     {
-        "rendered_rows", "response_items", "tot_cnt", "expected_rows", "modal_controls", "page_size",
-        "current_page", "expected_page", "expected_total",
-        "selection_requests", "entry_documents", "entry_commits",
+        "rendered_rows",
+        "response_items",
+        "tot_cnt",
+        "expected_rows",
+        "modal_controls",
+        "page_size",
+        "current_page",
+        "expected_page",
+        "expected_total",
+        "selection_requests",
+        "entry_documents",
+        "entry_commits",
     }
 )
 DIAGNOSTIC_BOOL_STATES = frozenset({"ids_match", "route_match", "same_document", "modal_clear", "completed"})
@@ -371,12 +380,12 @@ class SpanRecorder:
         if type(started) is not int or type(bound_ns) is not int or bound_ns < 0:
             raise ValueError("invalid diagnostic timing")
         if not isinstance(counts, dict) or any(
-            key not in DIAGNOSTIC_COUNT_NAMES or type(value) is not int or value < 0
-            for key, value in counts.items()
+            key not in DIAGNOSTIC_COUNT_NAMES or type(value) is not int or value < 0 for key, value in counts.items()
         ):
             raise ValueError("invalid diagnostic counts")
         if not isinstance(states, dict) or any(
-            type(key) is not str or (
+            type(key) is not str
+            or (
                 type(value) is not str or value not in NEXT_STATES
                 if key == "next_state"
                 else key not in DIAGNOSTIC_BOOL_STATES or type(value) is not bool

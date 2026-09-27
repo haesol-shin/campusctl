@@ -210,8 +210,12 @@ def profile_diagnostic(
         bound_ns=bound_ns,
         counts=counts,
         states=states,
-        domain=_pick_label(domain, inherited.domain, None if session is None else session.domain, in_session=in_session),
-        course=_pick_label(course, inherited.course, None if session is None else session.course, in_session=in_session),
+        domain=_pick_label(
+            domain, inherited.domain, None if session is None else session.domain, in_session=in_session
+        ),
+        course=_pick_label(
+            course, inherited.course, None if session is None else session.course, in_session=in_session
+        ),
         page_kind=_pick_label(
             page_kind, inherited.page_kind, None if session is None else session.page_kind, in_session=in_session
         ),

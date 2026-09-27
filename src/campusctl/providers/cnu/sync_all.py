@@ -23,7 +23,10 @@ from campusctl.domain_catalog import (
 from campusctl.envelope import CampusError
 from campusctl.providers.cnu import assignments, materials, notices
 from campusctl.providers.cnu.course_context import (
-    COURSE_MENU_TIMEOUT_MS, _TOPBAR_COURSE_JS, _css_string, _wait_for_topbar_course_id,
+    _TOPBAR_COURSE_JS,
+    COURSE_MENU_TIMEOUT_MS,
+    _css_string,
+    _wait_for_topbar_course_id,
 )
 from campusctl.providers.cnu.courses import COURSE_LINK_SELECTOR, EXTRACT_COURSES_JS, parse_courses
 from campusctl.providers.cnu.login import MY_LECTURE_URL, ensure_logged_in
@@ -188,9 +191,12 @@ async def _select_course(page: Any, course: dict[str, Any], ordinal: int, domain
             or topbar_id != course["course_id"]
         ):
             browser.profile_diagnostic(
-                "course-identity", started=proof_started,
+                "course-identity",
+                started=proof_started,
                 bound_ns=browser.PROTOCOL_TIMEOUT_SECONDS * 1_000_000_000,
-                domain=domain, course=ordinal, page_kind="course-entry",
+                domain=domain,
+                course=ordinal,
+                page_kind="course-entry",
                 counts={
                     "selection_requests": len(requests),
                     "entry_documents": len(documents),
@@ -245,7 +251,8 @@ async def _section(
             "/std/archive",
         }:
             browser.profile_diagnostic(
-                "page-readiness", started=check_started,
+                "page-readiness",
+                started=check_started,
                 bound_ns=COURSE_MENU_TIMEOUT_MS * 1_000_000,
                 states={"route_match": False},
             )
@@ -259,14 +266,16 @@ async def _section(
         topbar_id = await _wait_for_topbar_course_id(page)
         if topbar_id != course["course_id"]:
             browser.profile_diagnostic(
-                "course-identity", started=check_started,
+                "course-identity",
+                started=check_started,
                 bound_ns=COURSE_MENU_TIMEOUT_MS * 1_000_000,
                 states={"ids_match": False, "route_match": page.main_frame.url == current_url},
             )
             raise ValueError("Section menu belongs to another course")
         if page.main_frame.url != current_url:
             browser.profile_diagnostic(
-                "page-readiness", started=check_started,
+                "page-readiness",
+                started=check_started,
                 bound_ns=COURSE_MENU_TIMEOUT_MS * 1_000_000,
                 states={"route_match": False, "ids_match": True},
             )

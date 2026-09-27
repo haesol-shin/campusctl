@@ -41,7 +41,9 @@ async def _wait_for_topbar_course_id(page: Any) -> str:
             return await bounded(poll(), COURSE_MENU_TIMEOUT_MS / 1000, "waiting for the course topbar")
         except CampusError:
             profile_diagnostic(
-                "course-identity", started=started, bound_ns=COURSE_MENU_TIMEOUT_MS * 1_000_000,
+                "course-identity",
+                started=started,
+                bound_ns=COURSE_MENU_TIMEOUT_MS * 1_000_000,
             )
             raise
 

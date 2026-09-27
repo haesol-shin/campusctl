@@ -139,7 +139,6 @@ async def wait_page_ready(
             **{key: value for key, value in labels.items() if key != "wait_kind"},
         )
 
-
     async def ready() -> None:
         nonlocal check, route_match, ids_match
         entered_route = False

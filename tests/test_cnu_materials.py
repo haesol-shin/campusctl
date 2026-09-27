@@ -967,11 +967,18 @@ def test_incomplete_archive_state_records_compared_counts_without_identity() -> 
     profile = recorder.finish(stderr=io.StringIO())
     diagnostic = next(row for row in profile["diagnostics"] if row["check"] == "archive-state")
     assert diagnostic["counts"] == {
-        "rendered_rows": 2, "tot_cnt": 2, "page_size": 10,
-        "expected_rows": 2, "current_page": 1, "expected_page": 1,
+        "rendered_rows": 2,
+        "tot_cnt": 2,
+        "page_size": 10,
+        "expected_rows": 2,
+        "current_page": 1,
+        "expected_page": 1,
     }
     assert diagnostic["states"] == {
-        "completed": False, "ids_match": True, "route_match": True, "modal_clear": True,
+        "completed": False,
+        "ids_match": True,
+        "route_match": True,
+        "modal_clear": True,
     }
     assert diagnostic["elapsed_ns"] > 0 and diagnostic["bound_ns"] == materials._WAIT_MS * 1_000_000
 

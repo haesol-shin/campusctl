@@ -10,8 +10,8 @@ import pytest
 
 from campusctl.browser import profile_context
 from campusctl.envelope import CampusError
-from campusctl.providers.cnu import notices, readiness
 from campusctl.profiling import SpanRecorder
+from campusctl.providers.cnu import notices, readiness
 
 L = "https://lms.example.invalid"
 
@@ -879,7 +879,9 @@ def test_todo_missing_terminal_proof_times_out(
     diagnostic = next(row for row in profile["diagnostics"] if row["check"] == "todo-grid")
     assert diagnostic["page_kind"] == "todo" and diagnostic["course"] is None
     assert diagnostic["counts"] == {
-        "rendered_rows": 1, "response_items": 2 if response_complete else 1, "tot_cnt": 2,
+        "rendered_rows": 1,
+        "response_items": 2 if response_complete else 1,
+        "tot_cnt": 2,
     }
     assert diagnostic["states"]["next_state"] == "absent"
     assert diagnostic["elapsed_ns"] > 0 and diagnostic["bound_ns"] == 850 * 1_000_000

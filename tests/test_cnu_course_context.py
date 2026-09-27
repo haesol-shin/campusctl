@@ -10,8 +10,8 @@ import pytest
 
 from campusctl.browser import profile_context
 from campusctl.envelope import CampusError
-from campusctl.providers.cnu import course_context
 from campusctl.profiling import SpanRecorder
+from campusctl.providers.cnu import course_context
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "lms_sources" / "course_navigation.json"
 
@@ -117,9 +117,11 @@ def test_readiness_origin_failure_records_sanitized_route_state(navigation_fixtu
     )
     recorder = SpanRecorder(enabled=True)
     with profile_context(recorder), pytest.raises(ValueError, match="origin"):
-        asyncio.run(course_context.prepare_course_section(
-            page, {}, navigation_fixture["course_id"], navigation_fixture["section"]
-        ))
+        asyncio.run(
+            course_context.prepare_course_section(
+                page, {}, navigation_fixture["course_id"], navigation_fixture["section"]
+            )
+        )
     profile = recorder.finish(stderr=io.StringIO())
     assert profile["diagnostics"][0]["check"] == "page-readiness"
     assert profile["diagnostics"][0]["page_kind"] == "course-entry"

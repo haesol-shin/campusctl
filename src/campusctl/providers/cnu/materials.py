@@ -514,9 +514,7 @@ async def _wait_archive_state(
     async def complete() -> dict:
         while True:
             try:
-                return await _archive_state(
-                    page, expected_page, expected_total, expected_course_id, observed=observed
-                )
+                return await _archive_state(page, expected_page, expected_total, expected_course_id, observed=observed)
             except ValueError:
                 await asyncio.sleep(0.05)
 
@@ -526,10 +524,13 @@ async def _wait_archive_state(
         except CampusError as error:
             if started is not None:
                 profile_diagnostic(
-                    "archive-state", started=started, bound_ns=_WAIT_MS * 1_000_000,
+                    "archive-state",
+                    started=started,
+                    bound_ns=_WAIT_MS * 1_000_000,
                     counts=observed.get("counts") if observed else None,
                     states=observed.get("states") if observed else None,
-                    domain="materials", page_kind="archive",
+                    domain="materials",
+                    page_kind="archive",
                 )
             if error.code != "browser-timeout" or expected_course_id is None:
                 raise
@@ -564,10 +565,14 @@ async def _post_names(
         if route_match is not None:
             states["route_match"] = route_match
         profile_diagnostic(
-            "modal-binding", started=started, bound_ns=_WAIT_MS * 1_000_000,
-            counts=counts, states=states, domain="materials", page_kind="archive",
+            "modal-binding",
+            started=started,
+            bound_ns=_WAIT_MS * 1_000_000,
+            counts=counts,
+            states=states,
+            domain="materials",
+            page_kind="archive",
         )
-
 
     async def controls() -> list[dict[str, Any]]:
         modal = await page.evaluate(_TARGETS_JS, {"modalOnly": True, "boardItemId": post_id})

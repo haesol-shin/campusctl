@@ -143,8 +143,16 @@ def _safe_profile(profile: object) -> dict | None:
     if not isinstance(profile, dict):
         return None
     from campusctl.profiling import (
-        CHECKS, COUNT_NAMES, DIAGNOSTIC_BOOL_STATES, DIAGNOSTIC_COUNT_NAMES,
-        DOMAINS, END_REASONS, NEXT_STATES, PAGE_KINDS, PHASES, WAIT_KINDS,
+        CHECKS,
+        COUNT_NAMES,
+        DIAGNOSTIC_BOOL_STATES,
+        DIAGNOSTIC_COUNT_NAMES,
+        DOMAINS,
+        END_REASONS,
+        NEXT_STATES,
+        PAGE_KINDS,
+        PHASES,
+        WAIT_KINDS,
     )
 
     top = {
@@ -273,8 +281,15 @@ def _safe_profile(profile: object) -> dict | None:
     if any(span["document"] is not None and span["document"] not in ordinals for span in safe_spans):
         return None
     diagnostic_order = (
-        "check", "outcome", "page_kind", "domain", "course",
-        "counts", "states", "elapsed_ns", "bound_ns",
+        "check",
+        "outcome",
+        "page_kind",
+        "domain",
+        "course",
+        "counts",
+        "states",
+        "elapsed_ns",
+        "bound_ns",
     )
     safe_diagnostics = []
     for row in diagnostics:
@@ -293,19 +308,28 @@ def _safe_profile(profile: object) -> dict | None:
         values, states = row["counts"], row["states"]
         if not isinstance(values, dict) or not isinstance(states, dict):
             return None
-        if any(type(key) is not str or key not in DIAGNOSTIC_COUNT_NAMES or not _exact_int(value)
-               for key, value in values.items()):
+        if any(
+            type(key) is not str or key not in DIAGNOSTIC_COUNT_NAMES or not _exact_int(value)
+            for key, value in values.items()
+        ):
             return None
-        if any(type(key) is not str or (
-            type(value) is not str or value not in NEXT_STATES if key == "next_state"
-            else key not in DIAGNOSTIC_BOOL_STATES or type(value) is not bool
-        ) for key, value in states.items()):
+        if any(
+            type(key) is not str
+            or (
+                type(value) is not str or value not in NEXT_STATES
+                if key == "next_state"
+                else key not in DIAGNOSTIC_BOOL_STATES or type(value) is not bool
+            )
+            for key, value in states.items()
+        ):
             return None
-        safe_diagnostics.append({
-            **{key: row[key] for key in diagnostic_order if key not in {"counts", "states"}},
-            "counts": {key: values[key] for key in sorted(values)},
-            "states": {key: states[key] for key in sorted(states)},
-        })
+        safe_diagnostics.append(
+            {
+                **{key: row[key] for key in diagnostic_order if key not in {"counts", "states"}},
+                "counts": {key: values[key] for key in sorted(values)},
+                "states": {key: states[key] for key in sorted(states)},
+            }
+        )
     return {
         "schema_version": 2,
         "run": profile["run"],

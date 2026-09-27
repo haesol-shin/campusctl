@@ -380,7 +380,6 @@ async def _grid_snapshot(page: Any, capture: _TodoCapture) -> list[dict[str, Any
     response_items = 0
     response_total: int | None = None
 
-
     async def completed(start: int, *, required: bool) -> tuple[bool, tuple[int, int] | None]:
         async def response_for(request: Any) -> Any:
             while True:
@@ -449,7 +448,11 @@ async def _grid_snapshot(page: Any, capture: _TodoCapture) -> list[dict[str, Any
                     if observed is not None:
                         observed["rendered_rows"] = len(page_rows)
                         observed["next_state"] = (
-                            "absent" if not next_present else "disabled" if snapshot.get("next_disabled") is True else "enabled"
+                            "absent"
+                            if not next_present
+                            else "disabled"
+                            if snapshot.get("next_disabled") is True
+                            else "enabled"
                         )
                     pagination_present = snapshot.get("pagination_present") is True or next_present
                     current = (
@@ -558,8 +561,13 @@ async def _grid_snapshot(page: Any, capture: _TodoCapture) -> list[dict[str, Any
                 if "next_state" in observed:
                     states["next_state"] = observed["next_state"]
             profile_diagnostic(
-                "todo-grid", started=started, bound_ns=bound_ns,
-                counts=counts, states=states, domain="notices", page_kind="todo",
+                "todo-grid",
+                started=started,
+                bound_ns=bound_ns,
+                counts=counts,
+                states=states,
+                domain="notices",
+                page_kind="todo",
             )
         raise
     finally:

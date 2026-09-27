@@ -141,7 +141,12 @@ def test_failed_check_is_bounded_and_contains_only_allowlisted_evidence():
     started = recorder.check_start()
     clock.now = 7
     recorder.diagnostic(
-        "archive-state", started=started, bound_ns=10, domain="materials", course=2, page_kind="archive",
+        "archive-state",
+        started=started,
+        bound_ns=10,
+        domain="materials",
+        course=2,
+        page_kind="archive",
         counts={"rendered_rows": 1, "expected_rows": 3, "tot_cnt": 3},
         states={"ids_match": False, "completed": True},
     )
@@ -153,11 +158,19 @@ def test_failed_check_is_bounded_and_contains_only_allowlisted_evidence():
     sink = io.StringIO()
     profile = recorder.finish(stderr=sink)
     assert profile["dropped_events"] == 1
-    assert profile["diagnostics"] == [{
-        "check": "archive-state", "outcome": "failed", "page_kind": "archive", "domain": "materials",
-        "course": 2, "counts": {"rendered_rows": 1, "expected_rows": 3, "tot_cnt": 3},
-        "states": {"ids_match": False, "completed": True}, "elapsed_ns": 7, "bound_ns": 10,
-    }]
+    assert profile["diagnostics"] == [
+        {
+            "check": "archive-state",
+            "outcome": "failed",
+            "page_kind": "archive",
+            "domain": "materials",
+            "course": 2,
+            "counts": {"rendered_rows": 1, "expected_rows": 3, "tot_cnt": 3},
+            "states": {"ids_match": False, "completed": True},
+            "elapsed_ns": 7,
+            "bound_ns": 10,
+        }
+    ]
     assert "secret.invalid" not in sink.getvalue()
     shared = SpanRecorder(enabled=True, max_events=1, clock=Clock())
     with shared.span("extract"):
