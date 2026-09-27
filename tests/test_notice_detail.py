@@ -58,6 +58,8 @@ class FakePage:
         fixture: Fixture,
         *,
         wrong_info: bool = False,
+        direct_info: bool = False,
+        rendered_native: str | None = NATIVE,
         row_addtime: str = "2026-09-01 09:00",
         row_insert_dt: str = "2026-09-01",
         board_number: int = 7,
@@ -65,6 +67,8 @@ class FakePage:
     ) -> None:
         self.fixture = fixture
         self.wrong_info = wrong_info
+        self.direct_info = direct_info
+        self.rendered_native = rendered_native
         self.row_addtime = row_addtime
         self.row_insert_dt = row_insert_dt
         self.board_number = board_number
@@ -122,14 +126,15 @@ class FakePage:
             )
         elif selector.startswith("tbody#table-body a["):
             self.url = urljoin(self.url, self.fixture.links[0])
+            info = {
+                "boarditem_no": "TB_L_BOARDITEM7002" if self.wrong_info else NATIVE,
+                "course_id": "course-example",
+                "boarditem_title": "Example notice",
+                "boarditem_content": "First instruction.",
+            }
             self._respond(
                 "/api/v1/board/notice/info",
-                {
-                    "data": {
-                        "boarditem_no": "TB_L_BOARDITEM7002" if self.wrong_info else NATIVE,
-                        "course_id": "course-example",
-                    }
-                },
+                info if self.direct_info else {"data": info},
             )
             self._respond("/api/v1/board/cmt/list", {"list": []})
 
@@ -176,7 +181,7 @@ class FakePage:
             return [{"links": [url]} for url in self.fixture.links]
         assert "#noticeDetail" in script
         return {
-            "native_id": self.fixture.detail_native,
+            "native_id": self.rendered_native,
             "title": "Example notice",
             "parts": [
                 {"kind": "text", "text": "First instruction.\n"},
@@ -199,6 +204,8 @@ def fixture_page(
     addtime: str = "2026-09-01 09:00",
     insert_dt: str = "2026-09-01",
     board_number: int = 7,
+    direct_info: bool = False,
+    rendered_native: str | None = NATIVE,
     duplicate_title_day: bool = False,
 ) -> FakePage:
     fixture = Fixture()
@@ -213,6 +220,8 @@ def fixture_page(
         row_insert_dt=insert_dt,
         board_number=board_number,
         duplicate_title_day=duplicate_title_day,
+        direct_info=direct_info,
+        rendered_native=rendered_native,
     )
 
 
@@ -326,9 +335,25 @@ def test_wrong_selected_notice_fails_before_transfer() -> None:
     assert not page.listeners
 
 
+def test_direct_body_info_identity_and_comments_capture() -> None:
+    page = fixture_page(direct_info=True)
+    snapshot = asyncio.run(capture_notice_detail(page, selected()))
+    assert snapshot.source_url == ORIGIN + "/std/noticeDetail?no=TB_L_BOARDITEM7001&curPage=1"
+    assert not page.listeners
+
+
+def test_opened_detail_reports_rendered_identity_check() -> None:
+    page = fixture_page(direct_info=True, rendered_native=None)
+    with pytest.raises(CampusError) as exc:
+        asyncio.run(capture_notice_detail(page, selected()))
+    assert exc.value.code == "entity-unknown"
+    assert "rendered detail native ID" in exc.value.message
+    assert not page.listeners
+
+
 def test_mismatched_detail_response_rejected() -> None:
     page = fixture_page(wrong_info=True)
-    with pytest.raises(CampusError, match="another board item"):
+    with pytest.raises(CampusError, match="notice info boarditem_no does not match"):
         asyncio.run(capture_notice_detail(page, selected()))
     assert not page.listeners
 

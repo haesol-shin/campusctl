@@ -9,6 +9,10 @@ All notable changes to campusctl are documented here. This project follows [Keep
 - Let the LMS load its own page requests during sync and fetch, and open notice and archive sections through their menus
 - Name the failing domain and step in sync and fetch errors while retaining selected-file binding and attachment response validation
 
+### Fixed
+- Read the global to-do before selecting a course so all enrolled notice boards and archives remain reachable
+- Report the failing notice detail check without exposing provider identities
+
 ## [0.3.2] - 2026-09-26
 
 ### Changed

@@ -82,8 +82,12 @@ _DETAIL_JS = r"""() => {
 }"""
 
 
-def _failed(message: str) -> CampusError:
-    return CampusError(
+class NoticeDetailError(CampusError):
+    """A provider-generated notice check with a static, identity-free message."""
+
+
+def _failed(message: str) -> NoticeDetailError:
+    return NoticeDetailError(
         "entity-unknown", f"Notice detail: {message}", "Sync the notice catalog and retry.", "user-action"
     )
 
@@ -278,7 +282,7 @@ async def capture_notice_detail(page: Any, selected_row: dict[str, Any]) -> Deta
         await bounded(page.wait_for_load_state("networkidle"), PROTOCOL_TIMEOUT_SECONDS, "settling notice detail")
         source_url = page.url
         if _native_from_href(source_url, board_url) != native:
-            raise _failed("Opened notice does not match the selected board item.")
+            raise _failed("opened detail URL native ID does not match the selected board item.")
         payload = await response_payload(_DETAIL_PATHS[0])
         if (
             not isinstance(payload, dict)
@@ -288,12 +292,12 @@ async def capture_notice_detail(page: Any, selected_row: dict[str, Any]) -> Deta
             raise _failed("detail response is invalid.")
         body = payload["body"]
         info = body.get("data", body)
-        if (
-            not isinstance(info, dict)
-            or info.get("boarditem_no") != native
-            or ("course_id" in info and info["course_id"] != course_id)
-        ):
-            raise _failed("Opened notice response belongs to another board item.")
+        if not isinstance(info, dict):
+            raise _failed("notice info body.data must be an object when present.")
+        if info.get("boarditem_no") != native:
+            raise _failed("notice info boarditem_no does not match the selected board item.")
+        if "course_id" in info and info["course_id"] != course_id:
+            raise _failed("notice info course_id does not match the selected course.")
         comments = await response_payload(_DETAIL_PATHS[1])
         if (
             not isinstance(comments, dict)
@@ -302,13 +306,12 @@ async def capture_notice_detail(page: Any, selected_row: dict[str, Any]) -> Deta
         ):
             raise _failed("comments response is invalid.")
         detail = await bounded(page.evaluate(_DETAIL_JS), PROTOCOL_TIMEOUT_SECONDS, "reading notice detail")
-        if (
-            not isinstance(detail, dict)
-            or detail.get("native_id") != native
-            or not isinstance(detail.get("title"), str)
-            or not detail["title"].strip()
-        ):
-            raise _failed("rendered detail identity cannot be verified.")
+        if not isinstance(detail, dict):
+            raise _failed("rendered detail content container is missing.")
+        if detail.get("native_id") != native:
+            raise _failed("rendered detail native ID does not match the selected board item.")
+        if not isinstance(detail.get("title"), str) or not detail["title"].strip():
+            raise _failed("rendered detail title is missing.")
         extracted = _extract_parts(detail.get("parts"), source_url=source_url)
         has_attachment_ref = any(isinstance(p, ResourceReference) and p.kind == "attachment" for p in extracted)
         notice_has_attachments = bool(matched_item.get("has_attachments") or selected_row.get("has_attachments"))
