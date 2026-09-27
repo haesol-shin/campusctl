@@ -527,7 +527,8 @@ def test_seven_courses_one_session_and_full_normalized_catalogs(
         for path in ("/std/lecture", "/std/course", "/std/notice"):
             assert paths[("GET", path)] == 7
         assert paths[("GET", "/std/task")] in {7, 8}  # Browser history may restore from cache.
-        assert paths[("GET", "/std/archive")] == 14
+        # One archive entry per course; unchanged attachment dialogs do not reload the document.
+        assert paths[("GET", "/std/archive")] == len(IDS)
         selection_positions = [
             index
             for index, (method, path, _) in enumerate(server.requests)
@@ -541,7 +542,7 @@ def test_seven_courses_one_session_and_full_normalized_catalogs(
                 for path in ("/std/lecture", "/std/course", "/std/task", "/std/notice", "/std/archive")
             ]
             assert section_positions == sorted(section_positions)
-            assert visits.count("/std/archive") == 2
+            assert visits.count("/std/archive") == 1
             assert "/std/todo" not in visits
         assert all("log" not in path.lower() and "video" not in path.lower() for _, path, _ in server.requests)
         monkeypatch.setenv("CAMPUSCTL_DATA_DIR", str(tmp_path))
@@ -1147,7 +1148,7 @@ def test_first_course_todo_failure_preserves_notice_and_continues_archive(
         assert ("GET", "/std/todo", None) in server.requests and sum(
             path == "/std/todo" for _, path, _ in server.requests
         ) == 1
-        assert sum(path == "/std/archive" and method == "GET" for method, path, _ in server.requests) == 14
+        assert sum(path == "/std/archive" and method == "GET" for method, path, _ in server.requests) == len(IDS)
 
 
 def test_failed_todo_navigation_restores_roster_before_archive_menu(

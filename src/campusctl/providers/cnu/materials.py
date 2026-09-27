@@ -318,9 +318,16 @@ def _attachment_names(body: Any) -> dict[str, str]:
 _ARCHIVE_LIST = "/api/v1/archive/list"
 
 
-async def _archive_navigation(page: Any, action: Callable[[], Any], *, document: bool = True) -> None:
+async def _archive_navigation(
+    page: Any,
+    action: Callable[[], Any],
+    *,
+    document: bool = True,
+    expected_course_id: str | None = None,
+) -> None:
     """Accept one list request originating after this archive navigation only."""
-    expected_course_id = await _step(page.evaluate(_TOPBAR_COURSE_JS), "checking archive course")
+    if expected_course_id is None:
+        expected_course_id = await _step(page.evaluate(_TOPBAR_COURSE_JS), "checking archive course")
     if not isinstance(expected_course_id, str) or not expected_course_id:
         raise ValueError("archive course identity unavailable")
     activity = _RequestWindow(page)
@@ -441,56 +448,25 @@ async def _archive_state(
     *,
     expected_document: Any = None,
 ) -> dict:
-    def validate(state: Any) -> dict:
-        if (
-            not isinstance(state, dict)
-            or state.get("completed") is not True
-            or type(state.get("total_count")) is not int
-            or type(state.get("page_size")) is not int
-            or type(state.get("row_count")) is not int
-            or not isinstance(state.get("posts"), list)
-            or state["page_size"] < 1
-            or state["total_count"] < 0
-            or state.get("current_page") != expected_page
-            or (expected_total is not None and state["total_count"] != expected_total)
-            or (expected_course_id is not None and state.get("selected_course_id") != expected_course_id)
-        ):
-            raise ValueError("archive table did not complete")
-        expected_rows = min(state["page_size"], max(0, state["total_count"] - (expected_page - 1) * state["page_size"]))
-        if state["row_count"] != expected_rows:
-            raise ValueError("archive page rows incomplete")
-        return state
-
-    async def observe() -> Any:
-        return await _step(page.evaluate(_ARCHIVE_STATE_JS, expected_document), "observing archive table")
-
-    if expected_document is not None:
-        return validate(await observe())
-
-    async def ready() -> dict:
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + _WAIT_MS / 1000
-        while True:
-            state = await observe()
-            try:
-                return validate(state)
-            except ValueError:
-                # A known wrong course is not a transient loading state.
-                if (
-                    isinstance(state, dict)
-                    and expected_course_id is not None
-                    and state.get("selected_course_id") not in (None, expected_course_id)
-                ):
-                    raise
-                remaining = deadline - loop.time()
-                if remaining <= 0:
-                    raise
-                await asyncio.sleep(min(0.05, remaining))
-
-    try:
-        return await asyncio.wait_for(ready(), timeout=_WAIT_MS / 1000)
-    except TimeoutError:
-        raise ValueError("archive table did not complete") from None
+    state = await _step(page.evaluate(_ARCHIVE_STATE_JS, expected_document), "observing archive table")
+    if (
+        not isinstance(state, dict)
+        or state.get("completed") is not True
+        or type(state.get("total_count")) is not int
+        or type(state.get("page_size")) is not int
+        or type(state.get("row_count")) is not int
+        or not isinstance(state.get("posts"), list)
+        or state["page_size"] < 1
+        or state["total_count"] < 0
+        or state.get("current_page") != expected_page
+        or (expected_total is not None and state["total_count"] != expected_total)
+        or (expected_course_id is not None and state.get("selected_course_id") != expected_course_id)
+    ):
+        raise ValueError("archive table did not complete")
+    expected_rows = min(state["page_size"], max(0, state["total_count"] - (expected_page - 1) * state["page_size"]))
+    if state["row_count"] != expected_rows:
+        raise ValueError("archive page rows incomplete")
+    return state
 
 
 async def _wait_archive_state(
@@ -678,9 +654,9 @@ async def _archive_unchanged(
     )
 
 
-async def _restore_archive_document(page: Any) -> None:
-    """Restore the archive menu and validate its list response."""
-    await _archive_navigation(page, lambda: page.click(_ARCHIVE_MENU))
+async def _restore_archive_document(page: Any, *, expected_course_id: str) -> None:
+    """Restore the archive menu and validate its list response for the selected course."""
+    await _archive_navigation(page, lambda: page.click(_ARCHIVE_MENU), expected_course_id=expected_course_id)
 
 
 async def enumerate_archive(page: Any, course: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -734,7 +710,6 @@ async def enumerate_archive(page: Any, course: Mapping[str, Any]) -> list[dict[s
                 ):
                     await _step(page.evaluate(_CLICK_ICON_JS, post_id), "opening archive file icon")
                 try:
-
                     try:
                         names, targets = await _post_names(page, activity, baseline, post_id)
                     except CampusError as error:

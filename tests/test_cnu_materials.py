@@ -241,6 +241,13 @@ class FakePage:
         clicks = self.events.count(materials._ARCHIVE_MENU)
         return clicks > getattr(self, "_menu_before_restore", clicks)
 
+    def _selected_course_id(self) -> str | None:
+        if self.mutation in {"missing-course", "ambiguous-course"}:
+            return None
+        if self.mutation == "wrong-course" or (self.case.get("wrong_restore_course") and self._restoring()):
+            return "other-course"
+        return self.case["course"]["course_id"]
+
     def _observed_posts(self) -> list[dict[str, str]]:
         pages = self.case.get("pages", [self.case["posts"]])
         index = self.page_number - 1
@@ -273,13 +280,13 @@ class FakePage:
         if not hasattr(self, "_menu_before_restore"):
             self._menu_before_restore = clicks
         posts = self._observed_posts()
+        self.state_reads += 1
+        if self.case.get("progressive_rows") and posts and self.state_reads == 1:
+            posts = posts[:-1]
+            self.partial_states += 1
         if self.case.get("restore_fails") and self._restoring():
             return {"completed": False, "posts": [], "modal_clear": False}
-        selected = self.case["course"]["course_id"]
-        if self.mutation in {"missing-course", "ambiguous-course"}:
-            selected = None
-        elif self.mutation == "wrong-course" or (self.case.get("wrong_restore_course") and self._restoring()):
-            selected = "other-course"
+        selected = self._selected_course_id()
         total = sum(len(items) for items in self.case.get("pages", [self.case["posts"]]))
         if self.mutation == "changed-total":
             total += 1
@@ -325,11 +332,7 @@ class FakePage:
     async def evaluate(self, script: str, arg=None):
         self.events.append("evaluate:" + script.split("*/")[0].split("/*")[-1].strip())
         if script == readiness._TOPBAR_COURSE_JS:
-            return (
-                "other-course"
-                if self.case.get("wrong_restore_course") and self.events.count(materials._ARCHIVE_MENU) > 1
-                else self.case["course"]["course_id"]
-            )
+            return self._selected_course_id()
         if "archiveMetadataState" in script:
             return self._observed_state(arg)
         if "archiveMetadataClickIcon" in script:
@@ -517,7 +520,7 @@ def test_material_collector_validates_entry_response_and_preserves_full_records(
     assert page.listeners["request"] == []
 
 
-def test_archive_waits_for_progressive_rows_across_pages_and_restoration(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_archive_waits_for_progressive_rows_across_pages(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(materials, "_WAIT_MS", 200)
     data = fixture()
     case = next(case for case in data["cases"] if case["name"] == "multiple-posts")
@@ -529,7 +532,8 @@ def test_archive_waits_for_progressive_rows_across_pages_and_restoration(monkeyp
 
     rows = asyncio.run(materials.enumerate_archive(page, data["course"]))
     assert {row["file_id"] for row in rows} == {"file-first", "file-next"}
-    assert page.partial_states >= 3
+    assert page.partial_states >= 2
+    assert page.events.count(materials._ARCHIVE_MENU) == 0
 
 
 def test_material_collector_rejects_duplicate_entry_list() -> None:
@@ -839,7 +843,8 @@ def test_profile_distinguishes_retained_and_reloaded_restores() -> None:
     assert all(handle.disposed for handle in page.handles)
 
 
-def test_initial_archive_state_waits_for_completed_rows() -> None:
+def test_initial_archive_state_waits_for_completed_rows(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(materials, "_WAIT_MS", 500)
     course = fixture()["course"]
     page = FakePage(
         {"course": course, "posts": _sample_posts("board-a"), "initial_incomplete_observations": 2},
