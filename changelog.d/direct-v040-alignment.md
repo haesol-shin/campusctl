@@ -8,4 +8,4 @@
 
 ## Fixed
 - Enter course sections through their rendered menus and name the failing domain and step in operational errors
-- Correct Windows browser diagnostics so display availability is not inferred from Linux environment variables
+- Keep roster diagnostic records when old-record pruning hits a transient Windows file lock
