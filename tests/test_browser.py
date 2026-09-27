@@ -154,12 +154,6 @@ def _cdp_config(endpoint: str) -> dict[str, Any]:
     return {"browser": {"cdp_endpoint": endpoint}}
 
 
-def _closed_port() -> int:
-    with socket.socket() as listener:
-        listener.bind(("127.0.0.1", 0))
-        return listener.getsockname()[1]
-
-
 def test_bounded_timeout_is_safe_and_names_operation() -> None:
     async def scenario() -> None:
         started = asyncio.Event()
@@ -390,12 +384,15 @@ def test_missing_playwright_chromium_reports_install_remediation(
 def test_unreachable_cdp_endpoint_is_actionable_and_does_not_echo_url(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    endpoint = f"http://127.0.0.1:{_closed_port()}/json/version"
     install_fake_playwright(monkeypatch, FakeChromium())
     monkeypatch.setattr(browser, "PROTOCOL_TIMEOUT_SECONDS", 1)
 
-    with pytest.raises(CampusError) as caught:
-        _run(browser.open_session(_cdp_config(endpoint), data_dir=tmp_path).__aenter__())
+    # Reserve the port without listening: connections fail, and another worker cannot claim it.
+    with socket.socket() as reserved:
+        reserved.bind(("127.0.0.1", 0))
+        endpoint = f"http://127.0.0.1:{reserved.getsockname()[1]}/json/version"
+        with pytest.raises(CampusError) as caught:
+            _run(browser.open_session(_cdp_config(endpoint), data_dir=tmp_path).__aenter__())
 
     assert caught.value.code == "browser-endpoint-unreachable"
     assert endpoint not in caught.value.message
