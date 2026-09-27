@@ -4,8 +4,10 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
+from playwright.sync_api import sync_playwright
 
 
 @pytest.mark.parametrize(
@@ -22,6 +24,13 @@ def test_required_chromium_rejects_missing_coverage(tmp_path: Path, source: str,
     (tmp_path / "conftest.py").write_text(Path(__file__).with_name("conftest.py").read_text())
     (tmp_path / "test_policy.py").write_text(source)
     env = {**os.environ, "CAMPUSCTL_REQUIRE_CHROMIUM": "1"}
+    if expected == "marked test skipped":
+        browsers = tmp_path / "synthetic-browsers"
+        env["PLAYWRIGHT_BROWSERS_PATH"] = str(browsers)
+        with patch.dict(os.environ, PLAYWRIGHT_BROWSERS_PATH=str(browsers)), sync_playwright() as playwright:
+            executable = Path(playwright.chromium.executable_path)
+        executable.parent.mkdir(parents=True)
+        executable.touch()
     result = subprocess.run(
         [sys.executable, "-m", "pytest", "-q", "-c", str(Path(__file__).parents[1] / "pyproject.toml"), str(tmp_path)],
         capture_output=True,
