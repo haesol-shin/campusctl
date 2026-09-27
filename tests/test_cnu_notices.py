@@ -908,7 +908,7 @@ def test_hidden_next_is_absent_in_failed_grid_diagnostic(monkeypatch: pytest.Mon
         }
     ]
     page.todo_response = {"body": {"list": [{"row_idx": 1}], "tot_cnt": 2}}
-    monkeypatch.setattr(notices, "COURSE_MENU_TIMEOUT_MS", 200)
+    monkeypatch.setattr(notices, "COURSE_MENU_TIMEOUT_MS", 850)
     monkeypatch.setattr(notices, "_ORIGIN", L)
     monkeypatch.setattr(notices, "_TODO_URL", L + "/std/todo")
 
