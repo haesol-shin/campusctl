@@ -392,7 +392,7 @@ def fixture() -> dict:
 
 @pytest.mark.parametrize("case", fixture()["cases"], ids=lambda case: case["name"])
 def test_archive_fixture_cases(monkeypatch: pytest.MonkeyPatch, case: dict) -> None:
-    monkeypatch.setattr(materials, "_WAIT_MS", 100)
+    monkeypatch.setattr(materials, "_WAIT_MS", 275)
     course = fixture()["course"]
     page = FakePage({**case, "course": course}, [])
     if case.get("fails"):
