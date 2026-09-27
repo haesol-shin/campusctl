@@ -267,7 +267,7 @@ def test_fifo_at_output_name_is_rejected_without_opening(tmp_path: Path) -> None
 
 
 def test_truncated_casefold_collision(tmp_path: Path) -> None:
-    directory = prepare_output_dir(tmp_path, "cnu_lms_material:course:long")
+    directory = prepare_output_dir(tmp_path, "cnu_lms_material:course:long", tmp_path / "out")
     original = "A" * 196 + ".PDF"
     assert len(safe_component(original).encode()) == 200
     first = _publish(directory, original, b"first")
