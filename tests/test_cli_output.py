@@ -331,3 +331,93 @@ def test_auth_set_prompts_with_tty_stdin_in_json_mode(tmp_path: Path, monkeypatc
     assert envelope["result"] == {"provider": "keyring", "configured": True}
     assert prompts == ["LMS password: "]
     assert stored == [("student-id", "test-password")]
+
+
+def _batch_items(*outcomes: str) -> list[dict[str, Any]]:
+    items = []
+    for index, outcome in enumerate(outcomes, start=1):
+        item: dict[str, Any] = {"entity_id": f"cnu_assignment:course-1:task-{index}", "outcome": outcome}
+        if outcome in {"completed", "partial"}:
+            item["source_package"] = {
+                "entity_id": item["entity_id"],
+                "completeness": "partial" if outcome == "partial" else "complete",
+                "path": f"/data/sources/{item['entity_id']}",
+                "content_path": f"/data/sources/{item['entity_id']}/content.md",
+                "omitted_resources": [],
+            }
+        if outcome in {"partial", "failed"}:
+            item["reason_code"] = "fetch-failed"
+        items.append(item)
+    return items
+
+
+@pytest.mark.parametrize("command", ["assignments", "notices"])
+@pytest.mark.parametrize("output", ["json", "human"])
+def test_fetch_batch_emitter_keeps_first_failure_status(
+    monkeypatch: pytest.MonkeyPatch, command: str, output: str
+) -> None:
+    cases = [
+        (
+            [
+                CampusError("login-action-required", "Terms are required.", status="user-action"),
+                CampusError("fetch-failed", "Detail failed.", status="error"),
+                CampusError("session-busy", "Lock occupied.", status="busy"),
+            ],
+            _batch_items("failed", "failed", "not-started"),
+            "user-action",
+            2,
+        ),
+        (
+            [
+                CampusError("fetch-failed", "Detail failed.", status="error"),
+                CampusError("login-action-required", "Terms are required.", status="user-action"),
+            ],
+            _batch_items("failed", "failed"),
+            "error",
+            1,
+        ),
+        (
+            [
+                CampusError("session-busy", "Lock occupied.", status="busy"),
+                CampusError("fetch-failed", "Detail failed.", status="error"),
+            ],
+            _batch_items("failed", "not-started"),
+            "busy",
+            75,
+        ),
+        (
+            [CampusError("fetch-failed", "Detail failed.", status="error")],
+            _batch_items("completed", "failed"),
+            "partial",
+            1,
+        ),
+    ]
+    for errors, items, status, exit_code in cases:
+        _, stdout = _streams(monkeypatch, stdin_tty=False, stdout_tty=output == "human")
+        monkeypatch.setattr(cli, "_dispatch", lambda _args, items=items, errors=errors: ({"items": items}, errors))
+        argv = [command, "fetch", "one", "two"]
+        if output == "json":
+            argv.append("--json")
+        assert cli.main(argv) == exit_code
+        text = stdout.getvalue()
+        if output == "json":
+            envelope = json.loads(text)
+            assert envelope["status"] == status
+            assert [item["code"] for item in envelope["errors"]] == [error.code for error in errors]
+            assert envelope["result"]["items"] == items
+        else:
+            assert not text.startswith("{")
+            assert errors[0].code in text
+            assert items[-1]["entity_id"] in text
+
+    _, stdout = _streams(monkeypatch, stdin_tty=False, stdout_tty=False)
+    ordinary = [CampusError("course-sync-failed", "One course failed.", status="user-action")]
+    monkeypatch.setattr(
+        cli,
+        "_dispatch",
+        lambda _args: ({"courses": 1, "lectures": 0, "incomplete": 0, "failed_courses": []}, ordinary),
+    )
+    assert cli.main(["sync", "--json"]) == 1
+    preserved = json.loads(stdout.getvalue())
+    assert preserved["status"] == "partial"
+    assert preserved["errors"][0]["code"] == "course-sync-failed"

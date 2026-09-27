@@ -258,6 +258,8 @@ def doctor_result(override: bool | None = None) -> tuple[dict[str, Any], CampusE
                     "notices.sync",
                     "materials.sync",
                     "materials.download",
+                    "assignments.fetch",
+                    "notices.fetch",
                     "lectures.play",
                 )
             },
@@ -311,7 +313,7 @@ def _emit_response(
     status: str | None = None,
 ) -> int:
     if errors is not None:
-        envelope_status = "partial"
+        envelope_status = status or "partial"
         envelope_errors = [error_item(item) for item in errors]
     elif error is not None:
         envelope_status = error.status
@@ -326,6 +328,21 @@ def _emit_response(
     else:
         render_human(command_key, envelope, sys.stdout)
     return EXIT_CODES[envelope_status]
+
+
+def _fetch_batch_status(result: dict[str, Any], errors: list[CampusError]) -> str:
+    """Return the multi-ID fetch envelope status from published packages and ordered failures."""
+    items = result.get("items")
+    records = items if isinstance(items, list) else []
+    published = any(isinstance(item, dict) and item.get("outcome") in {"completed", "partial"} for item in records)
+    unsuccessful = any(
+        isinstance(item, dict) and item.get("outcome") in {"partial", "failed", "not-started"} for item in records
+    )
+    if published and unsuccessful:
+        return "partial"
+    if not published and errors:
+        return errors[0].status
+    return "ok"
 
 
 def _emit_partial(
@@ -839,7 +856,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                 render_human(command_key, envelope, sys.stdout)
             code = EXIT_CODES[args._status]
         elif isinstance(error, list):
-            code = _emit_partial(result, error, output_mode=output_mode, command_key=command_key)
+            if command_key in {"assignments.fetch", "notices.fetch"} and isinstance(result, dict) and "items" in result:
+                code = _emit_response(
+                    command_key,
+                    output_mode,
+                    result=result,
+                    errors=error,
+                    status=_fetch_batch_status(result, error),
+                )
+            else:
+                code = _emit_partial(result, error, output_mode=output_mode, command_key=command_key)
         else:
             code = _emit_response(command_key, output_mode, result=result, error=error)
         if code == 0 and output_mode == "human" and command_key == "courses.list" and hasattr(args, "_course_roster"):

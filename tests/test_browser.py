@@ -744,3 +744,120 @@ def test_sibling_tasks_cannot_share_an_owned_session_lock(tmp_path: Path, monkey
         await task
 
     _run(scenario())
+
+
+def _chromium_available() -> bool:
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        return False
+    with sync_playwright() as manager:
+        return Path(manager.chromium.executable_path).is_file()
+
+
+def test_persistent_profile_reopens_synthetic_cookie_until_server_expiry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if not _chromium_available():
+        pytest.skip("local Playwright Chromium not installed")
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    token = "synthetic-session"
+    valid = {token}
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            cookie = self.headers.get("Cookie", "")
+            has_cookie = f"session={token}" in cookie
+            if has_cookie and token in valid:
+                body = b"<a data-act='moveLecture'>Synthetic course</a>"
+                extra = None
+            else:
+                body = b"<form><input name='user_id'></form>"
+                extra = None if has_cookie else f"session={token}; Path=/; Max-Age=3600"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            if extra is not None:
+                self.send_header("Set-Cookie", extra)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, _format: str, *_args: object) -> None:
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{server.server_address[1]}/"
+    monkeypatch.setattr(
+        "campusctl.providers.cnu.login.get_credentials",
+        lambda _config: (_ for _ in ()).throw(AssertionError("credentials must not be read")),
+    )
+
+    async def scenario() -> None:
+        from campusctl.providers.cnu.login import ensure_logged_in
+
+        config = {"browser": {"headless": True}}
+        try:
+            async with browser.open_session(config, data_dir=tmp_path, operation="materials.download") as session:
+                await session.page.goto(url)
+                await session.page.reload()
+                assert await session.page.locator("[data-act='moveLecture']").count() == 1
+            async with browser.open_session(config, data_dir=tmp_path, operation="materials.download") as session:
+                await ensure_logged_in(
+                    session.page,
+                    {},
+                    target_url=url,
+                    expected_selector="[data-act='moveLecture']",
+                    timeout_ms=5000,
+                )
+                assert await session.page.locator("input[name='user_id']").count() == 0
+            valid.clear()
+            async with browser.open_session(config, data_dir=tmp_path, operation="materials.download") as session:
+                await session.page.goto(url)
+                assert await session.page.locator("input[name='user_id']").count() == 1
+        finally:
+            server.shutdown()
+
+    _run(scenario())
+
+
+def test_cdp_attachment_preserves_unrelated_tabs(tmp_path: Path) -> None:
+    if not _chromium_available():
+        pytest.skip("local Playwright Chromium not installed")
+    import socket
+
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+
+    async def scenario() -> None:
+        from playwright.async_api import async_playwright
+
+        async with async_playwright() as playwright:
+            external = await playwright.chromium.launch(headless=True, args=[f"--remote-debugging-port={port}"])
+            try:
+                deadline = asyncio.get_running_loop().time() + 5
+                while True:
+                    try:
+                        await browser.resolve_cdp_ws_url(f"http://127.0.0.1:{port}/json/version")
+                        break
+                    except Exception:
+                        if asyncio.get_running_loop().time() >= deadline:
+                            pytest.skip("external CDP endpoint was not available")
+                        await asyncio.sleep(0.1)
+                unrelated = await external.new_page()
+                await unrelated.goto("data:text/html,<title>Unrelated</title><p>Keep</p>")
+                config = {"browser": {"cdp_endpoint": f"http://127.0.0.1:{port}/json/version"}}
+                async with browser.open_session(
+                    config, data_dir=tmp_path, operation="assignments.fetch", require_owned_page=True
+                ) as session:
+                    assert session.mode == "cdp"
+                    await session.page.goto("data:text/html,<title>Owned</title>")
+                assert unrelated.is_closed() is False
+                assert await unrelated.title() == "Unrelated"
+            finally:
+                await external.close()
+
+    _run(scenario())

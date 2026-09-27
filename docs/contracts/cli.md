@@ -21,9 +21,9 @@ campusctl courses list [--refresh] [--json]
 campusctl lectures list [--all] [--course ID] [--refresh] [--json]
 campusctl lectures play ENTITY_ID... [--speed 1.0|1.25|1.5] [--replay] [--json]
 campusctl assignments list [--course ID] [--refresh] [--json]
-campusctl assignments fetch ENTITY_ID [--out DIR] [--json]
+campusctl assignments fetch ENTITY_ID... [--out DIR] [--json]
 campusctl notices list [--course ID] [--refresh] [--json]
-campusctl notices fetch ENTITY_ID [--out DIR] [--json]
+campusctl notices fetch ENTITY_ID... [--out DIR] [--json]
 campusctl materials list [--course ID] [--refresh] [--json]
 campusctl materials download [ENTITY_ID|NUMBER] [--out DIRECTORY] [--json]
 ```
@@ -64,7 +64,7 @@ In JSON mode, successful configuration creation has status `ok` and returns `{"c
   "data_dir": "<data-directory>",
   "provider": "cnu",
   "credentials": {"provider": "keyring", "configured": false},
-  "browser": {"mode": "local", "headless": false, "headless_support": {"lectures.sync": true, "assignments.sync": true, "notices.sync": true, "materials.sync": true, "materials.download": true, "lectures.play": false}, "playwright_importable": true, "chromium_installed": true},
+  "browser": {"mode": "local", "headless": false, "headless_support": {"lectures.sync": true, "assignments.sync": true, "notices.sync": true, "materials.sync": true, "materials.download": true, "assignments.fetch": true, "notices.fetch": true, "lectures.play": false}, "playwright_importable": true, "chromium_installed": true},
   "display_available": true,
   "playback": {"default_speed": 1.0, "supported_speeds": [1.0, 1.25, 1.5]},
   "catalog": {"present": false, "generated_at": null},
@@ -76,7 +76,7 @@ In JSON mode, successful configuration creation has status `ok` and returns `{"c
 
 For `sync --only lectures`, the result returns `courses`, `lectures`, `incomplete`, `failed_courses`, and `catalog.generated_at`. For multi-domain sync, `result.domains` contains each requested domain's corresponding result and status; completed domains and failed courses are distinguishable. Counts exclude retained stale rows. Course failures produce `partial`/1 with errors naming the domain and step. Domain contracts describe their fields and errors.
 
-`assignments fetch` and `notices fetch` each require exactly one full `entity_id` from their matching cached list; numeric selection is not supported. They open only the selected detail in a headed browser under the exclusive session lock, verify identity, and write `package.json`, `content.md` and any included resources to a source package; `--out DIR` must name a nonexistent destination. JSON returns `result.source_package` (paths, completeness, resources, omissions, provenance); human output shows source ID, package/content paths, completeness and omissions. Omissions produce `partial`/1 with `resource-omitted` and a usable package; `entity-unknown`, missing catalog, output conflict and unsupported headless mode return `user-action`/2; operational failures return `error`/1; session contention returns `busy`/75. Notice detail opening can add one view and may flip read state, though fetch never clicks mark-read. Notice attachments are omitted rather than transferred. See the [assignment](assignments.md#selected-detail-fetch) and [notice](notices.md#selected-detail-fetch) contracts for layout and omissions.
+`assignments fetch` and `notices fetch` accept one or more explicit full entity IDs from the matching cached list, deduplicated in first-seen order. Numbers, globs and a whole course are not selections. One distinct ID keeps `result.source_package` and the existing human lines. More than one returns `result.items` in that order; each item has `entity_id` and `outcome` (`completed`, `partial`, `failed`, or `not-started`). Only `completed` and `partial` include the full `source_package`, and `partial` and `failed` include `reason_code`. `--out DIR` still names one nonexistent package directory and is a `usage-error` when more than one distinct ID is selected. Every ID is validated before browser startup. One exclusive session authenticates once and captures each detail serially, with no retry. An item failure publishes no package for that ID and continues; a session failure marks the active item `failed` and later IDs `not-started`. All completed items are `ok`/0. Any published package with a partial, failed or not-started item is `partial`/1. With no published package, the envelope uses the first failure's status and keeps every item and ordered error. Local headed and headless fetch are an unreleased candidate: `doctor` reports `assignments.fetch` and `notices.fetch` in `headless_support` so the next live run can exercise them, and those keys are not released as supported until that run records success for both. CDP plus headless still returns `headless-unavailable` before startup. Omissions produce `partial`/1 with `resource-omitted` and a usable package; `entity-unknown`, missing catalog, output conflict and login action return `user-action`/2; operational failures return `error`/1; session contention returns `busy`/75. Notice detail opening can add one view and may flip read state, though fetch never clicks mark-read. Notice attachments are omitted rather than transferred. See the [assignment](assignments.md#selected-detail-fetch) and [notice](notices.md#selected-detail-fetch) contracts for layout and omissions.
 
 `courses list` returns the cache metadata and course records:
 
@@ -102,7 +102,7 @@ Every item with outcome `failed` includes a `reason_code` matching the CLI error
 
 ## Browser and session
 
-Local mode uses headed Chromium by default with a persistent profile at `<data-dir>/profile/cnu`; `browser.headless` or the global CLI override selects headless only for supported operations. `browser.executable_path` can select a local Chromium binary. CDP mode uses `browser.cdp_endpoint` and never silently falls back to local mode; headless with CDP returns `headless-unavailable`. An unreachable endpoint returns `browser-endpoint-unreachable`.
+Local mode uses headed Chromium by default with a persistent profile at `<data-dir>/profile/cnu`; `browser.headless` or the global CLI override selects headless only for supported operations. Assignment and notice fetch are enabled in that table as an unreleased candidate so the next live run can exercise local headless fetch; those keys are not released support until that run records success for both. `browser.executable_path` can select a local Chromium binary. CDP mode uses `browser.cdp_endpoint` and never silently falls back to local mode; headless with CDP returns `headless-unavailable`. An unreachable endpoint returns `browser-endpoint-unreachable`.
 
 Browser-mutating commands hold one non-blocking exclusive lock for the whole operation. Its default path is `<data-dir>/session.lock`; `browser.lock_path` can override it. If another process holds the lock, the command returns `busy` with exit code 75.
 
