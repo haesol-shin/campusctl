@@ -559,7 +559,7 @@ def _request_navigation(request: Any) -> bool:
     try:
         navigation = request.is_navigation_request()
         return navigation or request.resource_type == "document"
-    except Exception:
+    except (PlaywrightError, ValueError, AttributeError, TypeError):
         return True
 
 
@@ -567,7 +567,7 @@ def _request_archive_list(request: Any) -> bool:
     try:
         method = request.method
         path = urlsplit(request.url).path
-    except Exception:
+    except (PlaywrightError, ValueError, AttributeError, TypeError):
         return True
     return str(method).upper() == "POST" and path == _ARCHIVE_LIST
 
@@ -576,12 +576,12 @@ def _retention_blocked(activity: _RequestWindow, after: int) -> bool:
     """Main-frame navigation or archive-list refresh disqualifies retention, even while pending."""
     try:
         observed = activity.requests[after:]
-    except Exception:
+    except (PlaywrightError, ValueError, AttributeError, TypeError):
         return True
     for request in observed:
         try:
             main_frame = request.frame is activity.page.main_frame
-        except Exception:
+        except (PlaywrightError, ValueError, AttributeError, TypeError):
             return True
         if not main_frame:
             continue

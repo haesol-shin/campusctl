@@ -204,6 +204,14 @@ class FakePage:
             self._request(materials._ARCHIVE_LIST, "POST")
         if mutation == "telemetry":
             self._request("/api/v1/telemetry", "POST")
+        if mutation == "request-runtime":
+            request = FakeRequest(self, "/std/other", "GET", document=True)
+
+            def broken_navigation() -> bool:
+                raise RuntimeError("request inspection failed")
+
+            request.is_navigation_request = broken_navigation
+            self._emit("request", request)
         if mutation == "child-frame":
             child = SimpleNamespace(url=self.main_frame.url)
             navigation = FakeRequest(self, "/std/other", "GET", document=True)
@@ -839,3 +847,12 @@ def test_initial_archive_state_waits_for_completed_rows() -> None:
     assert _associated(rows) == [("board-a", "file-board-a", "board-a.pdf")]
     assert page.state_observations >= 3
     assert page.events.count(materials._ARCHIVE_MENU) == 0
+
+
+def test_unrelated_request_inspection_error_propagates() -> None:
+    course = fixture()["course"]
+    page = FakePage({"course": course, "posts": _sample_posts("board-a"), "after_close": "request-runtime"}, [])
+    with pytest.raises(RuntimeError, match="request inspection failed"):
+        asyncio.run(materials.enumerate_archive(page, course))
+    assert page.listeners["request"] == []
+    assert all(handle.disposed for handle in page.handles)
