@@ -67,11 +67,14 @@ In JSON mode, successful configuration creation has status `ok` and returns `{"c
   "browser": {"mode": "local", "headless": false, "headless_support": {"lectures.sync": true, "assignments.sync": true, "notices.sync": true, "materials.sync": true, "materials.download": true, "assignments.fetch": true, "notices.fetch": true, "lectures.play": false}, "playwright_importable": true, "chromium_installed": true},
   "display_available": true,
   "playback": {"default_speed": 1.0, "supported_speeds": [1.0, 1.25, 1.5]},
+  "materials": {"download_dir": null, "adopt_existing": false, "semester": null},
   "catalog": {"present": false, "generated_at": null},
   "capabilities": {"sync": ["lectures", "assignments", "notices", "materials"], "lectures": ["list", "play"], "status": ["local"], "assignments": ["list", "fetch"], "materials": ["list", "download"], "notices": ["list", "fetch"]}
 }
 ```
 
+
+`doctor` validates `[materials]` and resolvable environment references without creating download directories. Its `result.materials` reports the configured raw template and semester (or `null`), and the adoption Boolean; with missing or invalid configuration all three values are `null`. Human output shows `Materials downloads: default` or `Materials downloads: configured (adoption on/off)` without printing the template or semester.
 `auth set` returns `{"provider":"keyring","configured":true}` after storing a password. `auth status` returns provider and configured state, plus the keyring backend class or helper executable basename. Without `--check`, a keyring with no saved password returns status `ok` and `configured: false`; with `--check`, it returns `user-action` code `credentials-not-configured` with provider, backend, and configured fields in `result`. A keyring backend failure returns its `user-action` error with provider and `configured: null`, since password presence could not be determined. For the command provider, status includes the helper basename; `--check` adds `check: "ok"` or `"failed"`. `configured` records that the helper command is set, regardless of whether its check succeeds. When the helper check fails, the envelope has status `error` and exit code 1 with code `credential-helper-failed`, while retaining the `provider`, `helper`, `configured`, and `check` fields in `result`.
 
 For `sync --only lectures`, the result returns `courses`, `lectures`, `incomplete`, `failed_courses`, and `catalog.generated_at`. For multi-domain sync, `result.domains` contains each requested domain's corresponding result and status; completed domains and failed courses are distinguishable. Counts exclude retained stale rows. Course failures produce `partial`/1 with errors naming the domain and step. Domain contracts describe their fields and errors.

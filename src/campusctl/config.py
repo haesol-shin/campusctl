@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import re
+import sys
 import tomllib
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +30,86 @@ def _mapping(value: Any, key: str, path: Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise _invalid(path, key, "expected a table")
     return value
+
+
+_PLACEHOLDERS = {"course", "course_id", "semester"}
+_DEVICE = re.compile(r"(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?\Z", re.I)
+
+
+def _material_component(value: str, key: str, path: Path) -> None:
+    normalized = unicodedata.normalize("NFC", value)
+    if (
+        not normalized
+        or normalized in {".", ".."}
+        or normalized.endswith((" ", "."))
+        or len(normalized.encode("utf-8")) > 200
+        or _DEVICE.fullmatch(normalized)
+        or any(unicodedata.category(ch) == "Cc" or ch in '<>:"|?*\\/' for ch in normalized)
+    ):
+        raise _invalid(path, key, "unsafe path component")
+
+
+def _material_template(template: str, adopt: bool, path: Path) -> None:
+    key = "materials.download_dir"
+    if not template.strip() or (template.startswith("~") and not template.startswith(("~/", "~\\"))):
+        raise _invalid(path, key, "expected a non-empty absolute path template")
+    if sys.platform != "win32" and not template.startswith(("/", "~/", "$")):
+        raise _invalid(path, key, "expected an absolute path template")
+    if sys.platform == "win32" and not (
+        template.startswith(("~/", "~\\", "$", "%", "\\\\", "//")) or re.match(r"^[A-Za-z]:[/\\]", template)
+    ):
+        raise _invalid(path, key, "expected an absolute path template")
+    if template == "/" or (sys.platform == "win32" and re.fullmatch(r"[A-Za-z]:[/\\]", template)):
+        if adopt:
+            raise _invalid(path, key, "adoption requires a course component")
+        return
+    # Environment references are checked after expansion; placeholders must
+    # occupy whole components, never a substring or format expression.
+    components = re.split(r"[/\\]" if sys.platform == "win32" else r"/", template)
+    course_positions: list[int] = []
+    for index, part in enumerate(components):
+        if not part:
+            if index == 0 or (sys.platform == "win32" and index < 3):
+                continue
+            raise _invalid(path, key, "empty path component")
+        if part in {"{" + name + "}" for name in _PLACEHOLDERS}:
+            if part in ("{course}", "{course_id}"):
+                course_positions.append(index)
+            continue
+        without_env = re.sub(
+            r"\$[A-Za-z_][A-Za-z_0-9]*|\$\{[A-Za-z_][A-Za-z_0-9]*\}"
+            + (r"|%[A-Za-z_][A-Za-z_0-9]*%" if sys.platform == "win32" else ""),
+            "x",
+            part,
+        )
+        if "{" in without_env or "}" in without_env or "$" in without_env or "%" in without_env:
+            raise _invalid(path, key, "invalid placeholder or environment reference")
+        if index == 0 and (part == "~" or (sys.platform == "win32" and re.fullmatch(r"[A-Za-z]:", part))):
+            continue
+        if without_env != "x" or part == "x":
+            _material_component(without_env, key, path)
+    if adopt and (len(course_positions) != 1 or len(components) - course_positions[0] - 1 > 4):
+        raise _invalid(path, key, "adoption requires one course component within four directory levels")
+
+
+def validate_materials(config: dict[str, Any], path: Path) -> dict[str, Any]:
+    settings = _mapping(config.get("materials", {}), "materials", path)
+    template = settings.get("download_dir")
+    semester = settings.get("semester")
+    adopt = settings.get("adopt_existing", False)
+    if template is not None and (not isinstance(template, str) or not template.strip()):
+        raise _invalid(path, "materials.download_dir", "expected a non-empty string")
+    if semester is not None and (not isinstance(semester, str) or not semester.strip()):
+        raise _invalid(path, "materials.semester", "expected a non-empty string")
+    if not isinstance(adopt, bool):
+        raise _invalid(path, "materials.adopt_existing", "expected true or false")
+    if template is not None:
+        _material_template(template, adopt, path)
+        if "{semester}" in template and semester is None:
+            raise _invalid(path, "materials.semester", "required by materials.download_dir")
+    elif adopt:
+        raise _invalid(path, "materials.adopt_existing", "requires materials.download_dir")
+    return settings
 
 
 def validate_config(config: Any, *, path: Path) -> dict[str, Any]:
@@ -69,6 +152,8 @@ def validate_config(config: Any, *, path: Path) -> dict[str, Any]:
     speed = playback.get("default_speed", 1.0)
     if isinstance(speed, bool) or not isinstance(speed, int | float) or float(speed) not in SUPPORTED_SPEEDS:
         raise _invalid(path, "playback.default_speed", "expected one of the supported speeds")
+
+    validate_materials(root, path)
 
     return root
 

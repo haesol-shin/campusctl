@@ -192,6 +192,15 @@ def doctor_result(override: bool | None = None) -> tuple[dict[str, Any], CampusE
         except CampusError as error:
             first_error = error
 
+    if config is not None:
+        from campusctl.material_files import check_download_environment
+
+        try:
+            check_download_environment(config)
+        except CampusError as error:
+            first_error = error
+            config = None
+
     provider = config.get("provider", "cnu") if config else None
     credential_provider = config.get("credentials", {}).get("provider", "keyring") if config else None
     credentials_configured = False
@@ -270,6 +279,11 @@ def doctor_result(override: bool | None = None) -> tuple[dict[str, Any], CampusE
         "playback": {
             "default_speed": config.get("playback", {}).get("default_speed", 1.0) if config else 1.0,
             "supported_speeds": SUPPORTED_SPEEDS,
+        },
+        "materials": {
+            "download_dir": config.get("materials", {}).get("download_dir") if config else None,
+            "adopt_existing": config.get("materials", {}).get("adopt_existing", False) if config else None,
+            "semester": config.get("materials", {}).get("semester") if config else None,
         },
         "catalog": {"present": catalog_present, "generated_at": generated_at},
         "capabilities": CAPABILITIES,

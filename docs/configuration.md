@@ -53,6 +53,21 @@ provider = "keyring" # or "command"
 default_speed = 1.0
 ```
 
+Material downloads can use a per-course destination. Each user chooses their own path template:
+
+```toml
+[materials]
+semester = "2026-2"
+download_dir = "~/School/{semester}/{course}/01_materials"
+adopt_existing = true
+```
+
+`download_dir` is optional; without it, materials use `<Downloads>/campusctl/<safe course label>/` in the platform Downloads folder. The final expanded template directory is the destination. `--out DIRECTORY` overrides it for one invocation and disables recursive adoption. Templates support only whole-component `{course}` (catalog label), `{course_id}` (catalog ID) and `{semester}` (explicit user-supplied literal); `{semester}` requires `semester`. The semester is never inferred from LMS data. A leading `~/` expands to your home; defined nonempty `$NAME`/`${NAME}` variables work on every OS and `%NAME%` works on Windows. Paths must be absolute and their literal and expanded components must be safe, with no traversal, symlinks or reserved Windows names.
+
+`adopt_existing` defaults to `false`. Enabling it requires exactly one `{course}` or `{course_id}` component; the configured destination must be no deeper than four child-directory levels below that course root. After every first-time official verified transfer, campusctl scans at most four levels and checks matching-name existing files by size, start/end samples and full bytes (samples alone cannot authorize adoption), with limits of 10,000 entries and 1,000,000,000 candidate bytes read. An identical file in the destination is reused; one elsewhere under the course root is adopted in place. A private receipt allows later retries to skip the transfer only after verifying the exact output directory and file bytes; adopted receipts also require the same course root. `doctor` validates configuration and environment references without creating directories or scanning files; its JSON `result.materials` describes the raw settings, while human output reports only default/configured and adoption on/off.
+
+Windows cannot yet pin every scanned directory and reparse-point target securely, so opt-in adoption fails closed with `output-path-conflict` rather than using an unverified match. Leave `adopt_existing = false` for ordinary configured downloads on Windows.
+
 `playback.default_speed` accepts `1.0`, `1.25`, or `1.5`. On Windows, write absolute TOML paths with forward slashes (for example, `C:/path/to/file`) or use single-quoted TOML literal strings.
 
 ## Authentication and first-run check
