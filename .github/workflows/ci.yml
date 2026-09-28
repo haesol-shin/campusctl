@@ -180,7 +180,7 @@ jobs:
             fi
           done
           uv run coverage combine coverage-parts/browser-coverage-shard-*
-          uv run coverage json -o coverage.json
+          uv run coverage json -i -o coverage.json
       - name: Report per-file and PR diff coverage
         if: always()
         continue-on-error: true
