@@ -1,4 +1,4 @@
-# campusctl v0.4 command-line contract
+# campusctl v0.5 command-line contract
 
 `campusctl` is a local CLI for the CNU LMS. `sync` collects lectures, assignments, notices, and materials by default in one session, with one verified course selection per course. `--only` narrows the domains; list and status commands use local catalogs. Playback, download and assignment/notice detail fetch require an explicitly selected item.
 
@@ -57,7 +57,7 @@ In JSON mode, successful configuration creation has status `ok` and returns `{"c
 
 ```json
 {
-  "version": "0.4.0",
+  "version": "0.5.0",
   "python": "<version>",
   "platform": "<platform>",
   "config": {"path": "<config-path>", "present": true},
@@ -128,7 +128,7 @@ If sync login or course discovery fails, `sync` aborts before reading or writing
 In JSON mode, every command response is one JSON object encoded as UTF-8 on stdout, including when stdout is redirected to a pipe:
 
 ```json
-{"schema_version":1,"tool":"campusctl","tool_version":"0.4.0","status":"ok","result":{},"errors":[],"generated_at":"2026-01-02T03:04:05Z"}
+{"schema_version":1,"tool":"campusctl","tool_version":"0.5.0","status":"ok","result":{},"errors":[],"generated_at":"2026-01-02T03:04:05Z"}
 ```
 
 `generated_at` is a UTC RFC3339 timestamp ending in `Z`. `status` is `ok`, `partial`, `user-action`, `busy`, or `error`. Each error has `code`, safe `message`, and nullable `remediation` fields.

@@ -2,6 +2,23 @@
 
 All notable changes to campusctl are documented here. This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Release dates follow the local date convention (KST, Asia/Seoul).
 
+## [0.5.0] - 2026-09-28
+
+### Added
+- Fetch several explicit assignment or notice IDs in one browser session; a detail failure continues to the next ID, a session failure stops the queue, and nothing is retried
+- Save materials through an optional per-course folder template, and optionally adopt a byte-identical file already stored under the course folder instead of copying it again
+- Record which readiness, identity, to-do grid or attachment check failed, with counts and states only, in the sync profile
+
+### Changed
+- Support local headless assignment and notice fetch
+- Sync waits for each page's own content instead of page-wide network idleness, and keeps the course archive list open after attachment inspection when it is proven unchanged
+- Sync profiling reports schema 2 with wait, page and document timings
+
+### Fixed
+- Notice sync reads the to-do rows a person can reach, including grids without pagination controls
+- Archive attachment controls are bound to the current post's attachment list, reloading the archive when identity cannot be verified
+- A course whose page or response cannot prove an empty result keeps its previous rows as stale
+
 ## [0.4.0] - 2026-09-27
 
 ### Added
