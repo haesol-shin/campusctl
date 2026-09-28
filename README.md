@@ -7,66 +7,67 @@
 </p>
 <p align="center"><b>English</b> | <a href="README.ko.md">한국어</a></p>
 
-<p align="center"><em>Check your lectures, assignments, notices and materials from the terminal or your AI agent.</em></p>
-
-Keep up with your lectures, assignments, notices and materials from the terminal with `campusctl`. It supports only the Chungnam National University (CNU) LMS.
+<p align="center"><em>Check your CNU LMS lectures, assignments, notices and materials from the terminal or your AI agent.</em></p>
+<p align="center"><a href="docs/installation.md">Installation</a> · <a href="docs/usage.md">Usage</a> · <a href="docs/agent-skill.md">AI skill</a> · <a href="docs/troubleshooting.md">Troubleshooting</a></p>
 
 ## Highlights
 
-- **Refresh your coursework.** Run `campusctl sync` to update lectures, assignments, notices and materials together.
-- **See what needs attention.** Run `campusctl status` for a summary and `campusctl lectures list` for unfinished lectures.
-- **Refresh only what you need.** Run `campusctl sync --only lectures` or add `--refresh` to a list command; see [usage](docs/usage.md) for other domains.
-- **Read selected details.** Fetch readable packages with `campusctl assignments fetch ID` or `campusctl notices fetch ID` for one or more full IDs. Opening a notice may change its view or read state.
-- **Save a material.** Run `campusctl materials download ID` to save one file to your OS Downloads folder under `campusctl/<course label>/`.
-- **Play one lecture at a time.** Run `campusctl lectures play ID` in CNU's visible official player; campusctl checks the LMS state afterward.
-- **Work with scripts or agents.** Run `campusctl status --json` for structured output.
-- **Keep your password private.** Run `campusctl auth set` to store it in your OS keyring by default.
-- **Run when you need it.** Try `campusctl --help` on Windows, macOS or Linux; no background service or resident browser is needed.
+- **At a glance.** See unfinished lectures, assignments due soon and unread notices on one screen.
+- **Sync once, read anytime.** After one sync, lists open without contacting the LMS.
+- **The official way.** Play in the official player and save only official files, without seeking ahead or faking progress.
+- **Works with AI agents.** An agent skill and JSON output let agents read results while you choose what to play.
+- **Stays on your computer.** Your password stays in the OS keyring and your lists in a local folder.
+- **Lightweight.** Run on demand on Windows, macOS or Linux without a background service.
+
+## Prerequisites
+
+- [uv](https://docs.astral.sh/uv/getting-started/installation/) to install and run campusctl
+- [Git](https://git-scm.com/downloads) to install from this repository
+- Python 3.11 or newer; uv can install it for you
 
 ## Installation
 
-Install [uv](https://docs.astral.sh/uv/getting-started/installation/) and [Git](https://git-scm.com/downloads) first; campusctl requires Python 3.11 or newer.
-
-Run this same command on Windows (PowerShell), macOS or Linux:
+Run the same commands on Windows (PowerShell), macOS or Linux:
 
 ```sh
 uv tool install --with-executables-from playwright git+https://github.com/haesol-shin/campusctl
 uv tool update-shell
 ```
 
-Open a new terminal, then run `campusctl setup` for guided account and browser setup, hidden password entry and an optional first sync.
+Open a new terminal to put `campusctl` on `PATH`.
 
-On Linux, install the browser's system dependencies if needed:
+<details>
+<summary>Linux browser system libraries</summary>
 
 ```bash
 uv tool run --from playwright playwright install-deps chromium
 ```
 
-This may require administrator access. For PATH setup, Linux system libraries, browser cache locations, pinning, updates, uninstall, or a checkout install, see the [installation guide](docs/installation.md). If `campusctl` is not found, run `uv tool update-shell` and open a new terminal.
+This installs OS packages and may need administrator access.
+
+</details>
+
+For PATH fixes, browser dependencies, version pinning, updates and checkout installs, see the [installation guide](docs/installation.md).
 
 <a id="quick-start"></a>
-## Quickstart
+## Quick start
 
-Run guided setup in a terminal. Password input is hidden and stored in the OS keyring by default; never pass a password as an argument. The first full sync is optional during setup.
+### 1. First setup
 
-```console
-# First-time setup
-$ campusctl setup
-$ campusctl sync
-# Check your coursework
-$ campusctl status
-$ campusctl lectures list
-$ campusctl courses list
-$ campusctl assignments list
-$ campusctl notices list
-$ campusctl materials list
-# Details and downloads
-$ campusctl assignments fetch <ASSIGNMENT_ENTITY_ID>
-$ campusctl notices fetch <NOTICE_ENTITY_ID>
-$ campusctl materials download 1
+Run setup in an interactive terminal. Password entry is hidden and saved to the OS keyring; the first sync is optional.
+
+```sh
+campusctl setup
 ```
 
-If setup already synced, you can skip the `campusctl sync` line. Replace `1` in the download command with the number shown for your chosen file by `campusctl materials list`.
+### 2. Sync and check
+
+Run sync unless setup already did, then check what needs your attention.
+
+```sh
+campusctl sync
+campusctl status
+```
 
 This synthetic `campusctl lectures list` output was captured from the CLI at 80 columns with `CAMPUSCTL_OUTPUT=human`. Due dates use CNU local time, `-` means no due date is listed, and `opens MM-DD` marks a lecture that is not open yet:
 
@@ -85,6 +86,33 @@ To play one: campusctl lectures play cnu_lecture:example-course:welcome-01
 To refresh: campusctl sync
 Catalog generated 1 seconds ago.
 ```
+
+### 3. Details and downloads
+
+Fetch a selected notice by full ID, or download a material by the number shown in its list.
+
+```sh
+campusctl notices fetch ID
+campusctl materials download 1
+```
+
+The `1` comes from your most recent `materials list`; full IDs work without listing first. See [usage](docs/usage.md).
+
+## Common commands
+
+| Task | Command |
+| --- | --- |
+| Refresh all four lists | `campusctl sync` |
+| Check coursework | `campusctl status` |
+| List unfinished lectures | `campusctl lectures list` |
+| Play a selected lecture | `campusctl lectures play ID` |
+| List courses | `campusctl courses list` |
+| List assignments | `campusctl assignments list` |
+| Read a selected assignment | `campusctl assignments fetch ID` |
+| List notices | `campusctl notices list` |
+| Read a selected notice | `campusctl notices fetch ID` |
+| List materials | `campusctl materials list` |
+| Download a selected material | `campusctl materials download ID` |
 
 <details>
 <summary>Browser and local data</summary>
@@ -105,19 +133,11 @@ bunx skills add https://github.com/haesol-shin/campusctl -g
 
 See [details, manual install, and a copy-paste prompt](docs/agent-skill.md).
 
-## Why campusctl?
+## Limitations
 
-- See what is unfinished or due before opening each lecture.
-- Refresh and inspect a local catalog without keeping a browser process running.
-- Let an agent read structured results while you remain in control of which lecture to play.
-- Playback outcomes follow the official LMS row. `watched (not counted)` means the displayed progress met the required duration, possibly before this play; it does not promise attendance credit.
-
-## When shouldn't I use campusctl?
-
-- campusctl does not seek ahead, force unsupported speeds, fake progress, or play in the background.
-- Playback uses the official player, one lecture at a time in a visible browser. YouTube relies on native autoplay at 1x only; other supported media use only the playback rates their player supports.
-- CNU is observed to allow one LMS login session per account; do not run campusctl alongside another logged-in automation on that account.
-- campusctl is not affiliated with CNU, and changes to the LMS may break it.
+- No seeking ahead, faked progress or background play: use one visible official player at a time.
+- CNU has been observed to allow one LMS login session per account; don't run campusctl alongside another logged-in automation on that account.
+- campusctl is unofficial and not affiliated with CNU; changes to the LMS may break it.
 
 ## Upgrading
 
@@ -133,10 +153,7 @@ Run `uv tool upgrade campusctl` to update. Run `campusctl sync` to refresh all f
 - [Troubleshooting](docs/troubleshooting.md)
 - [CLI contract](docs/contracts/cli.md)
 - [Assignments](docs/contracts/assignments.md), [notices](docs/contracts/notices.md), and [materials](docs/contracts/materials.md) contracts
-
-## Contributing: scan exceptions
-
-For scan exceptions, see [Contributing](CONTRIBUTING.md#scan-exceptions).
+- [Contributing](CONTRIBUTING.md)
 
 ## FAQ
 
