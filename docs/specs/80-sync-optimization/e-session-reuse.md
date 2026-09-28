@@ -2,7 +2,7 @@
 
 ## Goal and expected saving
 
-Reuse live LMS authentication without trusting cached login state; implement the owner-approved explicit multi-ID fetch contract and support local headless fetch. Owner decisions below were recorded on 2026-09-27.
+Reuse live LMS authentication without trusting cached login state; implement the owner-approved explicit multi-ID fetch contract and support local headless fetch. Each owner decision below carries the date it was recorded.
 
 Owner-held sanitized evidence (2026-09-27): sync took 188 s, its `auth` span took 9.0 s, and individual fetches took 11–14 s, mostly login plus course entry. **These are not measured savings.** The current login helper already skips credentials for an authenticated landing page. Incremental cross-run savings may therefore be zero. A batch could amortize browser startup and landing verification over several items; it cannot eliminate identity checks, course entry or package transfer. Measure before assigning a numerical saving; do not claim the entire 9.0 s disappears.
 
