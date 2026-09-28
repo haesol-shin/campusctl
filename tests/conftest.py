@@ -67,8 +67,7 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     loads = [0.0] * num_shards
     # Longest first, with nodeid tie breaks independent of discovery order.
     assignment = {
-        item.nodeid: _shard_for(item, loads)
-        for item in sorted(items, key=lambda item: (-_weight(item), item.nodeid))
+        item.nodeid: _shard_for(item, loads) for item in sorted(items, key=lambda item: (-_weight(item), item.nodeid))
     }
     selected = [item for item in items if assignment[item.nodeid] == shard_id - 1]
     deselected = [item for item in items if assignment[item.nodeid] != shard_id - 1]
