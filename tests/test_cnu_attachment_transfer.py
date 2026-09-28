@@ -424,6 +424,46 @@ def test_non_cms_relative_archive_response_binds_and_downloads(tmp_path: Path) -
         assert browser.route_handler is None
         fetched.temp_path.unlink()
 
+        for media_type in ("application/pdf", "application/x-pdf"):
+            pdf_response = Response(url=url, headers={"Content-Type": media_type, "Content-Length": str(len(BODY))})
+            pdf_browser = page(pdf_response, payload=payload, duplicate_url=url)
+            pdf_file = await fetch_official_attachment(
+                pdf_browser, target, RequestPolicy("example.pdf"), tmp_path, max_bytes=200_000_000
+            )
+            assert pdf_file.temp_path.read_bytes() == BODY
+            assert pdf_file.media_type == media_type
+            assert pdf_browser.context.request.calls == [(url, {}, 0)]
+            pdf_file.temp_path.unlink()
+
+        for rejected_type in ("text/html", None):
+            rejected_headers = {"Content-Length": str(len(BODY))}
+            if rejected_type is not None:
+                rejected_headers["Content-Type"] = rejected_type
+            rejected_response = Response(url=url, headers=rejected_headers)
+            rejected_browser = page(rejected_response, payload=payload)
+            with pytest.raises(CampusError) as denied:
+                await fetch_official_attachment(
+                    rejected_browser, target, RequestPolicy("example.pdf"), tmp_path, max_bytes=200_000_000
+                )
+            assert denied.value.code == "unsupported-media-type"
+            assert rejected_response.reads == 0
+            assert not list(tmp_path.iterdir())
+
+        invalid_pdf = page(
+            Response(
+                url=url,
+                headers={"Content-Type": "application/pdf", "Content-Length": "7"},
+                body=b"not-pdf",
+            ),
+            payload=payload,
+        )
+        with pytest.raises(CampusError) as denied:
+            await fetch_official_attachment(
+                invalid_pdf, target, RequestPolicy("example.pdf"), tmp_path, max_bytes=200_000_000
+            )
+        assert denied.value.code == "unsupported-media-type"
+        assert not list(tmp_path.iterdir())
+
         for stored_name, encoded_name in (
             ("stored notes.pdf", "stored%20notes.pdf"),
             ("자료.pdf", "%EC%9E%90%EB%A3%8C.pdf"),
