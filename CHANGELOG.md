@@ -2,6 +2,12 @@
 
 All notable changes to campusctl are documented here. This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Release dates follow the local date convention (KST, Asia/Seoul).
 
+## [0.5.1] - 2026-09-29
+
+### Fixed
+- Download selected archive attachments stored in the LMS
+- Download PDF attachments served with the standard PDF media type
+
 ## [0.5.0] - 2026-09-28
 
 ### Added

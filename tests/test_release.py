@@ -50,7 +50,14 @@ def test_malformed_fragments_are_rejected(tmp_path: Path, filename: str, text: s
         release.fold_fragments(tmp_path)
 
 
-def test_check_versions_detects_stale_reference(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("original", "stale"),
+    [
+        ("blob/v{version}/", "blob/v0.0.0/"),
+        ("This skill describes the v{version} release surface", "This skill describes the v0.0.0 release surface"),
+    ],
+)
+def test_check_versions_detects_stale_reference(tmp_path: Path, original: str, stale: str) -> None:
     for name in (*release.VERSION_FILES, "uv.lock"):
         dest = tmp_path / name
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -58,7 +65,10 @@ def test_check_versions_detects_stale_reference(tmp_path: Path) -> None:
     version = release.check_versions(release.ROOT)
     assert release.check_versions(tmp_path) == version
     skill = tmp_path / "skills/campusctl/SKILL.md"
-    skill.write_text(skill.read_text(encoding="utf-8").replace(f"blob/v{version}/", "blob/v0.0.0/"), encoding="utf-8")
+    skill.write_text(
+        skill.read_text(encoding="utf-8").replace(original.format(version=version), stale),
+        encoding="utf-8",
+    )
     with pytest.raises(ValueError, match="version references disagree"):
         release.check_versions(tmp_path)
 
