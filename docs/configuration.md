@@ -81,6 +81,8 @@ campusctl sync --only lectures
 
 Local playback uses headed Chromium with a persistent profile under `<data-dir>/profile/cnu`; campusctl closes the browser context when the command ends. Browser-mutating commands hold an exclusive, non-blocking lock for the full operation. The default lock is `<data-dir>/session.lock`.
 
+For local assignment and notice fetch, set `browser.headless = true` under `[browser]` or pass global `--headless` before the command; global `--headed` overrides that setting. Headed is the default, and headless is supported for both fetch domains with local Chromium. A configured CDP browser cannot use headless mode. Official-player playback remains headed.
+
 Observed CNU behavior is one active LMS login session per account: signing in from another browser or device can end the current session. Do not run campusctl alongside another logged-in automation on the same account.
 
 To share an already-running browser, start and authenticate it yourself and configure a CDP endpoint and a lock shared by every client that can mutate that browser session:

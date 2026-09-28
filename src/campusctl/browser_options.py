@@ -1,4 +1,4 @@
-"""Resolve browser presentation without granting pending LMS operations."""
+"""Resolve browser presentation for supported operations."""
 
 from __future__ import annotations
 
@@ -6,8 +6,6 @@ from typing import Any
 
 from campusctl.envelope import CampusError
 
-# Candidate fetch entries are enabled so the next live run can exercise them.
-# They are not a release until that run records successful local headless fetch.
 HEADLESS_SUPPORT: dict[str, bool] = {
     "lectures.sync": True,
     "assignments.sync": True,

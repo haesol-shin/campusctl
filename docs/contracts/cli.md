@@ -102,7 +102,7 @@ Every item with outcome `failed` includes a `reason_code` matching the CLI error
 
 ## Browser and session
 
-Local mode uses headed Chromium by default with a persistent profile at `<data-dir>/profile/cnu`; `browser.headless` or the global CLI override selects headless only for supported operations. Assignment and notice fetch are enabled in that table as an unreleased candidate so the next live run can exercise local headless fetch; those keys are not released support until that run records success for both. `browser.executable_path` can select a local Chromium binary. CDP mode uses `browser.cdp_endpoint` and never silently falls back to local mode; headless with CDP returns `headless-unavailable`. An unreachable endpoint returns `browser-endpoint-unreachable`.
+Local mode uses headed Chromium by default with a persistent profile at `<data-dir>/profile/cnu`; `browser.headless` or the global CLI override selects headless for supported operations, including assignment and notice fetch. `browser.executable_path` can select a local Chromium binary. CDP mode uses `browser.cdp_endpoint` and never silently falls back to local mode; headless with CDP returns `headless-unavailable`. An unreachable endpoint returns `browser-endpoint-unreachable`.
 
 Browser-mutating commands hold one non-blocking exclusive lock for the whole operation. Its default path is `<data-dir>/session.lock`; `browser.lock_path` can override it. If another process holds the lock, the command returns `busy` with exit code 75.
 

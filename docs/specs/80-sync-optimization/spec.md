@@ -30,7 +30,7 @@ The savings are estimates from the numbers above, not measurements.
 1. A lands first so that B and C can be measured against it.
 2. B and C are independent and can be built in parallel.
 3. E is independent of B and C. D waits for the live observation of a course switcher.
-4. After A, B, C and E are merged, with E's headless fetch included as a candidate, one full-path live run, headless, measures them and the headless combined pass, runs both fetches headless, and records the observations D needs. Headless fetch is released only if that run passes. It follows the [live run protocol](../live-run.md).
+4. A, B, C and E are merged. The G2 full-path run passed the headless assignment and notice fetch gate; both are supported. Timing and other slice observations remain governed by the [live run protocol](../live-run.md) and their respective specs.
 
 ## Acceptance
 

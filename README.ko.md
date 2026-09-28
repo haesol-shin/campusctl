@@ -81,7 +81,7 @@ $ campusctl materials download 1
 
 사람이 읽는 출력에서 `courses list`의 번호나 고유한 과목 이름 일부를 `--course`에 지정할 수 있습니다. `materials list`의 번호는 `materials download 번호`에 쓰며, 인자 없이 실행하면 대화형 터미널에서 파일 한 개를 선택합니다. 번호는 마지막으로 출력한 목록에 묶여 있어 카탈로그가 바뀌면 무효가 됩니다. 전체 ID는 목록 기록 없이 사용할 수 있으며 `--json`에서는 전체 ID가 필요합니다. 선택한 공식 첨부파일 한 개는 운영체제 다운로드 폴더의 `campusctl/<과목 이름>/`에 저장됩니다. 다른 위치는 `--out DIR`을 사용하세요.
 
-전역 `--headless`와 `--headed`는 명령 앞에 지정하며 `browser.headless` 설정보다 우선합니다. 기본값은 화면 표시입니다. `campusctl --headless sync`와 `campusctl --headless materials download <ENTITY_ID>`는 로컬 Chromium 프로필에서 실행합니다. CDP 세션에는 headless 모드를 사용할 수 없고 공식 플레이어 재생은 화면 표시 모드만 지원합니다.
+전역 `--headless`와 `--headed`는 명령 앞에 지정하며 `browser.headless` 설정보다 우선합니다. 기본값은 화면 표시입니다. `campusctl --headless sync`, `campusctl --headless assignments fetch <ASSIGNMENT_ENTITY_ID>`, `campusctl --headless notices fetch <NOTICE_ENTITY_ID>`, `campusctl --headless materials download <ENTITY_ID>`는 로컬 Chromium 프로필에서 지원됩니다. CDP 세션에는 headless 모드를 사용할 수 없고 공식 플레이어 재생은 화면 표시 모드만 지원합니다.
 
 스크립트나 에이전트에서는 `--json`을 추가하세요. 터미널에서는 기본적으로 사람이 읽기 쉬운 형식으로 출력합니다.
 
@@ -160,7 +160,7 @@ campusctl은 공식 플레이어로 강의를 재생한 뒤 LMS 강의 상태를
 
 #### 과제나 공지의 본문도 볼 수 있나요?
 
-네. `assignments list` 또는 `notices list`에서 전체 ID를 고른 뒤 `campusctl assignments fetch <ENTITY_ID>`나 `campusctl notices fetch <ENTITY_ID>`를 실행하세요. 로컬 데이터 디렉터리의 `sources/` 아래에 `content.md`와 `package.json`이 생성됩니다. `--out DIR`은 아직 존재하지 않는 패키지 디렉터리를 지정합니다. `--json`으로 경로, 완전성 및 생략된 리소스를 확인할 수 있습니다. 공지 상세를 열면 조회수가 한 번 증가하거나 읽음 상태가 바뀔 수 있지만, fetch는 읽음 처리 버튼을 누르지 않습니다. 공지 첨부파일은 내려받지 않고 생략합니다. Fetch는 화면 표시 브라우저가 필요하며 과제를 제출하지 않습니다. 자세한 내용은 [과제](docs/contracts/assignments.md#selected-detail-fetch) 및 [공지](docs/contracts/notices.md#selected-detail-fetch) 계약을 참조하세요. 공지는 각 과목 게시판에서 가져오고, 읽음 여부는 할 일 목록과 일치할 때만 표시합니다. 게시판에 다음 페이지가 있으면 `notice-board-paginated` 오류와 함께 그 과목의 이전 목록이 유지됩니다. 해당 과목은 LMS에서 확인하세요.
+네. `assignments list` 또는 `notices list`에서 전체 ID를 고른 뒤 `campusctl assignments fetch <ENTITY_ID>`나 `campusctl notices fetch <ENTITY_ID>`를 실행하세요. 로컬 데이터 디렉터리의 `sources/` 아래에 `content.md`와 `package.json`이 생성됩니다. `--out DIR`은 아직 존재하지 않는 패키지 디렉터리를 지정합니다. `--json`으로 경로, 완전성 및 생략된 리소스를 확인할 수 있습니다. 공지 상세를 열면 조회수가 한 번 증가하거나 읽음 상태가 바뀔 수 있지만, fetch는 읽음 처리 버튼을 누르지 않습니다. 공지 첨부파일은 내려받지 않고 생략합니다. 로컬 Chromium에서 fetch는 화면 표시와 headless 모드를 모두 지원하며 과제를 제출하지 않습니다. 자세한 내용은 [과제](docs/contracts/assignments.md#selected-detail-fetch) 및 [공지](docs/contracts/notices.md#selected-detail-fetch) 계약을 참조하세요. 공지는 각 과목 게시판에서 가져오고, 읽음 여부는 할 일 목록과 일치할 때만 표시합니다. 게시판에 다음 페이지가 있으면 `notice-board-paginated` 오류와 함께 그 과목의 이전 목록이 유지됩니다. 해당 과목은 LMS에서 확인하세요.
 
 ## 라이선스
 

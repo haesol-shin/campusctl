@@ -117,7 +117,7 @@ def test_actual_local_headless_chromium_without_display(tmp_path: Path, monkeypa
     asyncio.run(scenario())
 
 
-def test_doctor_exposes_fetch_headless_candidate_keys(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_doctor_exposes_supported_fetch_headless_keys(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CAMPUSCTL_CONFIG_DIR", str(tmp_path / "config"))
     monkeypatch.setenv("CAMPUSCTL_DATA_DIR", str(tmp_path / "data"))
     from campusctl.cli import doctor_result
