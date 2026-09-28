@@ -670,6 +670,27 @@ def test_same_directory_case_variant_and_receipt_migration(tmp_path: Path) -> No
     assert all(item["course_root"] is None for item in data["items"])
 
 
+def test_adopted_receipt_cannot_escape_root_with_parent_segment(tmp_path: Path) -> None:
+    course = prepare_output_dir(tmp_path, "course", tmp_path / "course")
+    destination = prepare_output_dir(tmp_path, "course", course / "materials")
+    archive = prepare_output_dir(tmp_path, "course", course / "archive")
+    entity_id = "cnu_lms_material:course-a:file-1"
+    content = b"synthetic attachment"
+    digest = hashlib.sha256(content).hexdigest()
+    existing = archive / "sample.pdf"
+    existing.write_bytes(content)
+    write_receipt(tmp_path, entity_id, destination, existing, len(content), digest, None, course)
+    outside = tmp_path / "outside.pdf"
+    outside.write_bytes(content)
+    receipt_path = tmp_path / "materials" / "receipts.json"
+    receipt = json.loads(receipt_path.read_text())
+    receipt["items"][0]["path"] = str(course / ".." / "outside.pdf")
+    receipt_path.write_text(json.dumps(receipt))
+    with pytest.raises(CampusError) as failure:
+        verified_receipt(tmp_path, entity_id, destination, course)
+    assert failure.value.code == "output-path-conflict"
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows reparse-point safety behavior")
 def test_windows_adoption_fails_closed_without_search(tmp_path: Path) -> None:
     course = prepare_output_dir(tmp_path, "course", tmp_path / "course")

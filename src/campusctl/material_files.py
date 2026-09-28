@@ -798,12 +798,14 @@ def _valid_receipt_item(item: Any, version: int) -> bool:
         and Path(output_dir).is_absolute()
         and isinstance(path, str)
         and Path(path).is_absolute()
+        and ".." not in Path(path).parts
         and (
             (Path(path).parent == Path(output_dir) and (version == 1 or item["course_root"] is None))
             or (
                 version == 2
                 and isinstance(item["course_root"], str)
                 and Path(item["course_root"]).is_absolute()
+                and ".." not in Path(item["course_root"]).parts
                 and Path(path).is_relative_to(Path(item["course_root"]))
                 and 1 <= len(Path(path).relative_to(Path(item["course_root"])).parts) <= 5
             )
@@ -844,6 +846,8 @@ def _read_receipts(path: Path) -> list[dict[str, Any]]:
 def _receipt_file(path: Path, directory: Path, size: int, digest: str) -> bool:
     if (
         not path.is_absolute()
+        or ".." in path.parts
+        or ".." in directory.parts
         or not path.is_relative_to(directory)
         or not 1 <= len(path.relative_to(directory).parts) <= 5
         or not _DIGEST.fullmatch(digest)
