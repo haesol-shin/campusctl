@@ -96,6 +96,23 @@ def test_changed_link_target_fails(tmp_path: Path) -> None:
     assert "README.ko.md:" in result.stdout and "link-target" in result.stdout
 
 
+@pytest.mark.parametrize(
+    ("name", "original", "wrong"),
+    [
+        ("README.md", "[Usage](docs/usage.md)", "[Usage](docs/usage.ko.md)"),
+        ("README.ko.md", "[사용 안내](docs/usage.ko.md)", "[사용 안내](docs/usage.md)"),
+    ],
+)
+def test_wrong_language_guide_link_fails(tmp_path: Path, name: str, original: str, wrong: str) -> None:
+    root = _snapshot(tmp_path)
+    _replace(root / name, original, wrong)
+    result = _run(root)
+    assert result.returncode != 0
+    assert f"{name}:" in result.stdout and "link-language" in result.stdout
+    assert "link-target" not in result.stdout
+    assert "link-missing-file" not in result.stdout
+
+
 def test_broken_switcher_fails(tmp_path: Path) -> None:
     root = _snapshot(tmp_path)
     _replace(root / "README.ko.md", "[English](README.md) | **한국어**", "[English](README.ko.md) | **한국어**")

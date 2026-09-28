@@ -1,8 +1,9 @@
 [English](README.md) | **한국어**
+# campusctl
 
-충남대 LMS 강의와 과제, 공지, 자료를 터미널이나 AI 에이전트에서 확인하세요.
+**충남대 LMS 강의와 과제, 공지, 자료를 터미널이나 AI 에이전트에서 확인하세요.**
 
-`campusctl`은 충남대 학생이 강의·과제·공지·자료를 터미널이나 AI 에이전트에서 확인할 수 있도록 일반 LMS 브라우저로 동기화하는 로컬 CLI이며, 현재 충남대(CNU) LMS만 지원합니다.
+`campusctl`은 일반 브라우저로 LMS에 로그인해 강의·과제·공지·자료 목록을 로컬에 받아 두는 CLI입니다. 현재 충남대 LMS만 지원합니다.
 
 ## 30초 미리보기: `campusctl status`
 
@@ -39,7 +40,7 @@ Open incomplete lectures: 1; unknown: 0
 
    </details>
 
-2. **설정.** 대화형 터미널에서 `campusctl setup`을 실행하세요. 설정, Chromium 확인·설치, 화면에 보이지 않는 비밀번호 입력과 키링 저장을 안내하며 첫 동기화는 선택할 수 있습니다.
+2. **설정.** 대화형 터미널에서 `campusctl setup`을 실행하세요. 계정과 Chromium 설정을 안내하고, 비밀번호는 화면에 보이지 않게 입력해 키링에 저장하도록 도와줍니다. 첫 동기화는 선택 사항입니다.
 3. **확인.** `campusctl status`로 확인하세요. 설정 중 동기화를 건너뛰었다면 먼저 `campusctl sync`를 실행하세요.
 
 ## 자주 쓰는 작업
@@ -69,12 +70,11 @@ Open incomplete lectures: 1; unknown: 0
 
 ## 자주 묻는 질문
 
-- **공식 도구인가요?** 아니요. 충남대와 제휴하지 않은 독립 프로젝트입니다. [사용 안내](docs/usage.ko.md)를 보세요.
+- **공식 도구인가요?** 아니요. 충남대와 제휴하지 않은 독립 프로젝트입니다.
 - **출석이 처리되나요?** 공식 플레이어로 재생한 뒤 LMS 상태를 확인하지만, 무엇이 출석으로 인정되는지는 LMS에 달려 있습니다. [사용 안내](docs/usage.ko.md)를 보세요.
 - **비밀번호와 데이터는 어디에 저장되나요?** 운영체제 키링과 campusctl의 로컬 데이터 폴더에 저장됩니다. [설정 안내](docs/configuration.ko.md#paths)를 보세요.
 - **다운로드한 자료는 어디에 있나요?** 운영체제 다운로드 폴더의 `campusctl/<course label>/` 아래에 저장되며, `--out DIR`로 다른 위치를 고를 수 있습니다. [사용 안내](docs/usage.ko.md)를 보세요.
 - **과제나 공지 본문도 볼 수 있나요?** 네, 목록에서 선택한 전체 ID를 `fetch`로 가져올 수 있습니다. [사용 안내](docs/usage.ko.md)를 보세요.
 
 ## 문서
-
 [설치](docs/installation.ko.md) · [사용 안내](docs/usage.ko.md) · [설정](docs/configuration.ko.md) · [문제 해결](docs/troubleshooting.ko.md) · [에이전트 스킬](docs/agent-skill.ko.md) · [CLI 계약](docs/contracts/cli.md) · [MIT 라이선스](LICENSE)

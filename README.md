@@ -1,8 +1,9 @@
 **English** | [한국어](README.ko.md)
+# campusctl
 
-Check your CNU coursework from the terminal or your AI agent.
+**Check your CNU coursework from the terminal or your AI agent.**
 
-`campusctl` shows CNU students their lectures, assignments, notices and materials in a local CLI or an AI agent, syncing through the normal LMS browser; the Chungnam National University (CNU) LMS is its only supported provider.
+`campusctl` is a local CLI that signs in through the normal LMS browser and caches lectures, assignments, notices and materials. CNU is its only supported provider.
 
 ## 30-second demo: `campusctl status`
 
@@ -69,12 +70,11 @@ Install the skill globally with `npx skills add https://github.com/haesol-shin/c
 
 ## FAQ
 
-- **Is campusctl official?** No; it is independent and not affiliated with CNU. See [usage](docs/usage.md).
+- **Is campusctl official?** No; it is independent and not affiliated with CNU.
 - **Does it mark attendance?** It plays through the official player and reads LMS state afterward; the LMS decides what counts. See [usage](docs/usage.md).
 - **Where are password and data stored?** In your OS keyring and campusctl's local data directory. See [configuration](docs/configuration.md#paths).
 - **Where are downloads saved?** In your OS Downloads folder under `campusctl/<course label>/`, or elsewhere with `--out DIR`. See [usage](docs/usage.md).
 - **Can I read assignment or notice details?** Yes, fetch explicitly selected full IDs. See [usage](docs/usage.md).
 
 ## Documentation
-
 [Installation](docs/installation.md) · [Usage](docs/usage.md) · [Configuration](docs/configuration.md) · [Troubleshooting](docs/troubleshooting.md) · [Agent skill](docs/agent-skill.md) · [CLI contract](docs/contracts/cli.md) · [MIT license](LICENSE)

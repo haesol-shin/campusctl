@@ -22,6 +22,9 @@ PAIRS = (
     ("docs/agent-skill.md", "docs/agent-skill.ko.md"),
     ("docs/usage.md", "docs/usage.ko.md"),
 )
+PAIRED_ENGLISH = frozenset(english for english, _ in PAIRS)
+PAIRED_KOREAN = frozenset(korean for _, korean in PAIRS)
+
 FENCE_OPEN = re.compile(r"^[ \t]{0,3}(?P<mark>`{3,}|~{3,})(?P<info>.*)$")
 HEADING = re.compile(r"^[ \t]{0,3}(#{1,6})[ \t]+(.+?)\s*$")
 MARKDOWN_LINK = re.compile(r"!?\[[^\]]*\]\(\s*(<[^>]+>|[^\s)]+)(?:\s+[^)]*)?\)")
@@ -172,6 +175,18 @@ def _split_local(destination: str) -> tuple[str, str]:
     return path, fragment
 
 
+def _local_target(root: Path, source: Path, destination: str) -> tuple[Path, str]:
+    local_path, fragment = _split_local(destination)
+    local_path = unquote(local_path)
+    if not local_path:
+        target = source
+    elif local_path.startswith("/"):
+        target = root / local_path.lstrip("/")
+    else:
+        target = source.parent / local_path
+    return target.resolve(), fragment
+
+
 def _normalized_destination(destination: str) -> str:
     if EXTERNAL.match(destination):
         return destination
@@ -189,15 +204,7 @@ def _validate_links(root: Path, path: str, page: Page, pair: str, anchor_cache: 
         destination = link.destination
         if EXTERNAL.match(destination):
             continue
-        local_path, fragment = _split_local(destination)
-        local_path = unquote(local_path)
-        if not local_path:
-            target = source
-        elif local_path.startswith("/"):
-            target = root / local_path.lstrip("/")
-        else:
-            target = source.parent / local_path
-        target = target.resolve()
+        target, fragment = _local_target(root, source, destination)
         if not target.is_relative_to(root) or not target.exists():
             problems.append(_problem(pair, path, link.line, "link-missing-file", repr(destination)))
             continue
@@ -225,6 +232,28 @@ def _validate_links(root: Path, path: str, page: Page, pair: str, anchor_cache: 
             continue
         if not valid:
             problems.append(_problem(pair, path, link.line, "link-missing-anchor", repr(destination)))
+    return problems
+
+
+def _validate_language_links(
+    root: Path, path: str, page: Page, pair: str, switch_target: str, wrong_language_paths: frozenset[str]
+) -> list[str]:
+    problems = []
+    source = root / path
+    for link in _ordinary_links(page, switch_target):
+        if EXTERNAL.match(link.destination):
+            continue
+        target, _ = _local_target(root, source, link.destination)
+        if target.is_relative_to(root) and target.relative_to(root).as_posix() in wrong_language_paths:
+            problems.append(
+                _problem(
+                    pair,
+                    path,
+                    link.line,
+                    "link-language",
+                    f"{link.destination!r} points to the other language's paired guide",
+                )
+            )
     return problems
 
 
@@ -359,6 +388,8 @@ def check(root: Path) -> int:
         problems.extend(_compare_fences(english, korean, pair, ko_path))
         problems.extend(_validate_links(root, en_path, english, pair, anchor_cache))
         problems.extend(_validate_links(root, ko_path, korean, pair, anchor_cache))
+        problems.extend(_validate_language_links(root, en_path, english, pair, ko_file.name, PAIRED_KOREAN))
+        problems.extend(_validate_language_links(root, ko_path, korean, pair, en_file.name, PAIRED_ENGLISH))
         problems.extend(
             _compare_links(
                 _ordinary_links(english, ko_file.name),
