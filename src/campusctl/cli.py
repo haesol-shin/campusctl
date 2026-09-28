@@ -190,7 +190,7 @@ def build_parser() -> argparse.ArgumentParser:
     lectures_list.add_argument("--refresh", action="store_true", help="sync lectures before listing")
     lectures_play = lecture_commands.add_parser("play", help="play explicit lecture IDs")
     _with_json(lectures_play)
-    lectures_play.add_argument("entity_ids", nargs="+", metavar="ID", help="full lecture IDs or printed numbers")
+    lectures_play.add_argument("entity_ids", nargs="+", metavar="ID", help="full lecture IDs from lectures list")
     lectures_play.add_argument("--speed", type=float, choices=SUPPORTED_SPEEDS, help="playback speed")
     lectures_play.add_argument("--replay", action="store_true", help="explicitly replay completed lectures")
     for module in _DOMAIN_MODULES.values():
