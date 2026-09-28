@@ -693,7 +693,9 @@ def test_adoption_scan_bounds_and_symlink_safety(tmp_path: Path, monkeypatch: py
     transfer = _temp(destination, content)
     sibling = prepare_output_dir(tmp_path, "course", course / "archive")
     candidate = sibling / "sample.pdf"
-    candidate.write_bytes(content)
+    # Matching 64-KiB ends hide a late middle-byte difference; the full tier
+    # must still respect its aggregate read budget before claiming a match.
+    candidate.write_bytes(content[: 128 * 1024 - 1] + b"B" + content[128 * 1024 :])
     monkeypatch.setattr(material_files, "_SCAN_BYTES", 2 * 64 * 1024 + len(content) - 1)
     with pytest.raises(CampusError) as error:
         adopt_attachment(transfer, destination, course, candidate.name, len(content), digest)
