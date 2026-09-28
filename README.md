@@ -16,7 +16,7 @@
 - Sync lectures, assignments, notices, and materials in one combined pass: `campusctl sync` selects each course once.
 - List unfinished lectures and inspect lecture health and cached coursework: `campusctl lectures list`, `campusctl status`.
 - Refresh a particular domain with `sync --only DOMAIN` or `list --refresh`.
-- Fetch readable source packages for one selected assignment or notice by its full ID; notice reading can change view and read state.
+- Fetch readable source packages for one or more explicitly selected assignment or notice IDs in one session; notice reading can change view and read state.
 - Download one selected material into your OS Downloads folder under `campusctl/<course label>/`.
 - Play a lecture in CNU's official player through a visible browser, one at a time; campusctl checks the LMS state afterward.
 - JSON output for scripts and agents.
@@ -76,7 +76,7 @@ $ campusctl materials list
 $ campusctl materials download 1
 ```
 
-`sync` refreshes all four metadata domains in one browser session, selecting each course once; `--only lectures,notices` narrows the domains. A failing course or domain retains its previous catalog rows and is reported as partial, not freshly checked. Lists read local catalogs without network access unless you pass `--refresh`. Use `campusctl --profile sync` to print phase timings on stderr; these timings make no performance guarantee.
+`sync` refreshes all four metadata domains in one browser session, selecting each course once; `--only lectures,notices` narrows the domains. A failing course or domain retains its previous catalog rows and is reported as partial, not freshly checked. Lists read local catalogs without network access unless you pass `--refresh`. Use `campusctl --profile sync` (or a list with `--refresh`) to emit one `campusctl-profile:` JSON line on stderr (schema version 2) with spans, document timings, lock coverage and sanitized failed-check diagnostics. The `diagnostics` array records failed page-readiness, course-identity, to-do-grid, archive-state or modal-binding checks, using run-local course ordinals rather than names or URLs; passing checks add no records. Profiling makes no performance guarantee.
 
 In human output, `courses list` numbers courses for `--course NUMBER`; a unique course-name fragment is also accepted. `materials list` numbers files for `materials download NUMBER`; a bare download opens a single-file picker in an interactive terminal. Numbers refer to the last printed list and fail if its catalog changes. Full IDs work without a printed list and are required with `--json`. Downloads save one selected official attachment under your OS Downloads folder at `campusctl/<course label>/`; use `--out DIR` for another directory.
 
@@ -110,7 +110,15 @@ The catalog and browser profile stay in campusctl's local data directory; the lo
 
 ## Use with AI agents
 
-`npx skills add https://github.com/haesol-shin/campusctl -g` or `bunx skills add https://github.com/haesol-shin/campusctl -g` ([details, manual install, and a copy-paste prompt](docs/agent-skill.md)).
+Install the skill globally with either command:
+
+```sh
+npx skills add https://github.com/haesol-shin/campusctl -g
+# or
+bunx skills add https://github.com/haesol-shin/campusctl -g
+```
+
+See [details, manual install, and a copy-paste prompt](docs/agent-skill.md).
 
 ## Why campusctl?
 
@@ -163,7 +171,7 @@ In your OS Downloads folder under `campusctl/<course label>/` (including a redir
 
 #### Can I read assignment or notice details here?
 
-Yes. Choose a full ID from `assignments list` or `notices list`, then run `campusctl assignments fetch <ENTITY_ID>` or `campusctl notices fetch <ENTITY_ID>`. Fetch writes `content.md` and `package.json` under the local data directory's `sources/` tree; `--out DIR` selects a new, nonexistent package directory. `--json` reports the path, completeness and any omitted resources. A notice detail open may add one view and change its read state, even though fetch never clicks mark-read. Notice attachments are omitted, not downloaded. Local fetch supports headed and headless Chromium; it does not submit assignments. See the [assignment](docs/contracts/assignments.md#selected-detail-fetch) and [notice](docs/contracts/notices.md#selected-detail-fetch) contracts. Notices come from each course board; read state is unknown when no matching to-do row exists. A board with additional pages reports `notice-board-paginated` for that course and retains its previous rows; check the LMS for that course.
+Yes. Choose one or more full IDs from `assignments list` or `notices list`, then run `campusctl assignments fetch ID1 ID2` or `campusctl notices fetch ID1 ID2` for multiple explicitly selected details (one ID also works). Fetch writes `content.md` and `package.json` under the local data directory's `sources/` tree. With one distinct ID, `--out DIR` selects a new, nonexistent package directory, and `--json` reports `result.source_package` with its path, completeness and omitted resources. With multiple distinct IDs, omit `--out`; JSON returns ordered `result.items` with each item's `outcome`, `reason_code` and available `source_package`. A notice detail open may add one view and change its read state, even though fetch never clicks mark-read. Notice attachments are omitted, not downloaded. Local fetch supports headed and headless Chromium; it does not submit assignments. See the [assignment](docs/contracts/assignments.md#selected-detail-fetch) and [notice](docs/contracts/notices.md#selected-detail-fetch) contracts. Notices come from each course board; read state is unknown when no matching to-do row exists. A board with additional pages reports `notice-board-paginated` for that course and retains its previous rows; check the LMS for that course.
 
 ## License
 

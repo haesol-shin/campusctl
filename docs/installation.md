@@ -12,7 +12,7 @@ Open a new shell and verify `uv --version` and `git --version` before continuing
 
 ## Install campusctl and its browser
 
-The unpinned Git URL installs from the repository's default branch. The install pattern matches the repository's [Windows smoke job](../.github/workflows/ci.yml#L63-L82), which also checks the uv tool command shims. `campusctl setup` is the primary way to install Chromium from the same environment as campusctl; the manual Playwright command remains a fallback.
+The unpinned Git URL installs from the repository's default branch. The install pattern matches the repository's [Windows smoke job](../.github/workflows/ci.yml#L210-L245), which also checks the uv tool command shims. `campusctl setup` is the primary way to install Chromium from the same environment as campusctl; the manual Playwright command remains a fallback.
 
 ```powershell
 # On Windows.
