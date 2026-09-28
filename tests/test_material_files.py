@@ -580,6 +580,12 @@ def test_layout_validation_and_environment(tmp_path: Path, monkeypatch: pytest.M
     literal = {"materials": {"download_dir": str(tmp_path / "Cafe\u0301" / "{course_id}")}}
     normalized, _ = resolve_download_layout(literal, row, None)
     assert normalized == tmp_path / "Café" / "course-a"
+    monkeypatch.setenv("CAMPUSCTL_TEST_DIR", str(tmp_path / "{course}"))
+    with pytest.raises(CampusError) as failure:
+        resolve_download_layout(settings, row, None)
+    assert failure.value.code == "config-invalid"
+    assert not (tmp_path / "Course_Section").exists()
+    monkeypatch.setenv("CAMPUSCTL_TEST_DIR", str(tmp_path))
     for bad in ("CON.txt", "notes."):
         template = {"materials": {"download_dir": str(tmp_path / bad / "{course}")}}
         with pytest.raises(CampusError) as failure:
@@ -725,9 +731,14 @@ def test_adoption_scan_bounds_and_symlink_safety(tmp_path: Path, monkeypatch: py
         adopt_attachment(transfer, destination, course, candidate.name, len(content), digest)
     assert error.value.code == "output-path-conflict"
     monkeypatch.setattr(material_files, "_SCAN_BYTES", 1_000_000_000)
+    (course / "other.txt").write_bytes(b"unrelated")
     monkeypatch.setattr(material_files, "_SCAN_ENTRIES", 2)
-    with pytest.raises(CampusError) as error:
-        adopt_attachment(transfer, destination, course, candidate.name, len(content), digest)
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            material_files, "sorted", lambda *_args: pytest.fail("scan sorted an over-limit directory"), raising=False
+        )
+        with pytest.raises(CampusError) as error:
+            adopt_attachment(transfer, destination, course, candidate.name, len(content), digest)
     assert error.value.code == "output-path-conflict"
     monkeypatch.setattr(material_files, "_SCAN_ENTRIES", 10_000)
     if os.name != "nt":
@@ -754,6 +765,17 @@ def test_template_expansion_on_macos_and_windows(tmp_path: Path, monkeypatch: py
     config.validate_config({"materials": {"download_dir": template}}, path=tmp_path / "config.toml")
     prefix, parts = material_files._layout_parts(template)
     assert prefix == "C:\\" and parts == ["School", "{course_id}", "files"]
+    unc = "//server/share"
+    config.validate_config({"materials": {"download_dir": unc}}, path=tmp_path / "config.toml")
+    share, components = material_files._layout_parts(unc)
+    assert components == [] and share.rstrip("\\/") == unc
+    if os.name == "nt":
+        assert resolve_download_layout(
+            {"materials": {"download_dir": unc}}, {"course": {"id": "x", "label": "x"}}, None
+        ) == (
+            Path(unc),
+            None,
+        )
     monkeypatch.setenv("CAMPUSCTL_FOLDER", "CON.txt")
     with pytest.raises(CampusError) as failure:
         material_files._layout_parts(template)

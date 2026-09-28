@@ -197,7 +197,7 @@ def _expand_layout(template: str) -> str:
         if match.group(3) and sys.platform != "win32":
             raise _layout_invalid("materials.download_dir")
         value = os.environ.get(match.group(1) or match.group(2) or match.group(3))
-        if not value:
+        if not value or "{" in value or "}" in value:
             raise _layout_invalid("materials.download_dir")
         if ("/" in value or "\\" in value) and (
             match.start() != 0
@@ -218,12 +218,10 @@ def _layout_parts(template: str) -> tuple[str, list[str]]:
 
     expanded = _expand_layout(template)
     if sys.platform == "win32":
-        import ntpath
-
         anchor, remainder = ntpath.splitdrive(expanded)
-        if not anchor or not remainder.startswith(("/", "\\")):
+        if not anchor or (remainder and not remainder.startswith(("/", "\\"))):
             raise _layout_invalid("materials.download_dir")
-        parts = re.split(r"[/\\]", remainder[1:])
+        parts = re.split(r"[/\\]", remainder[1:]) if remainder else []
         prefix = anchor + "\\"
     else:
         if not expanded.startswith("/"):
@@ -672,10 +670,14 @@ def adopt_attachment(
 
             def walk(fd: int, relative: Path, depth: int) -> None:
                 nonlocal entries
-                for name in sorted(os.listdir(fd)):
-                    entries += 1
-                    if entries > _SCAN_ENTRIES:
-                        raise _scan_conflict()
+                names: list[str] = []
+                with os.scandir(fd) as stream:
+                    for entry in stream:
+                        entries += 1
+                        if entries > _SCAN_ENTRIES:
+                            raise _scan_conflict()
+                        names.append(entry.name)
+                for name in sorted(names):
                     info = os.stat(name, dir_fd=fd, follow_symlinks=False)
                     path = relative / name
                     if stat.S_ISLNK(info.st_mode):
