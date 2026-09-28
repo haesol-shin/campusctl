@@ -632,7 +632,6 @@ def test_adoption_comparison_tiers(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     assert result.path.read_bytes() == content
 
 
-@pytest.mark.skipif(os.name == "nt", reason="Windows adoption fails closed without pinned reparse-point checks")
 def test_same_directory_case_variant_and_receipt_migration(tmp_path: Path) -> None:
     course = prepare_output_dir(tmp_path, "course", tmp_path / "course")
     destination = prepare_output_dir(tmp_path, "course", course / "materials")
@@ -640,9 +639,10 @@ def test_same_directory_case_variant_and_receipt_migration(tmp_path: Path) -> No
     digest = hashlib.sha256(content).hexdigest()
     existing = destination / "SAMPLE.PDF"
     existing.write_bytes(content)
-    transfer = _temp(destination, content)
-    reused = adopt_attachment(transfer, destination, course, "sample.pdf", len(content), digest)
-    assert reused is not None and reused.path == existing and reused.outcome == "reused"
+    if os.name != "nt":
+        transfer = _temp(destination, content)
+        reused = adopt_attachment(transfer, destination, course, "sample.pdf", len(content), digest)
+        assert reused is not None and reused.path == existing and reused.outcome == "reused"
     entity_id = "cnu_lms_material:course-a:file-1"
     receipt_path = tmp_path / "materials" / "receipts.json"
     receipt_path.parent.mkdir()
@@ -668,6 +668,18 @@ def test_same_directory_case_variant_and_receipt_migration(tmp_path: Path) -> No
     data = json.loads(receipt_path.read_text())
     assert data["schema_version"] == 2 and len(data["items"]) == 2
     assert all(item["course_root"] is None for item in data["items"])
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows reparse-point safety behavior")
+def test_windows_adoption_fails_closed_without_search(tmp_path: Path) -> None:
+    course = prepare_output_dir(tmp_path, "course", tmp_path / "course")
+    destination = prepare_output_dir(tmp_path, "course", course / "materials")
+    content = b"synthetic attachment"
+    transfer = _temp(destination, content)
+    with pytest.raises(CampusError) as failure:
+        adopt_attachment(transfer, destination, course, "sample.pdf", len(content), hashlib.sha256(content).hexdigest())
+    assert failure.value.code == "output-path-conflict"
+    assert transfer.read_bytes() == content
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Windows adoption fails closed without pinned reparse-point checks")
