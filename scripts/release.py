@@ -18,6 +18,11 @@ VERSION_FILES = {
         (r"(campusctl@v)([0-9]+\.[0-9]+\.[0-9]+)(\s|$)", False),
     ],
     "docs/agent-skill.md": [(r"(requires campusctl )([0-9]+\.[0-9]+\.[0-9]+)( or newer)", False)],
+    "docs/installation.ko.md": [
+        (r"(`v)([0-9]+\.[0-9]+\.[0-9]+)(` 릴리스를 고정해 설치하려면)", False),
+        (r"(campusctl@v)([0-9]+\.[0-9]+\.[0-9]+)(\s|$)", False),
+    ],
+    "docs/agent-skill.ko.md": [(r"(campusctl )([0-9]+\.[0-9]+\.[0-9]+)( 이상이 필요합니다)", False)],
     "skills/campusctl/SKILL.md": [
         (r"(blob/v)([0-9]+\.[0-9]+\.[0-9]+)(/docs/contracts/cli\.md)", False),
         (r"(is below `)([0-9]+\.[0-9]+\.[0-9]+)(`)", False),

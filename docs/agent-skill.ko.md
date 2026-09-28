@@ -24,7 +24,7 @@ npx skills update campusctl -g
 npx skills remove campusctl -g
 ```
 
-스킬의 안내형 설정에는 campusctl 0.5.1 이상이 필요합니다. 스킬을 설치해도 campusctl 자체가 설치되거나 업데이트되지는 않습니다. 이 스킬은 강의, 과목, 과제, 공지, 자료를 campusctl의 JSON CLI로 다루도록 에이전트에 안내합니다. 아래의 링크나 복사 방법을 쓴다면 저장소 복제본을 옮기지 않을 위치에 보관하세요. Codex는 `~/.agents/skills/`, 단독 Claude Code는 `~/.claude/skills/`를 사용하며 다른 에이전트는 각자의 문서에 나온 사용자 스킬 폴더를 사용합니다.
+스킬의 안내형 설정에는 campusctl 0.6.0 이상이 필요합니다. 스킬을 설치해도 campusctl 자체가 설치되거나 업데이트되지는 않습니다. 이 스킬은 강의, 과목, 과제, 공지, 자료를 campusctl의 JSON CLI로 다루도록 에이전트에 안내합니다. 아래의 링크나 복사 방법을 쓴다면 저장소 복제본을 옮기지 않을 위치에 보관하세요. Codex는 `~/.agents/skills/`, 단독 Claude Code는 `~/.claude/skills/`를 사용하며 다른 에이전트는 각자의 문서에 나온 사용자 스킬 폴더를 사용합니다.
 
 처음 사용한다면 [README 빠른 시작](../README.ko.md#quick-start)을 먼저 보세요.
 
