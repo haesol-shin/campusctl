@@ -21,6 +21,7 @@ VERSION_FILES = {
     "skills/campusctl/SKILL.md": [
         (r"(blob/v)([0-9]+\.[0-9]+\.[0-9]+)(/docs/contracts/cli\.md)", False),
         (r"(is below `)([0-9]+\.[0-9]+\.[0-9]+)(`)", False),
+        (r"(This skill describes the v)([0-9]+\.[0-9]+\.[0-9]+)( release surface)", False),
     ],
     "docs/contracts/cli.md": [
         (r"(?m)^(# campusctl v)([0-9]+\.[0-9]+)( command-line contract$)", True),

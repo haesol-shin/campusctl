@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "campusctl"
-version = "0.5.0"
+version = "0.5.1"
 description = "Campus LMS control CLI"
 readme = "README.md"
 license = "MIT"

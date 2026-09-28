@@ -5,7 +5,7 @@ description: "Use campusctl's documented JSON CLI to check lectures, assignments
 
 # Campusctl
 
-Translate the user's intent into documented `campusctl` CLI calls. Follow the [public CLI contract](https://github.com/haesol-shin/campusctl/blob/v0.5.0/docs/contracts/cli.md) and linked domain contracts. Present results without interpreting course content or making decisions for the user.
+Translate the user's intent into documented `campusctl` CLI calls. Follow the [public CLI contract](https://github.com/haesol-shin/campusctl/blob/v0.5.1/docs/contracts/cli.md) and linked domain contracts. Present results without interpreting course content or making decisions for the user.
 
 ## Use this skill for
 
@@ -19,7 +19,7 @@ Translate the user's intent into documented `campusctl` CLI calls. Follow the [p
 
 ## Procedure
 
-1. Before any other command, run `campusctl --version --json`. If `result.version` is below `0.5.0`, tell the user to run `uv tool upgrade campusctl` and stop. This skill describes the v0.5.0 release surface; its release tag and minimum version advance through the release script.
+1. Before any other command, run `campusctl --version --json`. If `result.version` is below `0.5.1`, tell the user to run `uv tool upgrade campusctl` and stop. This skill describes the v0.5.1 release surface; its release tag and minimum version advance through the release script.
 2. Run `campusctl doctor --json` to check readiness. If configuration is missing, ask only for the login ID, run `campusctl config init --username <ID> --json`, and tell the user to run `campusctl auth set` themselves in a terminal. Never ask for, receive, or handle the password. `campusctl setup` guides an interactive user through setup; `setup --json` only checks/installs Chromium and requires agreement before a download.
 3. Run `campusctl sync --json` only when fresh data is requested or a catalog is missing; bare sync refreshes lectures, assignments, notices, and materials in one combined pass with one course selection per course. Use `--only DOMAIN` (or a comma-separated subset) when the user wants only specific domains, and `--course ID` only for an identified course. Cached lists and `status` need no network. `--profile` is a global option before sync or refresh that emits one `campusctl-profile:` JSON line on stderr (schema version 2), with spans, document timings, lock coverage and sanitized failed-check diagnostics; diagnostics use run-local course ordinals, never names or URLs, and make no performance promise. `--headless` and `--headed` are global options preceding the command; headed is the default, and local headless supports sync, selected assignment and notice fetch, and material download, not CDP or playback. Report each partial domain/course failure and retained stale rows honestly.
 4. To list courses, run `campusctl courses list --json`; for an overview or lecture health, run `campusctl status --json`. Match course names to returned `course_id` values; ask if multiple records match. Human printed course numbers are selection aliases bound to that printed catalog, but use full IDs for all agent JSON calls. To list lectures, run `campusctl lectures list --json`; incomplete lectures are the default. Add `--all` when completed or recorded rows are requested, and `--course ID` only for a course the user identified or selected. Rows marked `recorded` do not imply attendance credit or LMS completion. Use the latest list response for playback.
