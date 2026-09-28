@@ -24,7 +24,7 @@ npx skills update campusctl -g
 npx skills remove campusctl -g
 ```
 
-The guided setup in the skill requires campusctl 0.5.1 or newer; installing the skill does not install or update campusctl. The skill teaches agents to use campusctl's JSON CLI for lectures, courses, assignments, notices, and materials. Keep a manual clone at a stable path if you use the symlink or copy instructions below. Codex uses `~/.agents/skills/`; standalone Claude Code uses `~/.claude/skills/`; other agents use their documented user-level skills directory.
+The guided setup in the skill requires campusctl 0.6.0 or newer; installing the skill does not install or update campusctl. The skill teaches agents to use campusctl's JSON CLI for lectures, courses, assignments, notices, and materials. Keep a manual clone at a stable path if you use the symlink or copy instructions below. Codex uses `~/.agents/skills/`; standalone Claude Code uses `~/.claude/skills/`; other agents use their documented user-level skills directory.
 
 For a first run, see the [README quick start](../README.md#quick-start).
 

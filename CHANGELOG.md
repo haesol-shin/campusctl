@@ -2,6 +2,20 @@
 
 All notable changes to campusctl are documented here. This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Release dates follow the local date convention (KST, Asia/Seoul).
 
+## [0.6.0] - 2026-09-29
+
+### Added
+- Korean versions of every user guide, plus a new usage guide in both languages
+
+### Changed
+- Reorganize the README around highlights, prerequisites and a three-step quick start
+- Group `campusctl --help` into get started, everyday and settings commands with examples and local paths
+- Start first-run `status` with the next step instead of zero counts
+- Show a path-free recovery command when a catalog is missing
+
+### Fixed
+- Use singular wording for one second, one course and one lecture
+
 ## [0.5.1] - 2026-09-29
 
 ### Fixed
