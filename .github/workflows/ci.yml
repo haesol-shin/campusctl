@@ -116,6 +116,8 @@ jobs:
       CAMPUSCTL_REQUIRE_CHROMIUM: "1"
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
@@ -130,18 +132,12 @@ jobs:
           key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('uv.lock') }}
       - run: uv run playwright install --with-deps chromium
       - run: uv run pytest -q --cov=campusctl --cov-report=json:coverage.json -o faulthandler_timeout=30
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: browser-coverage
-          path: coverage.json
-          if-no-files-found: ignore
-          retention-days: 30
-      - name: Compare per-file coverage with main
+      - name: Report per-file and PR diff coverage
         if: always()
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           if [ ! -f coverage.json ]; then
             echo "Chromium-inclusive coverage report missing" >> "$GITHUB_STEP_SUMMARY"
@@ -152,6 +148,15 @@ jobs:
             gh run download "$run_id" --repo "$GITHUB_REPOSITORY" --name browser-coverage --dir baseline || true
           fi
           python scripts/report_coverage.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: browser-coverage
+          path: |
+            coverage.json
+            diff-coverage.json
+          if-no-files-found: ignore
+          retention-days: 30
 
   windows-smoke:
     name: Windows installation and runtime smoke
