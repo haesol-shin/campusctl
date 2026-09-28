@@ -3,5 +3,5 @@
 - Add a parity gate for English and Korean documentation
 
 ## Changed
-- Shorten both READMEs to a three-step first run with a captured synthetic status demo
+- Preserve both README layouts while consolidating installation and moving command details to the usage guides
 - Move contribution policy and scan exceptions to CONTRIBUTING.md

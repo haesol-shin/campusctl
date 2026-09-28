@@ -60,6 +60,8 @@ class Link:
 class Page:
     first_line: int
     first_text: str
+    switcher_line: int
+    switcher_text: str
     headings: list[Heading]
     fences: list[Fence]
     links: list[Link]
@@ -82,6 +84,15 @@ def _parse(path: Path) -> Page:
         ((number, raw.rstrip("\n")) for number, raw in enumerate(lines, 1) if raw.strip()),
         (0, ""),
     )
+    switcher_line, switcher_text = first_line, first_text
+    if first_text == '<h1 align="center">campusctl</h1>':
+        visible = ((number, raw.strip()) for number, raw in enumerate(lines, 1) if raw.strip())
+        next(visible)  # Centered title
+        if next(visible, (0, ""))[1] == '<p align="center">':
+            for _number, text in visible:
+                if text == "</p>":
+                    switcher_line, switcher_text = next(visible, (first_line, first_text))
+                    break
     headings: list[Heading] = []
     fences: list[Fence] = []
     links: list[Link] = []
@@ -133,7 +144,17 @@ def _parse(path: Path) -> Page:
             for match in HTML_ANCHOR.finditer(tag.group()):
                 anchors.add(match.group(2))
 
-    return Page(first_line, first_text, headings, fences, links, anchors, fence_line if fence_mark else None)
+    return Page(
+        first_line,
+        first_text,
+        switcher_line,
+        switcher_text,
+        headings,
+        fences,
+        links,
+        anchors,
+        fence_line if fence_mark else None,
+    )
 
 
 def _problem(pair: str, path: str, line: int, kind: str, detail: str) -> str:
@@ -141,18 +162,26 @@ def _problem(pair: str, path: str, line: int, kind: str, detail: str) -> str:
 
 
 def _switcher(page: Page, pair: str, path: str, expected: str, *, english: bool) -> list[str]:
-    if english:
+    if path in {"README.md", "README.ko.md"}:
+        if english:
+            pattern = rf'<p align="center"><b>English</b> \| <a href="{re.escape(expected)}">한국어</a></p>'
+        else:
+            pattern = rf'<p align="center"><a href="{re.escape(expected)}">English</a> \| <b>한국어</b></p>'
+        valid = page.first_text == '<h1 align="center">campusctl</h1>'
+    elif english:
         pattern = rf"\*\*English\*\*\s*\|\s*\[한국어\]\({re.escape(expected)}\)"
+        valid = True
     else:
         pattern = rf"\[English\]\({re.escape(expected)}\)\s*\|\s*\*\*한국어\*\*"
-    if re.fullmatch(pattern, page.first_text) is None:
+        valid = True
+    if not valid or re.fullmatch(pattern, page.switcher_text) is None:
         return [
             _problem(
                 pair,
                 path,
-                page.first_line,
+                page.switcher_line,
                 "switcher",
-                f"first visible line must mark the current language and link to {expected!r}",
+                f"top language switcher must mark the current language and link to {expected!r}",
             )
         ]
     return []
@@ -162,7 +191,7 @@ def _ordinary_links(page: Page, switch_target: str) -> list[Link]:
     links = []
     skipped = False
     for link in page.links:
-        if not skipped and link.line == page.first_line and link.destination == switch_target:
+        if not skipped and link.line == page.switcher_line and link.destination == switch_target:
             skipped = True
         else:
             links.append(link)

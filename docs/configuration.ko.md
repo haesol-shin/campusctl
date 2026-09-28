@@ -135,6 +135,7 @@ command = ["C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe", "-NoProf
 
 실행 파일과 각 인자를 TOML 배열의 별도 항목으로 적으세요. 공백이 포함된 경로도 하나의 항목으로 유지합니다. 전체 도우미 계약은 [자격 증명 공급자](contracts/cli.md#credential-providers)를 보세요.
 
+<a id="unattended-linux"></a>
 ## 무인 Linux
 
 배포판 패키지 관리자로 Xvfb를 설치하세요. Xvfb는 화면 표시 브라우저용 가상 화면을 제공합니다. 강의 재생은 여전히 공식 플레이어에서 진행되며 건너뛰거나 숨겨지지 않습니다. 예:

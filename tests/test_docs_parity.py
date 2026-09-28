@@ -27,6 +27,7 @@ PAIRED_FILES = (
 )
 LINK_TARGETS = (
     "LICENSE",
+    "CONTRIBUTING.md",
     ".github/workflows/ci.yml",
     "docs/contracts/cli.md",
     "docs/contracts/assignments.md",
@@ -53,7 +54,7 @@ def _replace(path: Path, old: str, new: str) -> None:
     path.write_text(text.replace(old, new, 1), encoding="utf-8")
 
 
-def test_repository_pairs_pass() -> None:
+def test_centered_readme_and_plain_guide_switchers_pass() -> None:
     result = _run(ROOT)
     assert result.returncode == 0, result.stdout + result.stderr
     assert "OK (6 pairs)" in result.stdout
@@ -90,7 +91,7 @@ def test_changed_fenced_command_fails(tmp_path: Path) -> None:
 
 def test_changed_link_target_fails(tmp_path: Path) -> None:
     root = _snapshot(tmp_path)
-    _replace(root / "README.ko.md", "[설치](docs/installation.ko.md)", "[설치](docs/troubleshooting.ko.md)")
+    _replace(root / "README.ko.md", "[설치 안내](docs/installation.ko.md)", "[설치 안내](docs/troubleshooting.ko.md)")
     result = _run(root)
     assert result.returncode != 0
     assert "README.ko.md:" in result.stdout and "link-target" in result.stdout
@@ -99,8 +100,8 @@ def test_changed_link_target_fails(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("name", "original", "wrong"),
     [
-        ("README.md", "[Usage](docs/usage.md)", "[Usage](docs/usage.ko.md)"),
-        ("README.ko.md", "[사용 안내](docs/usage.ko.md)", "[사용 안내](docs/usage.md)"),
+        ("README.md", "[Usage and commands](docs/usage.md)", "[Usage and commands](docs/usage.ko.md)"),
+        ("README.ko.md", "[사용법과 명령](docs/usage.ko.md)", "[사용법과 명령](docs/usage.md)"),
     ],
 )
 def test_wrong_language_guide_link_fails(tmp_path: Path, name: str, original: str, wrong: str) -> None:
@@ -115,10 +116,34 @@ def test_wrong_language_guide_link_fails(tmp_path: Path, name: str, original: st
 
 def test_broken_switcher_fails(tmp_path: Path) -> None:
     root = _snapshot(tmp_path)
-    _replace(root / "README.ko.md", "[English](README.md) | **한국어**", "[English](README.ko.md) | **한국어**")
+    _replace(
+        root / "README.ko.md",
+        '<p align="center"><a href="README.md">English</a> | <b>한국어</b></p>',
+        '<p align="center"><a href="README.ko.md">English</a> | <b>한국어</b></p>',
+    )
     result = _run(root)
     assert result.returncode != 0
-    assert "README.ko.md:1: switcher" in result.stdout
+    assert "README.ko.md:8: switcher" in result.stdout
+
+
+def test_readme_switcher_after_long_badge_row_passes(tmp_path: Path) -> None:
+    root = _snapshot(tmp_path)
+    extra_badges = '  <img src="https://example.invalid/badge.svg" alt="extra">\n' * 5
+    for name in ("README.md", "README.ko.md"):
+        _replace(root / name, '</p>\n<p align="center">', extra_badges + '</p>\n<p align="center">')
+    result = _run(root)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_readme_switcher_before_badges_fails(tmp_path: Path) -> None:
+    root = _snapshot(tmp_path)
+    page = root / "README.ko.md"
+    switcher = '<p align="center"><a href="README.md">English</a> | <b>한국어</b></p>'
+    _replace(page, "</p>\n" + switcher, "</p>")
+    _replace(page, '<h1 align="center">campusctl</h1>\n', '<h1 align="center">campusctl</h1>\n' + switcher + "\n")
+    result = _run(root)
+    assert result.returncode != 0
+    assert "README.ko.md:" in result.stdout and "switcher" in result.stdout
 
 
 def test_same_broken_anchor_in_both_languages_fails(tmp_path: Path) -> None:
@@ -133,8 +158,8 @@ def test_same_broken_anchor_in_both_languages_fails(tmp_path: Path) -> None:
 
 def test_same_missing_file_in_both_languages_fails(tmp_path: Path) -> None:
     root = _snapshot(tmp_path)
-    _replace(root / "README.md", "[Usage](docs/usage.md)", "[Usage](docs/absent.md)")
-    _replace(root / "README.ko.md", "[사용 안내](docs/usage.ko.md)", "[사용 안내](docs/absent.ko.md)")
+    _replace(root / "README.md", "[Usage and commands](docs/usage.md)", "[Usage and commands](docs/absent.md)")
+    _replace(root / "README.ko.md", "[사용법과 명령](docs/usage.ko.md)", "[사용법과 명령](docs/absent.ko.md)")
     result = _run(root)
     assert result.returncode != 0
     assert "link-missing-file" in result.stdout
@@ -152,17 +177,17 @@ def test_orphan_korean_page_fails(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     "replacement",
     [
-        "| 남은 강의 보기 | [help](docs/usage.ko.md) |",
-        "| 남은 강의 보기 | ![guide](docs/usage.ko.md) |",
-        '| 남은 강의 보기 | <img src="docs/usage.ko.md"> |',
+        "| Linux | [help](usage.ko.md) |",
+        "| Linux | ![guide](usage.ko.md) |",
+        '| Linux | <img src="usage.ko.md"> |',
     ],
 )
 def test_links_in_tables_and_images_are_compared(tmp_path: Path, replacement: str) -> None:
     root = _snapshot(tmp_path)
-    _replace(root / "README.ko.md", "| 남은 강의 보기 | `campusctl lectures list` |", replacement)
+    _replace(root / "docs/installation.ko.md", "| Linux | `~/.cache/ms-playwright` |", replacement)
     result = _run(root)
     assert result.returncode != 0
-    assert "README.ko.md:" in result.stdout and "link-target" in result.stdout
+    assert "docs/installation.ko.md:" in result.stdout and "link-target" in result.stdout
 
 
 def test_same_invalid_line_anchor_in_both_languages_fails(tmp_path: Path) -> None:
