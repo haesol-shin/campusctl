@@ -69,7 +69,7 @@ campusctl sync
 campusctl status
 ```
 
-다음은 예시 과목으로 `CAMPUSCTL_OUTPUT=human`을 설정하고 너비 80열에서 `campusctl lectures list`를 실행해 캡처한 결과입니다. 마감일은 CNU 현지 시간입니다. `-`는 마감일 정보가 없다는 뜻이고, `opens MM-DD`는 아직 열리지 않은 강의를 뜻합니다:
+예시 과목에서 `campusctl lectures list`를 실행한 결과입니다. 마감일은 CNU 현지 시간입니다. `-`는 마감일 정보가 없다는 뜻이고, `opens MM-DD`는 아직 열리지 않은 강의를 뜻합니다:
 
 ```text
 2 lectures (updated 2026-09-28 18:09 UTC)

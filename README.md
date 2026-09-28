@@ -69,7 +69,7 @@ campusctl sync
 campusctl status
 ```
 
-This synthetic `campusctl lectures list` output was captured from the CLI at 80 columns with `CAMPUSCTL_OUTPUT=human`. Due dates use CNU local time, `-` means no due date is listed, and `opens MM-DD` marks a lecture that is not open yet:
+Here is `campusctl lectures list` for sample courses. Due dates use CNU local time; `-` means no due date is listed, and `opens MM-DD` marks a lecture that is not open yet:
 
 ```text
 2 lectures (updated 2026-09-28 18:09 UTC)
