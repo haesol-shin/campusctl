@@ -17,7 +17,7 @@
 - `campusctl sync` 한 번으로 네 영역의 자료를 함께 동기화하며 과목당 한 번 선택합니다.
 - `campusctl lectures list`로 미완료 강의를, `campusctl status`로 과제·공지·강의 현황을 확인합니다.
 - `sync --only DOMAIN`으로 영역을 좁히거나 목록의 `--refresh`로 해당 영역만 새로 고칩니다.
-- 전체 ID로 선택한 과제 또는 공지 하나의 본문을 읽기 쉬운 패키지로 가져옵니다. 공지를 열면 조회수와 읽음 상태가 바뀔 수 있습니다.
+- 전체 ID로 명시적으로 선택한 과제 또는 공지 하나 이상을 한 번에 읽기 쉬운 패키지로 가져옵니다. 공지를 열면 조회수와 읽음 상태가 바뀔 수 있습니다.
 - 선택한 자료 하나를 운영체제의 다운로드 폴더 아래 `campusctl/<과목 이름>/`에 저장합니다.
 - 한 번에 하나씩 화면이 표시되는 브라우저에서 CNU 공식 플레이어로 강의를 재생하고, 이후 LMS 상태를 확인합니다.
 - 스크립트와 에이전트에서 사용할 수 있는 JSON 출력을 제공합니다.
@@ -77,7 +77,7 @@ $ campusctl materials list
 $ campusctl materials download 1
 ```
 
-`sync`는 한 브라우저 세션에서 강의·과제·공지·자료를 모두 갱신하고 과목당 한 번 선택합니다. `--only lectures,notices`로 영역을 제한할 수 있습니다. 과목이나 영역이 실패하면 이전 목록은 유지하고 부분 실패를 표시합니다. 목록은 `--refresh`를 지정하지 않으면 네트워크를 사용하지 않습니다. `campusctl --profile sync`는 단계별 시간을 표준 오류 출력으로 보냅니다.
+`sync`는 한 브라우저 세션에서 강의·과제·공지·자료를 모두 갱신하고 과목당 한 번 선택합니다. `--only lectures,notices`로 영역을 제한할 수 있습니다. 과목이나 영역이 실패하면 이전 목록은 유지하고 부분 실패를 표시합니다. 목록은 `--refresh`를 지정하지 않으면 네트워크를 사용하지 않습니다. `campusctl --profile sync`(또는 `--refresh`를 지정한 목록)는 표준 오류 출력에 `campusctl-profile:` JSON 한 줄을 기록합니다. 스키마 버전 2에는 구간별 시간(`spans`), 문서 시간(`documents`), 잠금 구간(`coverage`)과 실패한 검사만 담는 `diagnostics`가 포함됩니다. 페이지 준비 상태, 과목 식별, 할 일 표, 자료실 상태 및 모달 연결의 실패 기록에는 과목 이름이나 URL 대신 실행 중에만 유효한 과목 순번을 사용합니다. 측정값은 성능을 보장하지 않습니다.
 
 사람이 읽는 출력에서 `courses list`의 번호나 고유한 과목 이름 일부를 `--course`에 지정할 수 있습니다. `materials list`의 번호는 `materials download 번호`에 쓰며, 인자 없이 실행하면 대화형 터미널에서 파일 한 개를 선택합니다. 번호는 마지막으로 출력한 목록에 묶여 있어 카탈로그가 바뀌면 무효가 됩니다. 전체 ID는 목록 기록 없이 사용할 수 있으며 `--json`에서는 전체 ID가 필요합니다. 선택한 공식 첨부파일 한 개는 운영체제 다운로드 폴더의 `campusctl/<과목 이름>/`에 저장됩니다. 다른 위치는 `--out DIR`을 사용하세요.
 
@@ -111,7 +111,15 @@ To refresh: campusctl sync
 
 ## AI 에이전트에서 사용하기
 
-`npx skills add https://github.com/haesol-shin/campusctl -g` 또는 `bunx skills add https://github.com/haesol-shin/campusctl -g`를 실행하세요([자세한 내용, 수동 설치 및 복사해 사용할 프롬프트](docs/agent-skill.md)).
+다음 명령 중 하나로 스킬을 전역 설치하세요:
+
+```sh
+npx skills add https://github.com/haesol-shin/campusctl -g
+# or
+bunx skills add https://github.com/haesol-shin/campusctl -g
+```
+
+[자세한 내용, 수동 설치 및 복사해 사용할 프롬프트](docs/agent-skill.md)를 참조하세요.
 
 ## campusctl을 사용하는 이유
 
@@ -160,7 +168,7 @@ campusctl은 공식 플레이어로 강의를 재생한 뒤 LMS 강의 상태를
 
 #### 과제나 공지의 본문도 볼 수 있나요?
 
-네. `assignments list` 또는 `notices list`에서 전체 ID를 고른 뒤 `campusctl assignments fetch <ENTITY_ID>`나 `campusctl notices fetch <ENTITY_ID>`를 실행하세요. 로컬 데이터 디렉터리의 `sources/` 아래에 `content.md`와 `package.json`이 생성됩니다. `--out DIR`은 아직 존재하지 않는 패키지 디렉터리를 지정합니다. `--json`으로 경로, 완전성 및 생략된 리소스를 확인할 수 있습니다. 공지 상세를 열면 조회수가 한 번 증가하거나 읽음 상태가 바뀔 수 있지만, fetch는 읽음 처리 버튼을 누르지 않습니다. 공지 첨부파일은 내려받지 않고 생략합니다. 로컬 Chromium에서 fetch는 화면 표시와 headless 모드를 모두 지원하며 과제를 제출하지 않습니다. 자세한 내용은 [과제](docs/contracts/assignments.md#selected-detail-fetch) 및 [공지](docs/contracts/notices.md#selected-detail-fetch) 계약을 참조하세요. 공지는 각 과목 게시판에서 가져오고, 읽음 여부는 할 일 목록과 일치할 때만 표시합니다. 게시판에 다음 페이지가 있으면 `notice-board-paginated` 오류와 함께 그 과목의 이전 목록이 유지됩니다. 해당 과목은 LMS에서 확인하세요.
+네. `assignments list` 또는 `notices list`에서 선택한 전체 ID 하나 이상을 가져올 수 있습니다. 여러 개라면 `campusctl assignments fetch ID1 ID2` 또는 `campusctl notices fetch ID1 ID2`를 실행하세요. 로컬 데이터 디렉터리의 `sources/` 아래에 `content.md`와 `package.json`이 생성됩니다. 서로 다른 ID 한 개에는 아직 존재하지 않는 패키지 디렉터리를 `--out DIR`로 지정할 수 있고, `--json`의 `result.source_package`에서 경로, 완전성 및 생략된 리소스를 확인할 수 있습니다. 여러 ID에는 `--out`을 사용하지 마세요. JSON 결과는 순서대로 담긴 `result.items`이며 항목마다 `outcome`이 있습니다. `reason_code`는 `partial` 또는 `failed` 항목에만, `source_package`는 `completed` 또는 `partial` 항목에만 있습니다. 공지 상세를 열면 조회수가 한 번 증가하거나 읽음 상태가 바뀔 수 있지만, fetch는 읽음 처리 버튼을 누르지 않습니다. 공지 첨부파일은 내려받지 않고 생략합니다. 로컬 Chromium에서 fetch는 화면 표시와 headless 모드를 모두 지원하며 과제를 제출하지 않습니다. 자세한 내용은 [과제](docs/contracts/assignments.md#selected-detail-fetch) 및 [공지](docs/contracts/notices.md#selected-detail-fetch) 계약을 참조하세요. 공지는 각 과목 게시판에서 가져오고, 읽음 여부는 할 일 목록과 일치할 때만 표시합니다. 게시판에 다음 페이지가 있으면 `notice-board-paginated` 오류와 함께 그 과목의 이전 목록이 유지됩니다. 해당 과목은 LMS에서 확인하세요.
 
 ## 라이선스
 

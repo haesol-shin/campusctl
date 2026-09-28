@@ -1,1 +1,3 @@
-Add bounded, sanitized failure diagnostics to profile v2 for page readiness, course identity, to-do grid completeness and archive attachment checks.
+## Added
+
+- Record bounded, sanitized failed-check diagnostics in profile v2.

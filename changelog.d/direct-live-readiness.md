@@ -1,1 +1,3 @@
-Fix notice to-do synchronization with the observed list total field. Bind archive file controls to the current attachment response, reloading the archive when that identity cannot be verified.
+## Fixed
+
+- Synchronize notice to-do grid totals and bind archive file controls to verified attachment responses, reloading the archive when needed.
