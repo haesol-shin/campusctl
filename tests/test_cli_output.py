@@ -461,6 +461,26 @@ def test_help_groups_commands_and_resolves_paths_at_render_time(
     assert "--json      emit the JSON response envelope" in stdout.getvalue()
 
 
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        (["assignments", "list", "--help"], ("--refresh", "--course", "--json")),
+        (["notices", "fetch", "--help"], ("ID [ID ...]", "--out DIR", "--json")),
+        (["assignments", "fetch", "--help"], ("ID [ID ...]", "--out DIR", "--json")),
+        (["materials", "list", "--help"], ("--refresh", "--course", "--json")),
+        (["lectures", "play", "--help"], ("ID [ID ...]", "--speed", "--json")),
+    ],
+)
+def test_domain_help_describes_actions(
+    monkeypatch: pytest.MonkeyPatch, argv: list[str], expected: tuple[str, ...]
+) -> None:
+    _, stdout = _streams(monkeypatch, stdin_tty=False, stdout_tty=False)
+    assert cli.main(argv) == 0
+    help_text = stdout.getvalue()
+    assert all(item in help_text for item in expected)
+    assert "emit the JSON response envelope" in help_text
+
+
 @pytest.mark.parametrize("catalog_exists", [False, True])
 def test_empty_status_human_distinguishes_unreadable_catalog(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, catalog_exists: bool
@@ -485,12 +505,15 @@ def test_empty_status_human_distinguishes_unreadable_catalog(
     assert json.loads(stdout.getvalue())["errors"][0]["code"] == "catalog-missing"
 
 
-def test_missing_catalog_human_hides_path_but_json_retains_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("domain", ["lectures", "assignments", "notices"])
+def test_missing_catalog_human_hides_path_but_json_retains_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, domain: str
+) -> None:
     monkeypatch.setenv("CAMPUSCTL_DATA_DIR", str(tmp_path))
     _, stdout = _streams(monkeypatch, stdin_tty=False, stdout_tty=True)
-    assert cli.main(["assignments", "list"]) == 2
-    assert "Assignments catalog is missing" in stdout.getvalue()
+    assert cli.main([domain, "list"]) == 2
+    assert f"{domain.capitalize()} catalog is missing" in stdout.getvalue()
     assert str(tmp_path) not in stdout.getvalue()
     _, stdout = _streams(monkeypatch, stdin_tty=False, stdout_tty=False)
-    assert cli.main(["assignments", "list", "--json"]) == 2
+    assert cli.main([domain, "list", "--json"]) == 2
     assert str(tmp_path) in json.loads(stdout.getvalue())["errors"][0]["message"]
