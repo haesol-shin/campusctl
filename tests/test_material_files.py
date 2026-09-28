@@ -12,14 +12,15 @@ import pytest
 
 from campusctl.envelope import CampusError
 from campusctl.material_files import (
+    adopt_attachment,
     default_download_dir,
     prepare_output_dir,
     publish_attachment,
+    resolve_download_layout,
     safe_component,
     verified_receipt,
     write_receipt,
 )
-from campusctl.material_files import adopt_attachment, resolve_download_layout
 
 
 def _temp(directory: Path, content: bytes) -> Path:
@@ -564,7 +565,13 @@ def test_layout_validation_and_environment(tmp_path: Path, monkeypatch: pytest.M
 
     row = {"course": {"id": "course-a", "label": "Course/Section"}}
     monkeypatch.setenv("CAMPUSCTL_TEST_DIR", str(tmp_path))
-    settings = {"materials": {"download_dir": "$CAMPUSCTL_TEST_DIR/{semester}/{course}/materials", "semester": "2026-2", "adopt_existing": True}}
+    settings = {
+        "materials": {
+            "download_dir": "$CAMPUSCTL_TEST_DIR/{semester}/{course}/materials",
+            "semester": "2026-2",
+            "adopt_existing": True,
+        }
+    }
     validate_config(settings, path=tmp_path / "config.toml")
     destination, root = resolve_download_layout(settings, row, None)
     assert destination == tmp_path / "2026-2" / "Course_Section" / "materials"
@@ -601,7 +608,7 @@ def test_adoption_comparison_tiers(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(material_files, "_SCAN_BYTES", 2 * 64 * 1024)
     assert adopt_attachment(transfer, destination, course, candidate.name, size, digest) is None
     if size > 128 * 1024:
-        candidate.write_bytes(content[:size // 2] + b"B" + content[size // 2 + 1:])
+        candidate.write_bytes(content[: size // 2] + b"B" + content[size // 2 + 1 :])
         monkeypatch.setattr(material_files, "_SCAN_BYTES", size + 2 * 64 * 1024)
         assert adopt_attachment(transfer, destination, course, candidate.name, size, digest) is None
     candidate.write_bytes(content)
@@ -624,10 +631,23 @@ def test_same_directory_case_variant_and_receipt_migration(tmp_path: Path) -> No
     entity_id = "cnu_lms_material:course-a:file-1"
     receipt_path = tmp_path / "materials" / "receipts.json"
     receipt_path.parent.mkdir()
-    receipt_path.write_text(json.dumps({"schema_version": 1, "items": [{
-        "entity_id": entity_id, "output_dir": str(destination), "path": str(existing),
-        "size_bytes": len(content), "sha256": digest, "observed_mime": None
-    }]}))
+    receipt_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "items": [
+                    {
+                        "entity_id": entity_id,
+                        "output_dir": str(destination),
+                        "path": str(existing),
+                        "size_bytes": len(content),
+                        "sha256": digest,
+                        "observed_mime": None,
+                    }
+                ],
+            }
+        )
+    )
     assert verified_receipt(tmp_path, entity_id, destination) is not None
     write_receipt(tmp_path, "cnu_lms_material:course-a:file-2", destination, existing, len(content), digest, None)
     data = json.loads(receipt_path.read_text())
@@ -669,7 +689,8 @@ def test_template_expansion_on_macos_and_windows(tmp_path: Path, monkeypatch: py
     monkeypatch.setattr(material_files, "_home_dir", lambda: tmp_path)
     monkeypatch.setattr(material_files, "sys", SimpleNamespace(platform="darwin"))
     assert resolve_download_layout({"materials": {"download_dir": "~/School/{course}"}}, row, None) == (
-        tmp_path / "School" / "Sample", None
+        tmp_path / "School" / "Sample",
+        None,
     )
     monkeypatch.setattr(config, "sys", SimpleNamespace(platform="win32"))
     monkeypatch.setattr(material_files, "sys", SimpleNamespace(platform="win32"))

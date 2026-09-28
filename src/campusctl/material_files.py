@@ -6,6 +6,7 @@ import contextlib
 import ctypes
 import hashlib
 import json
+import ntpath
 import os
 import re
 import secrets
@@ -157,6 +158,7 @@ def default_download_dir() -> Path:
                     break
     return downloads / "campusctl"
 
+
 _ENV_REF = re.compile(r"\$([A-Za-z_][A-Za-z_0-9]*)|\$\{([A-Za-z_][A-Za-z_0-9]*)\}|%([A-Za-z_][A-Za-z_0-9]*)%")
 _SCAN_ENTRIES = 10_000
 _SCAN_BYTES = 1_000_000_000
@@ -197,13 +199,12 @@ def _expand_layout(template: str) -> str:
         value = os.environ.get(match.group(1) or match.group(2) or match.group(3))
         if not value:
             raise _layout_invalid("materials.download_dir")
-        if "/" in value or "\\" in value:
-            if (
-                match.start() != 0
-                or match.end() < len(template) and template[match.end()] not in "/\\"
-                or not (value.startswith("/") if sys.platform != "win32" else __import__("ntpath").isabs(value))
-            ):
-                raise _layout_invalid("materials.download_dir")
+        if ("/" in value or "\\" in value) and (
+            match.start() != 0
+            or (match.end() < len(template) and template[match.end()] not in "/\\")
+            or not (value.startswith("/") if sys.platform != "win32" else ntpath.isabs(value))
+        ):
+            raise _layout_invalid("materials.download_dir")
         return value
 
     expanded = _ENV_REF.sub(substitute, template)
@@ -274,9 +275,10 @@ def resolve_download_layout(config: dict[str, Any], row: dict[str, Any], out: Pa
         ):
             course_root = Path(prefix, *resolved)
     destination = Path(prefix, *resolved)
-    if course_root is not None and len(parts) - next(
-        i + 1 for i, part in enumerate(parts) if part in ("{course}", "{course_id}")
-    ) > 4:
+    if (
+        course_root is not None
+        and len(parts) - next(i + 1 for i, part in enumerate(parts) if part in ("{course}", "{course_id}")) > 4
+    ):
         raise _layout_invalid("materials.download_dir")
     return destination, course_root
 
@@ -689,14 +691,20 @@ def adopt_attachment(
                                     raise _scan_conflict()
                             finally:
                                 os.close(child)
-                    elif stat.S_ISREG(info.st_mode) and unicodedata.normalize("NFC", name).casefold() == primary.name.casefold():
+                    elif (
+                        stat.S_ISREG(info.st_mode)
+                        and unicodedata.normalize("NFC", name).casefold() == primary.name.casefold()
+                    ):
                         text = path.as_posix()
                         normalized = unicodedata.normalize("NFC", text)
                         candidates.append((root / path, (normalized.casefold(), normalized, text)))
 
             walk(root_fd, Path(), 0)
             exact = [item for item in candidates if item[0] == primary]
-            inside = sorted((item for item in candidates if item[0].parent == directory and item[0] != primary), key=lambda item: item[1])
+            inside = sorted(
+                (item for item in candidates if item[0].parent == directory and item[0] != primary),
+                key=lambda item: item[1],
+            )
             outside = sorted((item for item in candidates if item[0].parent != directory), key=lambda item: item[1])
             read_bytes = 0
 
@@ -709,6 +717,7 @@ def adopt_attachment(
                 if len(data) != count:
                     raise _scan_conflict()
                 return data
+
             with _pinned_directory(directory) as (source_dir_fd, _):
                 source_fd = _open_regular(temp_path.name, dir_fd=source_dir_fd)
                 try:
@@ -746,7 +755,9 @@ def adopt_attachment(
                                 _verify_temp_identity(fd, candidate.name, dir_fd=candidate_dir_fd)
                                 if identical:
                                     _verify_temp_identity(source_fd, temp_path.name, dir_fd=source_dir_fd)
-                                    return PublishedAttachment(candidate, "reused" if candidate.parent == directory else "adopted")
+                                    return PublishedAttachment(
+                                        candidate, "reused" if candidate.parent == directory else "adopted"
+                                    )
                             finally:
                                 os.close(fd)
                 finally:
@@ -789,10 +800,13 @@ def _valid_receipt_item(item: Any, version: int) -> bool:
         and Path(path).is_absolute()
         and (
             (Path(path).parent == Path(output_dir) and (version == 1 or item["course_root"] is None))
-            or (version == 2 and isinstance(item["course_root"], str)
+            or (
+                version == 2
+                and isinstance(item["course_root"], str)
                 and Path(item["course_root"]).is_absolute()
                 and Path(path).is_relative_to(Path(item["course_root"]))
-                and 1 <= len(Path(path).relative_to(Path(item["course_root"])).parts) <= 5)
+                and 1 <= len(Path(path).relative_to(Path(item["course_root"])).parts) <= 5
+            )
         )
         and isinstance(digest, str)
         and _DIGEST.fullmatch(digest) is not None
@@ -868,7 +882,8 @@ def verified_receipt(
             and (
                 _receipt_file(Path(path_string), directory, item.get("size_bytes"), digest)
                 if item.get("course_root") is None
-                else course_root is not None and item["course_root"] == str(course_root)
+                else course_root is not None
+                and item["course_root"] == str(course_root)
                 and _receipt_file(Path(path_string), course_root, item.get("size_bytes"), digest)
             )
         ):
@@ -877,8 +892,14 @@ def verified_receipt(
 
 
 def write_receipt(
-    root: Path, entity_id: str, output_dir: Path, path: Path, size_bytes: int, sha256: str,
-    observed_mime: str | None, course_root: Path | None = None
+    root: Path,
+    entity_id: str,
+    output_dir: Path,
+    path: Path,
+    size_bytes: int,
+    sha256: str,
+    observed_mime: str | None,
+    course_root: Path | None = None,
 ) -> None:
     """Atomically record only a verified publication under the session lock."""
     directory = _check_directory(output_dir)
@@ -919,8 +940,13 @@ def write_receipt(
             try:
                 with os.fdopen(fd, "w", encoding="utf-8") as destination:
                     json.dump(
-                        {"schema_version": 2, "items": [{**item, "course_root": item.get("course_root")} for item in items]},
-                        destination, ensure_ascii=False, separators=(",", ":")
+                        {
+                            "schema_version": 2,
+                            "items": [{**item, "course_root": item.get("course_root")} for item in items],
+                        },
+                        destination,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
                     )
                     destination.write("\n")
                     destination.flush()

@@ -302,7 +302,12 @@ def test_full_ids_stale_warning_and_outcome_paths() -> None:
         == long_id
     )
     assert any("Warning:" in line for line in lines)
-    for outcome, label in (("saved", "Saved"), ("reused", "Reused"), ("adopted", "Adopted"), ("skipped-existing", "Skipped existing")):
+    for outcome, label in (
+        ("saved", "Saved"),
+        ("reused", "Reused"),
+        ("adopted", "Adopted"),
+        ("skipped-existing", "Skipped existing"),
+    ):
         rendered = materials.render(
             "materials.download", {"material": {"outcome": outcome, "path": "downloads/example.pdf"}}, 10
         )
@@ -399,7 +404,9 @@ def test_configured_adoption_receipt_and_override(
     old.mkdir(parents=True)
     existing = old / "example.pdf"
     existing.write_bytes(BYTES)
-    settings = {"materials": {"download_dir": str(tmp_path / "School" / "{course}" / "materials"), "adopt_existing": True}}
+    settings = {
+        "materials": {"download_dir": str(tmp_path / "School" / "{course}" / "materials"), "adopt_existing": True}
+    }
     monkeypatch.setattr("campusctl.config.load_config", lambda: settings)
     calls = _fake_network(monkeypatch, tmp_path)
     code, raw = _cli(["materials", "download", ID, "--json"], capsys)

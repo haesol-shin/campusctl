@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import tomllib
-import sys
 import re
+import sys
+import tomllib
 import unicodedata
 from pathlib import Path
 from typing import Any
@@ -56,8 +56,7 @@ def _material_template(template: str, adopt: bool, path: Path) -> None:
     if sys.platform != "win32" and not template.startswith(("/", "~/", "$")):
         raise _invalid(path, key, "expected an absolute path template")
     if sys.platform == "win32" and not (
-        template.startswith(("~/", "~\\", "$", "%", "\\\\", "//"))
-        or re.match(r"^[A-Za-z]:[/\\]", template)
+        template.startswith(("~/", "~\\", "$", "%", "\\\\", "//")) or re.match(r"^[A-Za-z]:[/\\]", template)
     ):
         raise _invalid(path, key, "expected an absolute path template")
     if template == "/" or (sys.platform == "win32" and re.fullmatch(r"[A-Za-z]:[/\\]", template)):
@@ -80,7 +79,8 @@ def _material_template(template: str, adopt: bool, path: Path) -> None:
         without_env = re.sub(
             r"\$[A-Za-z_][A-Za-z_0-9]*|\$\{[A-Za-z_][A-Za-z_0-9]*\}"
             + (r"|%[A-Za-z_][A-Za-z_0-9]*%" if sys.platform == "win32" else ""),
-            "x", part,
+            "x",
+            part,
         )
         if "{" in without_env or "}" in without_env or "$" in without_env or "%" in without_env:
             raise _invalid(path, key, "invalid placeholder or environment reference")
@@ -110,6 +110,7 @@ def validate_materials(config: dict[str, Any], path: Path) -> dict[str, Any]:
     elif adopt:
         raise _invalid(path, "materials.adopt_existing", "requires materials.download_dir")
     return settings
+
 
 def validate_config(config: Any, *, path: Path) -> dict[str, Any]:
     root = _mapping(config, "<root>", path)

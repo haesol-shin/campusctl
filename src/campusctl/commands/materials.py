@@ -291,16 +291,25 @@ async def _download(
         )
         try:
             published = (
-                adopt_attachment(fetched.temp_path, output_dir, course_root, row["filename"], fetched.size_bytes, fetched.sha256)
-                if course_root is not None else None
+                adopt_attachment(
+                    fetched.temp_path, output_dir, course_root, row["filename"], fetched.size_bytes, fetched.sha256
+                )
+                if course_root is not None
+                else None
             )
             if published is None:
                 published = publish_attachment(
                     fetched.temp_path, output_dir, row["filename"], fetched.sha256, fetched.size_bytes
                 )
             write_receipt(
-                root, entity_id, output_dir, published.path, fetched.size_bytes, fetched.sha256,
-                fetched.media_type, course_root if published.outcome == "adopted" else None
+                root,
+                entity_id,
+                output_dir,
+                published.path,
+                fetched.size_bytes,
+                fetched.sha256,
+                fetched.media_type,
+                course_root if published.outcome == "adopted" else None,
             )
         finally:
             fetched.temp_path.unlink(missing_ok=True)
@@ -345,9 +354,12 @@ def render(command: str, result: dict[str, Any], width: int) -> list[str]:
         return lines + _warnings(catalog.get("enrollment_state"), result.get("failed_courses"), width)
     if command == "materials.download" and isinstance(result.get("material"), dict):
         material = result["material"]
-        label = {"saved": "Saved", "reused": "Reused", "adopted": "Adopted", "skipped-existing": "Skipped existing"}.get(
-            material.get("outcome")
-        )
+        label = {
+            "saved": "Saved",
+            "reused": "Reused",
+            "adopted": "Adopted",
+            "skipped-existing": "Skipped existing",
+        }.get(material.get("outcome"))
         return [f"{label}: {material['path']}"] if label else []
     if command != "materials.list" or not isinstance(result.get("materials"), list):
         return []
