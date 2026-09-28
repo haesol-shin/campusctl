@@ -1,7 +1,10 @@
 """Report Chromium-inclusive per-file coverage against the comparable main run."""
 
+import ast
 import json
 import os
+import re
+import subprocess
 from pathlib import Path
 
 
@@ -40,7 +43,85 @@ def summary(candidate: Path, baseline: Path) -> str:
     return "\n".join(lines) + "\n"
 
 
+def changed_lines(base: str) -> dict[str, set[int]]:
+    """Return new-side line numbers for added and modified source hunks."""
+    merge_base = subprocess.run(
+        ["git", "merge-base", "HEAD", base], capture_output=True, text=True, check=True
+    ).stdout.strip()
+    patch = subprocess.run(
+        [
+            "git", "-c", "core.quotePath=false", "diff", "--no-ext-diff",
+            "--unified=0", "--find-renames", merge_base, "HEAD", "--", "src/campusctl/",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    result: dict[str, set[int]] = {}
+    filename: str | None = None
+    in_hunk = False
+    for line in patch.splitlines():
+        if line.startswith("diff --git "):
+            filename = None
+            in_hunk = False
+        elif not in_hunk and line.startswith("+++ "):
+            name = line[4:]
+            if name.startswith('"'):
+                # Git quotes filenames containing whitespace, with C-style escapes.
+                name = ast.literal_eval(name)
+            filename = name[2:] if name.startswith("b/src/campusctl/") else None
+        elif filename is not None and (
+            match := re.match(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", line)
+        ):
+            in_hunk = True
+            start = int(match[1])
+            count = int(match[2]) if match[2] is not None else 1
+            result.setdefault(filename, set()).update(range(start, start + count))
+    return result
+
+
+def diff_summary(candidate: Path, changed: dict[str, set[int]]) -> str:
+    """Show only changed executable statements, bounded for job-summary readability."""
+    files = json.loads(candidate.read_text())["files"]
+    lines = [
+        "### PR diff coverage",
+        "",
+        "Report-only; reviewers should request tests for risky uncovered lines.",
+        "",
+        "| Module | Changed statements | Covered | Uncovered lines |",
+        "| --- | ---: | ---: | --- |",
+    ]
+    omitted = 0
+    for name in sorted(changed):
+        entry = files.get(name)
+        if entry is None:
+            continue
+        missing = set(entry["missing_lines"]) & changed[name]
+        executed = set(entry["executed_lines"]) & changed[name]
+        uncovered = sorted(missing)
+        if len(lines) >= 45:
+            omitted += 1
+            continue
+        shown = ", ".join(map(str, uncovered[:30]))
+        if len(uncovered) > 30:
+            shown += f", … (+{len(uncovered) - 30} more)"
+        lines.append(
+            f"| `{name.replace('|', '&#124;')}` | {len(missing | executed)} | "
+            f"{len(executed)} | {shown or '—'} |"
+        )
+    if omitted:
+        lines.append(f"\n{omitted} more modules omitted; see the coverage artifact.")
+    elif len(lines) == 6:
+        lines.append("| No changed executable statements | 0 | 0 | — |")
+    return "\n".join(lines) + "\n"
+
+
 if __name__ == "__main__":
     report = summary(Path("coverage.json"), Path("baseline/coverage.json"))
+    if os.environ.get("GITHUB_EVENT_NAME") == "pull_request":
+        try:
+            report += "\n" + diff_summary(Path("coverage.json"), changed_lines(os.environ["PR_BASE_SHA"]))
+        except (OSError, KeyError, ValueError, subprocess.CalledProcessError) as exc:
+            report += f"\n### PR diff coverage\n\nUnavailable: {type(exc).__name__}; see coverage artifact.\n"
     with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a") as output:
         output.write(report)
