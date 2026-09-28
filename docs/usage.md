@@ -81,3 +81,5 @@ Run `campusctl --profile sync` (or a list with `--refresh`) to emit one `campusc
 ## Updates and help
 
 Run `uv tool upgrade campusctl` to update, then `campusctl setup` to check or install Chromium. Refresh catalogs with `campusctl sync`; see [installation](installation.md) for pinning, uninstall and checkout installs, and [troubleshooting](troubleshooting.md) for error remedies.
+
+Root `campusctl --help` also links agents to the [setup guide](agent-guide.md) for installation tasks and the [campusctl skill](../skills/campusctl/SKILL.md) for usage tasks; an agent with the skill already loaded can skip that link.

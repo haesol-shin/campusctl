@@ -4,6 +4,8 @@
 
 `campusctl`은 Windows, macOS, Linux에서 사용할 수 있습니다. Python 3.11 이상, [uv](https://docs.astral.sh/uv/), Git이 필요합니다. 알맞은 Python이 아직 없다면 uv가 설치해 관리할 수 있습니다.
 
+에이전트에게 설치와 설정을 맡기려면 [README의 AI 에이전트 안내](../README.ko.md#agent-setup)에 있는 한 줄을 붙여 넣습니다.
+
 ## 준비물
 
 - **Windows (PowerShell):** uv는 `winget install --id astral-sh.uv -e`, Git은 `winget install --id Git.Git -e`로 설치하세요. 또는 [공식 uv PowerShell 설치 프로그램](https://docs.astral.sh/uv/getting-started/installation/)을 사용할 수 있습니다: `powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"`.

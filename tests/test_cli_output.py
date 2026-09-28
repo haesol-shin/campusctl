@@ -448,7 +448,13 @@ def test_help_groups_commands_and_resolves_paths_at_render_time(
         assert re.search(rf"^\s+{command}\s+\S", help_text, re.MULTILINE)
     assert f"Config: {(tmp_path / 'config' / 'config.toml').resolve()}" in help_text
     assert f"Data: {(tmp_path / 'data').resolve()}" in help_text
+    assert "Examples:\n  campusctl setup\n  campusctl sync\n  campusctl status" in help_text
+    assert "Docs: https://github.com/haesol-shin/campusctl/blob/main/docs/usage.md" in help_text
     assert "CAMPUSCTL_OUTPUT=human|json" in help_text
+    assert help_text.index("CAMPUSCTL_OUTPUT=human|json") < help_text.index("Are you an AI agent?")
+    assert "https://raw.githubusercontent.com/haesol-shin/campusctl/main/docs/agent-guide.md" in help_text
+    assert "SKIP if the campusctl skill is already loaded. Otherwise read" in help_text
+    assert "https://raw.githubusercontent.com/haesol-shin/campusctl/main/skills/campusctl/SKILL.md" in help_text
     assert not (tmp_path / "data").exists()
 
     _, stdout = _streams(monkeypatch, stdin_tty=False, stdout_tty=False)

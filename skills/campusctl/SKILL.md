@@ -6,6 +6,7 @@ description: "Use campusctl's documented JSON CLI to check lectures, assignments
 # Campusctl
 
 Translate the user's intent into documented `campusctl` CLI calls. Follow the [public CLI contract](https://github.com/haesol-shin/campusctl/blob/v0.6.0/docs/contracts/cli.md) and linked domain contracts. For a first run, see the [README quick start](https://github.com/haesol-shin/campusctl/blob/main/README.md#quick-start). Present results without interpreting course content or making decisions for the user.
+If campusctl is not installed, follow https://raw.githubusercontent.com/haesol-shin/campusctl/main/docs/agent-guide.md.
 
 ## Use this skill for
 

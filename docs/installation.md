@@ -4,6 +4,8 @@
 
 `campusctl` supports Windows, macOS, and Linux. It requires Python 3.11 or newer, [uv](https://docs.astral.sh/uv/), and Git; uv can manage a compatible Python when one is not already available.
 
+To let an agent do this, paste the one line from the [README AI agents section](../README.md#agent-setup).
+
 ## Prerequisites
 
 - **Windows (PowerShell):** install uv with `winget install --id astral-sh.uv -e` and Git with `winget install --id Git.Git -e`. Alternatively, use the [official uv PowerShell installer](https://docs.astral.sh/uv/getting-started/installation/): `powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"`.

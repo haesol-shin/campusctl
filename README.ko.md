@@ -19,29 +19,24 @@
 - **내 컴퓨터에만 보관.** 비밀번호는 운영체제 키링에, 목록은 로컬 폴더에 저장합니다.
 - **가볍게 실행.** Windows, macOS, Linux에서 백그라운드 서비스 없이 필요할 때만 실행합니다.
 
+<a id="agent-setup"></a>
 ## AI 에이전트에서 사용하기
 
-코딩 에이전트에게 campusctl 스킬 설치를 요청합니다. 다음 문구를 붙여 넣습니다:
-
-```text
-Install only the campusctl agent skill for my user account.
-Clone https://github.com/haesol-shin/campusctl.git to a stable location such as ~/src/campusctl, or update that clone if it already exists.
-Put the complete skills/campusctl directory, including its agents subdirectory, in this harness's documented user-level skills directory; prefer a symlink where supported and otherwise copy it.
-Do not change unrelated files or global shell configuration.
-Check whether `campusctl --version --json` runs and report its result; if campusctl is not already installed or not on PATH, report that instead of installing it.
-Do NOT run `campusctl auth set`, ask for or handle passwords, run `campusctl sync`, or run `campusctl lectures play`.
-Report the clone path, skill destination, link/copy choice, and verification result, then tell me to restart the agent.
-```
-
-직접 설치하려면 다음 명령 중 하나를 실행합니다:
+스킬을 설치합니다:
 
 ```sh
 npx skills add https://github.com/haesol-shin/campusctl -g
-# or
-bunx skills add https://github.com/haesol-shin/campusctl -g
 ```
 
-스킬은 campusctl 자체를 설치하지 않습니다. 아래 [빠른 시작](#quick-start)을 따릅니다. 수동 설치 방법은 [에이전트 스킬 안내](docs/agent-skill.ko.md)에 있습니다.
+에이전트에게 설치와 설정을 맡기려면 다음 한 줄을 붙여 넣습니다:
+
+```text
+Read https://raw.githubusercontent.com/haesol-shin/campusctl/main/docs/agent-guide.md and set up campusctl for me.
+```
+
+스킬은 campusctl 자체를 설치하지 않습니다. 아래 [빠른 시작](#quick-start)을 따릅니다.
+
+bunx, Node.js 필요 조건과 수동 설치 방법은 [에이전트 스킬 안내](docs/agent-skill.ko.md)에 있습니다.
 
 ## 필요 조건
 
@@ -161,7 +156,8 @@ campusctl materials download 1
 - [사용법과 명령](docs/usage.ko.md)
 - [설정 및 브라우저 세션](docs/configuration.ko.md)
 - [무인 Linux 및 서버 설정](docs/configuration.ko.md#unattended-linux)
-- [에이전트 스킬 설정](docs/agent-skill.ko.md)
+- [스킬 직접 설치](docs/agent-skill.ko.md)
+- [에이전트 설정 안내(영어)](docs/agent-guide.md)
 - [문제 해결](docs/troubleshooting.ko.md)
 - [CLI 계약](docs/contracts/cli.md)
 - [과제](docs/contracts/assignments.md), [공지](docs/contracts/notices.md), [자료](docs/contracts/materials.md) 계약

@@ -19,29 +19,24 @@
 - **Stays on your computer.** Your password stays in the OS keyring and your lists in a local folder.
 - **Lightweight.** Run on demand on Windows, macOS or Linux without a background service.
 
+<a id="agent-setup"></a>
 ## Use with AI agents
 
-Ask your coding agent to install the campusctl skill. Paste this prompt:
-
-```text
-Install only the campusctl agent skill for my user account.
-Clone https://github.com/haesol-shin/campusctl.git to a stable location such as ~/src/campusctl, or update that clone if it already exists.
-Put the complete skills/campusctl directory, including its agents subdirectory, in this harness's documented user-level skills directory; prefer a symlink where supported and otherwise copy it.
-Do not change unrelated files or global shell configuration.
-Check whether `campusctl --version --json` runs and report its result; if campusctl is not already installed or not on PATH, report that instead of installing it.
-Do NOT run `campusctl auth set`, ask for or handle passwords, run `campusctl sync`, or run `campusctl lectures play`.
-Report the clone path, skill destination, link/copy choice, and verification result, then tell me to restart the agent.
-```
-
-Or install the skill yourself with either command:
+Install the skill:
 
 ```sh
 npx skills add https://github.com/haesol-shin/campusctl -g
-# or
-bunx skills add https://github.com/haesol-shin/campusctl -g
 ```
 
-The skill does not install campusctl itself; follow the [quick start](#quick-start) below. See [the agent skill guide](docs/agent-skill.md) for manual installs.
+To hand setup to your agent, paste this one line:
+
+```text
+Read https://raw.githubusercontent.com/haesol-shin/campusctl/main/docs/agent-guide.md and set up campusctl for me.
+```
+
+The skill does not install campusctl itself; follow the [quick start](#quick-start) below.
+
+bunx, the Node.js requirement and manual install → [agent-skill guide](docs/agent-skill.md).
 
 ## Prerequisites
 
@@ -161,7 +156,8 @@ Run `uv tool upgrade campusctl` to update. Run `campusctl sync` to refresh all f
 - [Usage and commands](docs/usage.md)
 - [Configuration and browser sessions](docs/configuration.md)
 - [Unattended Linux and server setup](docs/configuration.md#unattended-linux)
-- [Agent skill setup](docs/agent-skill.md)
+- [Install the skill yourself](docs/agent-skill.md)
+- [Agent setup guide (English)](docs/agent-guide.md)
 - [Troubleshooting](docs/troubleshooting.md)
 - [CLI contract](docs/contracts/cli.md)
 - [Assignments](docs/contracts/assignments.md), [notices](docs/contracts/notices.md), and [materials](docs/contracts/materials.md) contracts

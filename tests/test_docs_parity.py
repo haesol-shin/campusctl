@@ -33,6 +33,8 @@ LINK_TARGETS = (
     "docs/contracts/assignments.md",
     "docs/contracts/notices.md",
     "docs/contracts/materials.md",
+    "docs/agent-guide.md",
+    "skills/campusctl/SKILL.md",
 )
 
 
