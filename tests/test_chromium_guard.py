@@ -59,3 +59,42 @@ def test_required_chromium_rejects_missing_executable(tmp_path: Path) -> None:
     )
     assert result.returncode != 0
     assert "Playwright Chromium executable is missing" in result.stdout + result.stderr
+
+
+def test_browser_shards_partition_all_collected_tests_once(tmp_path: Path) -> None:
+    (tmp_path / "conftest.py").write_text(Path(__file__).with_name("conftest.py").read_text())
+    (tmp_path / "test_policy.py").write_text(
+        "import pytest\n"
+        "@pytest.mark.parametrize('case', range(7))\n"
+        "def test_plain(case): pass\n"
+        "@pytest.mark.chromium\n"
+        "@pytest.mark.parametrize('case', range(6))\n"
+        "def test_browser(case): pass\n"
+    )
+    env = {**os.environ, "CAMPUSCTL_REQUIRE_CHROMIUM": "0"}
+
+    def collect(*options: str) -> list[str]:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "--collect-only",
+                "-q",
+                "-c",
+                str(Path(__file__).parents[1] / "pyproject.toml"),
+                *options,
+                str(tmp_path),
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+            check=True,
+        )
+        return [line for line in result.stdout.splitlines() if "test_policy.py::" in line]
+
+    all_tests = collect()
+    shards = [collect("--shard-id", str(index), "--num-shards", "3") for index in range(1, 4)]
+    assert len(all_tests) == 13
+    assert sorted(test for shard in shards for test in shard) == sorted(all_tests)
+    assert all(any("::test_browser" in test for test in shard) for shard in shards)

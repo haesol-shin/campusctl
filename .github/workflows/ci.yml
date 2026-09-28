@@ -106,9 +106,13 @@ jobs:
           PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/empty-browsers
 
   browser:
-    name: pytest browser (ubuntu-latest, Python 3.12)
+    name: pytest browser ${{ matrix.shard }}/3 (ubuntu-latest, Python 3.12)
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     permissions:
       contents: read
       actions: read
@@ -131,7 +135,47 @@ jobs:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('uv.lock') }}
       - run: uv run playwright install --with-deps chromium
-      - run: uv run pytest -q --cov=campusctl --cov-report=json:coverage.json -o faulthandler_timeout=30
+      - run: uv run pytest -q --shard-id=${{ matrix.shard }} --num-shards=3 --cov=campusctl --cov-report= -o faulthandler_timeout=30
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: browser-coverage-shard-${{ matrix.shard }}
+          path: .coverage
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 30
+
+  browser-coverage:
+    name: Browser coverage report (non-required)
+    if: always()
+    needs: browser
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv sync --locked --python 3.12
+        continue-on-error: true
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: browser-coverage-shard-*
+          path: coverage-parts
+      - name: Combine shard coverage
+        continue-on-error: true
+        run: |
+          uv run coverage combine coverage-parts/browser-coverage-shard-*
+          uv run coverage json -o coverage.json
       - name: Report per-file and PR diff coverage
         if: always()
         continue-on-error: true
