@@ -577,6 +577,9 @@ def test_layout_validation_and_environment(tmp_path: Path, monkeypatch: pytest.M
     assert destination == tmp_path / "2026-2" / "Course_Section" / "materials"
     assert root == destination.parent
     assert resolve_download_layout(settings, row, tmp_path / "override") == (tmp_path / "override", None)
+    literal = {"materials": {"download_dir": str(tmp_path / "Cafe\u0301" / "{course_id}")}}
+    normalized, _ = resolve_download_layout(literal, row, None)
+    assert normalized == tmp_path / "Café" / "course-a"
     for bad in ("CON.txt", "notes."):
         template = {"materials": {"download_dir": str(tmp_path / bad / "{course}")}}
         with pytest.raises(CampusError) as failure:

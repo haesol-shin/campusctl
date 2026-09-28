@@ -234,12 +234,13 @@ def _layout_parts(template: str) -> tuple[str, list[str]]:
         return prefix, []
     if not parts or any(not part for part in parts):
         raise _layout_invalid("materials.download_dir")
-    for part in parts:
+    for index, part in enumerate(parts):
         if part in ("{course}", "{course_id}", "{semester}"):
             continue
         if "{" in part or "}" in part:
             raise _layout_invalid("materials.download_dir")
         _material_component(part, "materials.download_dir", Path("config.toml"))
+        parts[index] = unicodedata.normalize("NFC", part)
     return prefix, parts
 
 
