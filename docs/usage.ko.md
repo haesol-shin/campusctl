@@ -30,6 +30,26 @@ JSON 응답에는 버전이 있는 형식으로 `status`, `result`, `errors`가 
 
 `campusctl lectures list`는 기본적으로 미완료 강의를 보여주며, `--all`을 붙이면 완료 및 `recorded` 항목도 포함합니다. 사람이 읽는 출력의 마감일은 CNU 현지 시간입니다. `-`는 마감일 정보가 없다는 뜻이고, `opens MM-DD`는 아직 열리지 않은 강의를 뜻합니다.
 
+### 강의 목록 예시
+
+다음은 예시 과목으로 `CAMPUSCTL_OUTPUT=human`을 설정하고 너비 80열에서 `campusctl lectures list`를 실행해 캡처한 결과입니다:
+
+```text
+2 lectures (updated 2026-09-28 18:09 UTC)
+
+Course: Example Course
+  Welcome lecture  -    unfinished
+    cnu_lecture:example-course:welcome-01
+
+Course: Practice Course
+  Later lecture  2026-10-20 23:59  opens 10-15
+    cnu_lecture:practice-course:later-01
+
+To play one: campusctl lectures play cnu_lecture:example-course:welcome-01
+To refresh: campusctl sync
+Catalog generated 1 seconds ago.
+```
+
 선택한 강의의 전체 ID로 `campusctl lectures play ID`를 실행하세요. 화면에 보이는 공식 플레이어에서 한 번에 하나씩 재생하고, 끝난 뒤 LMS 행의 상태를 확인합니다. 진도나 출석을 별도로 요청하지 않습니다. 앞으로 건너뛰거나 진도를 위조하거나 지원되지 않는 속도를 강제하거나 백그라운드에서 재생하지 않습니다. YouTube는 기본 자동 재생으로 1배속만 사용하고, 다른 미디어는 해당 플레이어가 지원하는 속도만 사용합니다.
 
 출석 미반영으로 표시된 행은 화면의 시청 진도가 필요한 전체 시간에 도달했을 때만 `watched (not counted)`로 표시됩니다. 그 진도는 이번 재생 전에 기록된 것일 수도 있으며, 출석 인정 보장은 아닙니다. CNU는 계정당 LMS 로그인 세션 하나만 허용하는 것으로 관찰되어, 같은 계정으로 로그인한 다른 자동화와 campusctl을 함께 실행하지 않는 편이 안전합니다. 브라우저 세션은 [설정 안내](configuration.ko.md)를 보세요.

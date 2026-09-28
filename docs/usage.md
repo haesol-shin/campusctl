@@ -30,6 +30,26 @@ Numbers refer to the last printed list and fail if that catalog changes. Full ID
 
 `campusctl lectures list` shows unfinished lectures by default; `--all` includes completed and `recorded` rows. Human due dates use CNU local time. A `-` means no due date is listed, and `opens MM-DD` means the lecture is not open yet.
 
+### Example lecture list
+
+This synthetic `campusctl lectures list` output was captured at 80 columns with `CAMPUSCTL_OUTPUT=human`:
+
+```text
+2 lectures (updated 2026-09-28 18:09 UTC)
+
+Course: Example Course
+  Welcome lecture  -    unfinished
+    cnu_lecture:example-course:welcome-01
+
+Course: Practice Course
+  Later lecture  2026-10-20 23:59  opens 10-15
+    cnu_lecture:practice-course:later-01
+
+To play one: campusctl lectures play cnu_lecture:example-course:welcome-01
+To refresh: campusctl sync
+Catalog generated 1 seconds ago.
+```
+
 Play only a lecture you chose by its full ID with `campusctl lectures play ID`. Playback uses the official player in a visible browser, one lecture at a time; campusctl checks the LMS row afterward and sends no separate progress or attendance request. It does not seek ahead, fake progress, force unsupported speeds or play in the background. YouTube uses native autoplay at 1x only; other supported media use only rates their player supports.
 
 A row flagged as not counted for attendance is labeled `watched (not counted)` only when its displayed watched progress reaches the required duration; that progress may predate the current play command. This is not a promise of attendance credit. CNU has been observed to allow one LMS login session per account, so do not run campusctl alongside another logged-in automation on that account. See [configuration](configuration.md) for browser sessions.
