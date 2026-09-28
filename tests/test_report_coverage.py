@@ -143,12 +143,7 @@ def test_truncated_summary_references_complete_intersection_artifact(tmp_path: P
     candidate = tmp_path / "coverage.json"
     candidate.write_text(
         json.dumps(
-            {
-                "files": {
-                    name: {"executed_lines": [], "missing_lines": sorted(lines)}
-                    for name, lines in changed.items()
-                }
-            }
+            {"files": {name: {"executed_lines": [], "missing_lines": sorted(lines)} for name, lines in changed.items()}}
         )
     )
 

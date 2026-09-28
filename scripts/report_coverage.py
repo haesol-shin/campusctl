@@ -129,7 +129,9 @@ def diff_summary(files: dict[str, dict[str, list[int]]]) -> str:
             f"{len(entry['covered_lines'])} | {shown or '—'} |"
         )
     if omitted:
-        lines.append(f"\n{omitted} more modules omitted; download `diff-coverage.json` from the `browser-coverage` artifact for all lines.")
+        lines.append(
+            f"\n{omitted} more modules omitted; download `diff-coverage.json` from the `browser-coverage` artifact for all lines."
+        )
     elif any(len(entry["uncovered_lines"]) > 30 for entry in files.values()):
         lines.append("\nDownload `diff-coverage.json` from the `browser-coverage` artifact for all uncovered lines.")
     elif len(lines) == 6:
