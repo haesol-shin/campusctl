@@ -4,7 +4,7 @@ Check your CNU coursework from the terminal or your AI agent.
 
 `campusctl` shows CNU students their lectures, assignments, notices and materials in a local CLI or an AI agent, syncing through the normal LMS browser; the Chungnam National University (CNU) LMS is its only supported provider.
 
-## 30-second demo
+## 30-second demo: `campusctl status`
 
 ```text
 Coursework status (local catalogs)

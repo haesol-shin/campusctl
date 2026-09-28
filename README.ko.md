@@ -4,7 +4,7 @@
 
 `campusctl`은 충남대 학생이 강의·과제·공지·자료를 터미널이나 AI 에이전트에서 확인할 수 있도록 일반 LMS 브라우저로 동기화하는 로컬 CLI이며, 현재 충남대(CNU) LMS만 지원합니다.
 
-## 30초 미리보기
+## 30초 미리보기: `campusctl status`
 
 ```text
 Coursework status (local catalogs)
