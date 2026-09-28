@@ -1,3 +1,5 @@
+**English** | [한국어](installation.ko.md)
+
 # Installation
 
 `campusctl` supports Windows, macOS, and Linux. It requires Python 3.11 or newer, [uv](https://docs.astral.sh/uv/), and Git; uv can manage a compatible Python when one is not already available.
@@ -12,7 +14,9 @@ Open a new shell and verify `uv --version` and `git --version` before continuing
 
 ## Install campusctl and its browser
 
-The unpinned Git URL installs from the repository's default branch. The install pattern matches the repository's [Windows smoke job](../.github/workflows/ci.yml#L210-L245), which also checks the uv tool command shims. `campusctl setup` is the primary way to install Chromium from the same environment as campusctl; the manual Playwright command remains a fallback.
+The unpinned Git URL installs from the repository's default branch. The install pattern matches the repository's [Windows smoke job](../.github/workflows/ci.yml#L212-L247), which also checks the uv tool command shims. `campusctl setup` is the primary way to install Chromium from the same environment as campusctl; the manual Playwright command remains a fallback.
+
+Noninteractive or JSON `setup` only checks or installs Chromium; use `campusctl config init --username ID` and `campusctl auth set` separately when guided configuration is unavailable.
 
 ```powershell
 # On Windows.

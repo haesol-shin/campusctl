@@ -15,6 +15,7 @@ Start with the [constitution](constitution.md) and [live run protocol](live-run.
 | [80-sync-optimization](80-sync-optimization/spec.md) | Faster combined sync: wait profiling, readiness waits, archive reload skip, course switch, session reuse |
 | [90-test-strategy](90-test-strategy/spec.md) | Deterministic waits, parallel isolation, required Chromium CI and coverage signals |
 | [100-download-layout](100-download-layout/spec.md) | Configurable material download paths and opt-in course-folder adoption |
+| [110-ux-docs-cli](110-ux-docs-cli/spec.md) | Bilingual README and user guides, parity CI, contribution policy, grouped CLI help and first-run messaging |
 
 ## v0.4.0 scope
 

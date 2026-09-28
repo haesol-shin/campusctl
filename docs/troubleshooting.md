@@ -1,3 +1,5 @@
+**English** | [한국어](troubleshooting.ko.md)
+
 # Troubleshooting
 
 Use the code in JSON `errors` or the message in human output to choose a next step; the [CLI contract](contracts/cli.md) documents output modes, response fields, and exit codes.
