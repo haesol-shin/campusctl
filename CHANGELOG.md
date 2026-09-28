@@ -6,12 +6,12 @@ All notable changes to campusctl are documented here. This project follows [Keep
 
 ### Added
 - Fetch several explicit assignment or notice IDs in one browser session; a detail failure continues to the next ID, a session failure stops the queue, and nothing is retried
-- Save materials through an optional per-course folder template, and optionally adopt a byte-identical file already stored under the course folder instead of copying it again
+- Save materials through an optional per-course folder template, and optionally adopt a byte-identical file already stored under the course folder instead of copying it again; on Windows, enabling adoption fails safely with `output-path-conflict`
 - Record which readiness, identity, to-do grid or attachment check failed, with counts and states only, in the sync profile
 
 ### Changed
 - Support local headless assignment and notice fetch
-- Sync waits for each page's own content instead of page-wide network idleness, and keeps the course archive list open after attachment inspection when it is proven unchanged
+- Sync and selected assignment or notice fetch wait for each page's own content and course identity instead of page-wide network idleness, and sync keeps the course archive list open after attachment inspection when it is proven unchanged
 - Sync profiling reports schema 2 with wait, page and document timings
 
 ### Fixed
