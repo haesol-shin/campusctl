@@ -29,6 +29,7 @@ HTML_TAG = re.compile(r"<[^>]+>")
 HTML_LINK = re.compile(r"\b(?:href|src)\s*=\s*(['\"])(.*?)\1")
 HTML_ANCHOR = re.compile(r"\b(?:id|name)\s*=\s*(['\"])(.*?)\1")
 EXTERNAL = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:|^//")
+LINE_ANCHOR = re.compile(r"^L([1-9]\d*)(?:-L([1-9]\d*))?$")
 SKIP_DIRS = {".git", ".venv", "__pycache__", ".pytest_cache", ".ruff_cache"}
 
 
@@ -189,6 +190,7 @@ def _validate_links(root: Path, path: str, page: Page, pair: str, anchor_cache: 
         if EXTERNAL.match(destination):
             continue
         local_path, fragment = _split_local(destination)
+        local_path = unquote(local_path)
         if not local_path:
             target = source
         elif local_path.startswith("/"):
@@ -199,16 +201,30 @@ def _validate_links(root: Path, path: str, page: Page, pair: str, anchor_cache: 
         if not target.is_relative_to(root) or not target.exists():
             problems.append(_problem(pair, path, link.line, "link-missing-file", repr(destination)))
             continue
-        if fragment and target.suffix.lower() == ".md":
-            try:
+        if not fragment:
+            continue
+        if not target.is_file():
+            problems.append(_problem(pair, path, link.line, "link-missing-anchor", repr(destination)))
+            continue
+        anchor = unquote(fragment)
+        try:
+            line_anchor = LINE_ANCHOR.fullmatch(anchor)
+            if line_anchor:
+                first = int(line_anchor.group(1))
+                last = int(line_anchor.group(2) or first)
+                line_count = len(_text(target).splitlines())
+                valid = first <= last <= line_count
+            elif target.suffix.lower() == ".md":
                 if target not in anchor_cache:
                     anchor_cache[target] = _parse(target).anchors
-                anchors = anchor_cache[target]
-            except UnicodeDecodeError:
-                problems.append(_problem(pair, path, link.line, "link-invalid-utf8", repr(destination)))
-                continue
-            if unquote(fragment) not in anchors:
-                problems.append(_problem(pair, path, link.line, "link-missing-anchor", repr(destination)))
+                valid = anchor in anchor_cache[target]
+            else:
+                valid = False
+        except UnicodeDecodeError:
+            problems.append(_problem(pair, path, link.line, "link-invalid-utf8", repr(destination)))
+            continue
+        if not valid:
+            problems.append(_problem(pair, path, link.line, "link-missing-anchor", repr(destination)))
     return problems
 
 

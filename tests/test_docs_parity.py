@@ -146,3 +146,13 @@ def test_links_in_tables_and_images_are_compared(tmp_path: Path, replacement: st
     result = _run(root)
     assert result.returncode != 0
     assert "README.ko.md:" in result.stdout and "link-target" in result.stdout
+
+
+def test_same_invalid_line_anchor_in_both_languages_fails(tmp_path: Path) -> None:
+    root = _snapshot(tmp_path)
+    for name in ("docs/installation.md", "docs/installation.ko.md"):
+        _replace(root / name, "#L212-L247", "#L9999-L10000")
+    result = _run(root)
+    assert result.returncode != 0
+    assert "link-missing-anchor" in result.stdout
+    assert "link-target" not in result.stdout
