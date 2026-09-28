@@ -84,7 +84,7 @@ Course: Practice Course
 
 To play one: campusctl lectures play cnu_lecture:example-course:welcome-01
 To refresh: campusctl sync
-Catalog generated 1 seconds ago.
+Catalog generated 1 second ago.
 ```
 
 ### 3. 자세히 보기와 다운로드

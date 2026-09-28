@@ -111,16 +111,20 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     """Install notice listing and selected-detail fetch parsers."""
     from campusctl.cli import EnvelopeArgumentParser
 
-    domain = subparsers.add_parser("notices", help="inspect cached LMS notices")
-    domain.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
+    domain = subparsers.add_parser("notices", help="list or fetch notice details")
+    domain.add_argument(
+        "--json", action="store_true", default=argparse.SUPPRESS, help="emit the JSON response envelope"
+    )
     commands = domain.add_subparsers(dest="notices_command", parser_class=EnvelopeArgumentParser)
     listing = commands.add_parser("list", help="list cached notices")
-    listing.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
+    listing.add_argument(
+        "--json", action="store_true", default=argparse.SUPPRESS, help="emit the JSON response envelope"
+    )
     listing.add_argument("--course", help="limit results to one course ID")
-    listing.add_argument("--refresh", action="store_true")
-    fetch = commands.add_parser("fetch", help="package selected notice details")
-    fetch.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
-    fetch.add_argument("entity_ids", nargs="+", metavar="ENTITY_ID", help="full IDs from notices list")
+    listing.add_argument("--refresh", action="store_true", help="sync notices before listing")
+    fetch = commands.add_parser("fetch", help="fetch selected notice details")
+    fetch.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="emit the JSON response envelope")
+    fetch.add_argument("entity_ids", nargs="+", metavar="ID", help="full notice IDs from the list")
     fetch.add_argument("--out", type=Path, metavar="DIR", help="new package directory")
 
 

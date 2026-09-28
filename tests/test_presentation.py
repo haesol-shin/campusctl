@@ -59,6 +59,14 @@ def test_explicit_lecture_sync_has_visible_human_summary() -> None:
     assert "Synced 2 courses, 3 lectures, 1 unfinished." in output
 
 
+def test_single_catalog_age_and_sync_counts_use_singular_nouns() -> None:
+    output = _render("lectures.list", {"lectures": [], "cache": {"age_seconds": 1}})
+    assert "Catalog generated 1 second ago." in output
+    assert "1 seconds ago" not in output
+    output = _render("sync.lectures", {"courses": 1, "lectures": 1, "incomplete": 1})
+    assert "Synced 1 course, 1 lecture, 1 unfinished." in output
+
+
 def test_lectures_list_renders_korean_titles_and_local_due_dates_at_wide_width() -> None:
     first = _lecture(due_date="2026-10-05T23:59:42")
     second = _lecture(
@@ -445,23 +453,6 @@ def test_partial_play_keeps_completed_item_and_summarizes_all_outcomes() -> None
     assert "Not started:" in output
     assert "Playback: 1 completed, 1 unverified, 1 failed, 1 not started." in output
     assert "A requested lecture could not be played; check the LMS session, then retry (playback-failed)." in output
-
-
-def test_error_sentence_includes_trailing_code_parenthetical() -> None:
-    output = _render(
-        "lectures.list",
-        {},
-        width=120,
-        errors=[
-            {
-                "code": "catalog-missing",
-                "message": "The lecture catalog is missing.",
-                "remediation": "Run 'campusctl sync' to create it.",
-            }
-        ],
-    )
-
-    assert output == "The lecture catalog is missing; run 'campusctl sync' to create it (catalog-missing).\n"
 
 
 def test_narrow_error_and_next_step_commands_stay_whole() -> None:

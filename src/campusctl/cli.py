@@ -55,6 +55,31 @@ CAPABILITIES = {
 }
 
 
+_HELP_GROUPS = (
+    ("Get started", ("setup", "doctor")),
+    ("Everyday", ("status", "sync", "lectures", "assignments", "notices", "materials", "courses")),
+    ("Settings", ("config", "auth")),
+)
+_OUTPUT_NOTE = (
+    "Terminal stdout defaults to human output; redirected stdout defaults to JSON.\n"
+    "--json forces the JSON envelope; CAMPUSCTL_OUTPUT=human|json overrides auto mode\n"
+    "unless --json is set."
+)
+
+
+class RootHelpFormatter(argparse.RawDescriptionHelpFormatter):
+    def _format_action(self, action: argparse.Action) -> str:
+        if not isinstance(action, argparse._SubParsersAction):
+            return super()._format_action(action)
+        choices = {choice.dest: choice for choice in action._get_subactions()}
+        lines = []
+        for heading, names in _HELP_GROUPS:
+            lines.append(f"  {heading}:\n")
+            for name in names:
+                lines.append("  " + super()._format_action(choices[name]))
+        return "".join(lines)
+
+
 class _HelpRequested(Exception):
     pass
 
@@ -76,15 +101,39 @@ class EnvelopeArgumentParser(argparse.ArgumentParser):
         raise UsageError("Invalid command-line usage.")
 
 
+class RootArgumentParser(EnvelopeArgumentParser):
+    def format_help(self) -> str:
+        self.epilog = (
+            "Examples:\n  campusctl setup\n  campusctl sync\n  campusctl status\n\n"
+            f"Config: {config_path().resolve()}\nData: {data_dir().resolve()}\n"
+            "Docs: https://github.com/haesol-shin/campusctl/blob/main/docs/usage.md\n\n" + _OUTPUT_NOTE
+        )
+        return super().format_help()
+
+
 def _with_json(parser: argparse.ArgumentParser, *, default: Any = argparse.SUPPRESS) -> None:
     parser.add_argument("--json", action="store_true", default=default, help="emit the JSON response envelope")
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = EnvelopeArgumentParser(prog="campusctl", description="Campus LMS control CLI")
+    parser = RootArgumentParser(
+        prog="campusctl",
+        description="Check CNU coursework from the terminal or an AI agent.",
+        formatter_class=RootHelpFormatter,
+    )
+    parser._positionals.title = "Commands"
     mode = parser.add_mutually_exclusive_group()
-    mode.add_argument("--headless", dest="headless_override", action="store_const", const=True, default=None)
-    mode.add_argument("--headed", dest="headless_override", action="store_const", const=False)
+    mode.add_argument(
+        "--headless",
+        dest="headless_override",
+        action="store_const",
+        const=True,
+        default=None,
+        help="use headless Chromium where supported",
+    )
+    mode.add_argument(
+        "--headed", dest="headless_override", action="store_const", const=False, help="force a visible browser"
+    )
     parser.add_argument("--profile", action="store_true", help="profile sync or refresh on stderr")
     _with_json(parser, default=False)
     parser.add_argument("--version", action="store_true", help="show the campusctl version")
@@ -97,10 +146,10 @@ def build_parser() -> argparse.ArgumentParser:
     _with_json(config_init)
     config_init.add_argument("--username", help="CNU login ID")
 
-    doctor = commands.add_parser("doctor", help="inspect local readiness")
+    doctor = commands.add_parser("doctor", help="check local readiness")
     _with_json(doctor)
 
-    auth = commands.add_parser("auth", help="manage credential configuration")
+    auth = commands.add_parser("auth", help="save or check credentials")
     _with_json(auth)
     auth_commands = auth.add_subparsers(dest="auth_command", parser_class=EnvelopeArgumentParser)
     auth_set = auth_commands.add_parser("set", help="save a keyring password")
@@ -109,12 +158,16 @@ def build_parser() -> argparse.ArgumentParser:
     _with_json(auth_status)
     auth_status.add_argument("--check", action="store_true", help="run the configured helper and check its response")
 
-    setup = commands.add_parser("setup", help="install or check the local Chromium browser")
+    setup = commands.add_parser("setup", help="guide account, browser and first sync")
     _with_json(setup)
 
-    sync = commands.add_parser("sync", help="sync all metadata domains")
+    sync = commands.add_parser("sync", help="refresh four coursework catalogs", epilog=_OUTPUT_NOTE)
     _with_json(sync)
-    sync.add_argument("--only", help="comma-separated domain subset")
+    sync.add_argument(
+        "--only",
+        metavar="DOMAIN[,DOMAIN...]",
+        help="sync only lectures, assignments, notices, materials (comma-separated)",
+    )
     sync.add_argument("--course", help="limit sync to one course")
 
     status = commands.add_parser("status", help="summarize cached coursework")
@@ -125,20 +178,20 @@ def build_parser() -> argparse.ArgumentParser:
     course_commands = courses.add_subparsers(dest="courses_command", parser_class=EnvelopeArgumentParser)
     courses_list = course_commands.add_parser("list", help="list cached courses")
     _with_json(courses_list)
-    courses_list.add_argument("--refresh", action="store_true")
+    courses_list.add_argument("--refresh", action="store_true", help="sync courses before listing")
 
-    lectures = commands.add_parser("lectures", help="list or play lectures")
+    lectures = commands.add_parser("lectures", help="list or play official lectures")
     _with_json(lectures)
     lecture_commands = lectures.add_subparsers(dest="lectures_command", parser_class=EnvelopeArgumentParser)
     lectures_list = lecture_commands.add_parser("list", help="list cached lectures")
     _with_json(lectures_list)
     lectures_list.add_argument("--all", action="store_true", help="include completed or recorded lectures")
     lectures_list.add_argument("--course", help="limit results to one course ID")
-    lectures_list.add_argument("--refresh", action="store_true")
+    lectures_list.add_argument("--refresh", action="store_true", help="sync lectures before listing")
     lectures_play = lecture_commands.add_parser("play", help="play explicit lecture IDs")
     _with_json(lectures_play)
-    lectures_play.add_argument("entity_ids", nargs="+")
-    lectures_play.add_argument("--speed", type=float, choices=SUPPORTED_SPEEDS)
+    lectures_play.add_argument("entity_ids", nargs="+", metavar="ID", help="full lecture IDs or printed numbers")
+    lectures_play.add_argument("--speed", type=float, choices=SUPPORTED_SPEEDS, help="playback speed")
     lectures_play.add_argument("--replay", action="store_true", help="explicitly replay completed lectures")
     for module in _DOMAIN_MODULES.values():
         module.register(commands)

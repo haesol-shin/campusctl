@@ -926,7 +926,7 @@ def test_cli_help_is_human_readable_and_returns_success(capsys: pytest.CaptureFi
     output = capsys.readouterr()
     assert output.err == ""
     assert output.out.startswith("usage: campusctl")
-    assert "Campus LMS control CLI" in output.out
+    assert "Check CNU coursework from the terminal or an AI agent." in output.out
     assert "--version" in output.out
 
 

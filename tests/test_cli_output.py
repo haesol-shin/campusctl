@@ -299,7 +299,7 @@ def test_partial_result_and_error_use_human_renderer(monkeypatch: pytest.MonkeyP
 
     assert cli.main(["sync"]) == 1
     output = stdout.getvalue()
-    assert "Synced 1 courses, 2 lectures, 1 unfinished." in output
+    assert "Synced 1 course, 2 lectures, 1 unfinished." in output
     assert "course-sync-failed" in output
     assert not output.startswith("{")
 
@@ -421,3 +421,76 @@ def test_fetch_batch_emitter_keeps_first_failure_status(
     preserved = json.loads(stdout.getvalue())
     assert preserved["status"] == "partial"
     assert preserved["errors"][0]["code"] == "course-sync-failed"
+
+
+def test_help_groups_commands_and_resolves_paths_at_render_time(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, stdout = _streams(monkeypatch, stdin_tty=False, stdout_tty=False)
+    monkeypatch.setenv("CAMPUSCTL_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setenv("CAMPUSCTL_DATA_DIR", str(tmp_path / "data"))
+    assert cli.main(["--help"]) == 0
+    help_text = stdout.getvalue()
+    assert help_text.index("Get started:") < help_text.index("Everyday:") < help_text.index("Settings:")
+    for command in (
+        "setup",
+        "doctor",
+        "status",
+        "sync",
+        "lectures",
+        "assignments",
+        "notices",
+        "materials",
+        "courses",
+        "config",
+        "auth",
+    ):
+        assert re.search(rf"^\s+{command}\s+\S", help_text, re.MULTILINE)
+    assert f"Config: {(tmp_path / 'config' / 'config.toml').resolve()}" in help_text
+    assert f"Data: {(tmp_path / 'data').resolve()}" in help_text
+    assert "CAMPUSCTL_OUTPUT=human|json" in help_text
+    assert not (tmp_path / "data").exists()
+
+    _, stdout = _streams(monkeypatch, stdin_tty=False, stdout_tty=False)
+    assert cli.main(["sync", "--help"]) == 0
+    assert "DOMAIN[,DOMAIN...]" in stdout.getvalue()
+    assert "lectures, assignments, notices, materials" in stdout.getvalue()
+    _, stdout = _streams(monkeypatch, stdin_tty=False, stdout_tty=False)
+    assert cli.main(["materials", "download", "--help"]) == 0
+    assert "[ID]" in stdout.getvalue()
+    assert "--json      emit the JSON response envelope" in stdout.getvalue()
+
+
+@pytest.mark.parametrize("catalog_exists", [False, True])
+def test_empty_status_human_distinguishes_unreadable_catalog(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, catalog_exists: bool
+) -> None:
+    _, stdout = _streams(monkeypatch, stdin_tty=False, stdout_tty=True)
+    monkeypatch.setenv("CAMPUSCTL_DATA_DIR", str(tmp_path))
+    if catalog_exists:
+        catalog = tmp_path / "catalog" / "lectures.json"
+        catalog.parent.mkdir()
+        catalog.write_text("not-json", encoding="utf-8")
+    assert cli.main(["status"]) == 2
+    text = stdout.getvalue()
+    assert text.startswith(
+        "No readable local catalog is available. Next: campusctl sync\n"
+        if catalog_exists
+        else "No coursework has been synced yet. Next: campusctl sync\n"
+    )
+    assert "unknown:" not in text and "See:" not in text
+
+    _, stdout = _streams(monkeypatch, stdin_tty=False, stdout_tty=False)
+    assert cli.main(["status", "--json"]) == 2
+    assert json.loads(stdout.getvalue())["errors"][0]["code"] == "catalog-missing"
+
+
+def test_missing_catalog_human_hides_path_but_json_retains_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CAMPUSCTL_DATA_DIR", str(tmp_path))
+    _, stdout = _streams(monkeypatch, stdin_tty=False, stdout_tty=True)
+    assert cli.main(["assignments", "list"]) == 2
+    assert "Assignments catalog is missing" in stdout.getvalue()
+    assert str(tmp_path) not in stdout.getvalue()
+    _, stdout = _streams(monkeypatch, stdin_tty=False, stdout_tty=False)
+    assert cli.main(["assignments", "list", "--json"]) == 2
+    assert str(tmp_path) in json.loads(stdout.getvalue())["errors"][0]["message"]

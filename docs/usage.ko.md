@@ -20,6 +20,8 @@ JSON 응답에는 버전이 있는 형식으로 `status`, `result`, `errors`가 
 
 `status`와 목록 명령은 네트워크 없이 로컬 목록을 읽습니다. 최신 정보가 필요하면 목록에 `--refresh`를 붙이거나 `campusctl sync`를 실행하세요. 오래된 목록 경고, 확인되지 않은 수강 상태, 실패한 과목, 누락된 영역이 있으면 비어 있거나 필터링된 목록도 불완전할 수 있습니다. 새로 고칠 수 없는 영역은 LMS에서 직접 확인하세요. `campusctl status`는 로컬 목록에서 곧 마감되는 과제, 읽지 않은 공지, 열려 있는 미완료 강의를 요약합니다.
 
+첫 동기화 전 사람이 읽는 `campusctl status` 출력은 0개라는 요약 대신 “No coursework has been synced yet. Next: campusctl sync”라고 안내합니다. 로컬 목록 파일이 있지만 아무것도 읽을 수 없을 때는 다시 동기화하라고 안내합니다. 누락된 목록 오류에는 로컬 경로 대신 해당 영역과 동기화 명령이 표시됩니다. JSON 오류와 종료 코드는 그대로입니다.
+
 ## 과목 번호와 전체 ID
 
 사람이 읽는 출력에서 `campusctl courses list`가 매긴 번호를 `--course NUMBER`에 쓸 수 있습니다. 과목 이름의 고유한 일부도 사용할 수 있습니다. `campusctl materials list`가 매긴 번호는 `campusctl materials download NUMBER`에 씁니다. ID 없이 자료 다운로드를 실행하면 대화형 터미널에서 파일 하나를 고를 수 있습니다.
@@ -47,7 +49,7 @@ Course: Practice Course
 
 To play one: campusctl lectures play cnu_lecture:example-course:welcome-01
 To refresh: campusctl sync
-Catalog generated 1 seconds ago.
+Catalog generated 1 second ago.
 ```
 
 선택한 강의의 전체 ID로 `campusctl lectures play ID`를 실행하세요. 화면에 보이는 공식 플레이어에서 한 번에 하나씩 재생하고, 끝난 뒤 LMS 행의 상태를 확인합니다. 진도나 출석을 별도로 요청하지 않습니다. 앞으로 건너뛰거나 진도를 위조하거나 지원되지 않는 속도를 강제하거나 백그라운드에서 재생하지 않습니다. YouTube는 기본 자동 재생으로 1배속만 사용하고, 다른 미디어는 해당 플레이어가 지원하는 속도만 사용합니다.
