@@ -19,9 +19,9 @@ Keep up with your lectures, assignments, notices and materials from the terminal
 - **Read selected details.** Fetch readable packages with `campusctl assignments fetch ID` or `campusctl notices fetch ID` for one or more full IDs. Opening a notice may change its view or read state.
 - **Save a material.** Run `campusctl materials download ID` to save one file to your OS Downloads folder under `campusctl/<course label>/`.
 - **Play one lecture at a time.** Run `campusctl lectures play ID` in CNU's visible official player; campusctl checks the LMS state afterward.
-- **Work with scripts or agents.** Add `--json` for structured output.
+- **Work with scripts or agents.** Run `campusctl status --json` for structured output.
 - **Keep your password private.** Run `campusctl auth set` to store it in your OS keyring by default.
-- **Run when you need it.** Use `campusctl` on Windows, macOS or Linux without a background service or resident browser.
+- **Run when you need it.** Try `campusctl --help` on Windows, macOS or Linux; no background service or resident browser is needed.
 
 ## Installation
 

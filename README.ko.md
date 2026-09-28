@@ -19,9 +19,9 @@
 - **선택한 내용을 읽습니다.** `campusctl assignments fetch ID`나 `campusctl notices fetch ID`로 전체 ID 하나 이상을 가져옵니다. 읽기 쉬운 패키지로 저장합니다. 공지를 열면 조회수나 읽음 상태가 바뀔 수 있습니다.
 - **자료를 저장합니다.** `campusctl materials download ID`로 파일 하나를 다운로드 폴더의 `campusctl/<과목 이름>/` 아래에 저장합니다.
 - **강의를 재생합니다.** `campusctl lectures play ID`로 화면에 보이는 공식 플레이어에서 한 번에 하나씩 재생합니다. 종료 후 LMS 상태를 확인합니다.
-- **스크립트와 에이전트에서 사용합니다.** `--json`을 붙이면 구조화된 결과를 받습니다.
+- **스크립트와 에이전트에서 사용합니다.** `campusctl status --json`으로 구조화된 결과를 받습니다.
 - **비밀번호를 안전하게 보관합니다.** `campusctl auth set`으로 운영체제 키링에 저장합니다.
-- **필요할 때 실행합니다.** Windows, macOS, Linux에서 백그라운드 서비스나 상주 브라우저 없이 사용합니다.
+- **필요할 때 실행합니다.** Windows, macOS, Linux에서 `campusctl --help`부터 실행할 수 있습니다. 백그라운드 서비스나 상주 브라우저가 필요 없습니다.
 
 ## 설치
 
