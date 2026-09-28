@@ -137,7 +137,7 @@ See [details, manual install, and a copy-paste prompt](docs/agent-skill.md).
 
 - No seeking ahead, faked progress or background play: use one visible official player at a time.
 - CNU has been observed to allow one LMS login session per account; don't run campusctl alongside another logged-in automation on that account.
-- campusctl is unofficial and not affiliated with CNU; changes to the LMS may break it.
+- campusctl is unofficial and supports only the CNU LMS; changes to the LMS may break it.
 
 ## Upgrading
 
