@@ -1,0 +1,2 @@
+- Add configurable per-course material download directories with opt-in bounded adoption of byte-identical existing files
+- Preserve verified retries with private schema-2 receipts and report adopted material paths

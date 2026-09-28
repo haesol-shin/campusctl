@@ -302,7 +302,7 @@ def test_full_ids_stale_warning_and_outcome_paths() -> None:
         == long_id
     )
     assert any("Warning:" in line for line in lines)
-    for outcome, label in (("saved", "Saved"), ("reused", "Reused"), ("skipped-existing", "Skipped existing")):
+    for outcome, label in (("saved", "Saved"), ("reused", "Reused"), ("adopted", "Adopted"), ("skipped-existing", "Skipped existing")):
         rendered = materials.render(
             "materials.download", {"material": {"outcome": outcome, "path": "downloads/example.pdf"}}, 10
         )
@@ -387,3 +387,42 @@ def test_material_list_refuses_catalog_rewrite_before_snapshot_publication(
     code, output = _cli(["materials", "list"], capsys)
     assert code == 2 and "selection-stale" in output
     assert not (tmp_path / "selection" / "materials-last-list.json").exists()
+
+
+def test_configured_adoption_receipt_and_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _catalog(tmp_path)
+    monkeypatch.setenv("CAMPUSCTL_DATA_DIR", str(tmp_path))
+    course = tmp_path / "School" / "Example Course"
+    old = course / "archive"
+    old.mkdir(parents=True)
+    existing = old / "example.pdf"
+    existing.write_bytes(BYTES)
+    settings = {"materials": {"download_dir": str(tmp_path / "School" / "{course}" / "materials"), "adopt_existing": True}}
+    monkeypatch.setattr("campusctl.config.load_config", lambda: settings)
+    calls = _fake_network(monkeypatch, tmp_path)
+    code, raw = _cli(["materials", "download", ID, "--json"], capsys)
+    result = json.loads(raw)["result"]["material"]
+    assert code == 0 and result["outcome"] == "adopted" and result["path"] == str(existing)
+    assert calls.index("lock") < calls.index("authenticate") < calls.index("fetch")
+    assert not (course / "materials" / "example.pdf").exists()
+    calls.clear()
+    code, raw = _cli(["materials", "download", ID, "--json"], capsys)
+    assert code == 0 and json.loads(raw)["result"]["material"]["outcome"] == "skipped-existing"
+    assert calls == ["lock"]
+    calls.clear()
+    override = tmp_path / "override"
+    code, raw = _cli(["materials", "download", ID, "--out", str(override), "--json"], capsys)
+    assert code == 0 and json.loads(raw)["result"]["material"]["outcome"] == "saved"
+    assert (override / "example.pdf").read_bytes() == BYTES and calls.count("fetch") == 1
+    settings["materials"]["download_dir"] = str(tmp_path / "School" / "{course}" / "new")
+    calls.clear()
+    code, raw = _cli(["materials", "download", ID, "--json"], capsys)
+    assert code == 0 and json.loads(raw)["result"]["material"]["outcome"] == "adopted"
+    assert calls.count("fetch") == 1
+    existing.write_bytes(b"corrupted")
+    calls.clear()
+    code, raw = _cli(["materials", "download", ID, "--json"], capsys)
+    assert code == 0 and json.loads(raw)["result"]["material"]["outcome"] == "saved"
+    assert (course / "new" / "example.pdf").read_bytes() == BYTES and calls.count("fetch") == 1

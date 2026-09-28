@@ -19,6 +19,7 @@ from campusctl.material_files import (
     verified_receipt,
     write_receipt,
 )
+from campusctl.material_files import adopt_attachment, resolve_download_layout
 
 
 def _temp(directory: Path, content: bytes) -> Path:
@@ -494,7 +495,8 @@ def test_verified_receipt_and_interrupted_temp(tmp_path: Path) -> None:
     receipt = verified_receipt(tmp_path, entity_id, directory)
     assert receipt is not None and receipt["path"] == str(result.path) and receipt["observed_mime"] is None
     document = json.loads((tmp_path / "materials" / "receipts.json").read_text())
-    assert document["schema_version"] == 1 and len(document["items"]) == 1
+    assert document["schema_version"] == 2 and len(document["items"]) == 1
+    assert document["items"][0]["course_root"] is None
     assert verified_receipt(tmp_path, "cnu_lms_material:synthetic:different", directory) is None
     different_dir = prepare_output_dir(tmp_path, entity_id, tmp_path / "elsewhere")
     assert verified_receipt(tmp_path, entity_id, different_dir) is None
@@ -555,3 +557,128 @@ def test_receipt_update_failure_does_not_claim_success(tmp_path: Path, monkeypat
     assert result.path.read_bytes() == b"valid bytes"
     assert verified_receipt(tmp_path, entity_id, directory) is None
     assert not list((tmp_path / "materials").glob(".receipts.*.tmp"))
+
+
+def test_layout_validation_and_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from campusctl.config import validate_config
+
+    row = {"course": {"id": "course-a", "label": "Course/Section"}}
+    monkeypatch.setenv("CAMPUSCTL_TEST_DIR", str(tmp_path))
+    settings = {"materials": {"download_dir": "$CAMPUSCTL_TEST_DIR/{semester}/{course}/materials", "semester": "2026-2", "adopt_existing": True}}
+    validate_config(settings, path=tmp_path / "config.toml")
+    destination, root = resolve_download_layout(settings, row, None)
+    assert destination == tmp_path / "2026-2" / "Course_Section" / "materials"
+    assert root == destination.parent
+    assert resolve_download_layout(settings, row, tmp_path / "override") == (tmp_path / "override", None)
+    for bad in ("CON.txt", "notes."):
+        template = {"materials": {"download_dir": str(tmp_path / bad / "{course}")}}
+        with pytest.raises(CampusError) as failure:
+            validate_config(template, path=tmp_path / "config.toml")
+        assert failure.value.code == "config-invalid"
+        monkeypatch.setenv("CAMPUSCTL_TEST_BAD", bad)
+        template["materials"]["download_dir"] = str(tmp_path / "$CAMPUSCTL_TEST_BAD" / "{course}")
+        validate_config(template, path=tmp_path / "config.toml")
+        with pytest.raises(CampusError) as failure:
+            resolve_download_layout(template, row, None)
+        assert failure.value.code == "config-invalid"
+    for invalid in ("relative/{course}", str(tmp_path / "{unknown}"), str(tmp_path / "../{course}")):
+        with pytest.raises(CampusError):
+            resolve_download_layout({"materials": {"download_dir": invalid}}, row, None)
+
+
+@pytest.mark.parametrize("size", (127 * 1024, 192 * 1024))
+def test_adoption_comparison_tiers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, size: int) -> None:
+    from campusctl import material_files
+
+    course = prepare_output_dir(tmp_path, "course", tmp_path / "course")
+    destination = prepare_output_dir(tmp_path, "course", course / "materials")
+    archive = prepare_output_dir(tmp_path, "course", course / "archive")
+    content = b"A" * size
+    digest = hashlib.sha256(content).hexdigest()
+    transfer = _temp(destination, content)
+    candidate = archive / "sample.pdf"
+    candidate.write_bytes(content[:-1] + b"B")
+    monkeypatch.setattr(material_files, "_SCAN_BYTES", 2 * 64 * 1024)
+    assert adopt_attachment(transfer, destination, course, candidate.name, size, digest) is None
+    if size > 128 * 1024:
+        candidate.write_bytes(content[:size // 2] + b"B" + content[size // 2 + 1:])
+        monkeypatch.setattr(material_files, "_SCAN_BYTES", size + 2 * 64 * 1024)
+        assert adopt_attachment(transfer, destination, course, candidate.name, size, digest) is None
+    candidate.write_bytes(content)
+    monkeypatch.setattr(material_files, "_SCAN_BYTES", size + 2 * 64 * 1024)
+    result = adopt_attachment(transfer, destination, course, candidate.name, size, digest)
+    assert result is not None and result.path == candidate and result.outcome == "adopted"
+    assert result.path.read_bytes() == content
+
+
+def test_same_directory_case_variant_and_receipt_migration(tmp_path: Path) -> None:
+    course = prepare_output_dir(tmp_path, "course", tmp_path / "course")
+    destination = prepare_output_dir(tmp_path, "course", course / "materials")
+    content = b"synthetic attachment"
+    digest = hashlib.sha256(content).hexdigest()
+    existing = destination / "SAMPLE.PDF"
+    existing.write_bytes(content)
+    transfer = _temp(destination, content)
+    reused = adopt_attachment(transfer, destination, course, "sample.pdf", len(content), digest)
+    assert reused is not None and reused.path == existing and reused.outcome == "reused"
+    entity_id = "cnu_lms_material:course-a:file-1"
+    receipt_path = tmp_path / "materials" / "receipts.json"
+    receipt_path.parent.mkdir()
+    receipt_path.write_text(json.dumps({"schema_version": 1, "items": [{
+        "entity_id": entity_id, "output_dir": str(destination), "path": str(existing),
+        "size_bytes": len(content), "sha256": digest, "observed_mime": None
+    }]}))
+    assert verified_receipt(tmp_path, entity_id, destination) is not None
+    write_receipt(tmp_path, "cnu_lms_material:course-a:file-2", destination, existing, len(content), digest, None)
+    data = json.loads(receipt_path.read_text())
+    assert data["schema_version"] == 2 and len(data["items"]) == 2
+    assert all(item["course_root"] is None for item in data["items"])
+
+
+def test_adoption_scan_bounds_and_symlink_safety(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from campusctl import material_files
+
+    course = prepare_output_dir(tmp_path, "course", tmp_path / "course")
+    destination = prepare_output_dir(tmp_path, "course", course / "materials")
+    content = b"A" * (192 * 1024)
+    digest = hashlib.sha256(content).hexdigest()
+    transfer = _temp(destination, content)
+    sibling = prepare_output_dir(tmp_path, "course", course / "archive")
+    candidate = sibling / "sample.pdf"
+    candidate.write_bytes(content)
+    monkeypatch.setattr(material_files, "_SCAN_BYTES", 2 * 64 * 1024 + len(content) - 1)
+    with pytest.raises(CampusError) as error:
+        adopt_attachment(transfer, destination, course, candidate.name, len(content), digest)
+    assert error.value.code == "output-path-conflict"
+    monkeypatch.setattr(material_files, "_SCAN_BYTES", 1_000_000_000)
+    monkeypatch.setattr(material_files, "_SCAN_ENTRIES", 2)
+    with pytest.raises(CampusError) as error:
+        adopt_attachment(transfer, destination, course, candidate.name, len(content), digest)
+    assert error.value.code == "output-path-conflict"
+    monkeypatch.setattr(material_files, "_SCAN_ENTRIES", 10_000)
+    if os.name != "nt":
+        candidate.unlink()
+        candidate.symlink_to(transfer)
+        assert adopt_attachment(transfer, destination, course, candidate.name, len(content), digest) is None
+
+
+def test_template_expansion_on_macos_and_windows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from campusctl import config, material_files
+
+    row = {"course": {"id": "course-a", "label": "Sample"}}
+    monkeypatch.setattr(material_files, "_home_dir", lambda: tmp_path)
+    monkeypatch.setattr(material_files, "sys", SimpleNamespace(platform="darwin"))
+    assert resolve_download_layout({"materials": {"download_dir": "~/School/{course}"}}, row, None) == (
+        tmp_path / "School" / "Sample", None
+    )
+    monkeypatch.setattr(config, "sys", SimpleNamespace(platform="win32"))
+    monkeypatch.setattr(material_files, "sys", SimpleNamespace(platform="win32"))
+    monkeypatch.setenv("CAMPUSCTL_FOLDER", "School")
+    template = "C:/%CAMPUSCTL_FOLDER%/{course_id}/files"
+    config.validate_config({"materials": {"download_dir": template}}, path=tmp_path / "config.toml")
+    prefix, parts = material_files._layout_parts(template)
+    assert prefix == "C:\\" and parts == ["School", "{course_id}", "files"]
+    monkeypatch.setenv("CAMPUSCTL_FOLDER", "CON.txt")
+    with pytest.raises(CampusError) as failure:
+        material_files._layout_parts(template)
+    assert failure.value.code == "config-invalid"

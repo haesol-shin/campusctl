@@ -250,6 +250,36 @@ def test_config_missing_and_invalid_are_safe_user_actions(tmp_path: Path) -> Non
     assert SENTINEL not in str(error.value)
 
 
+def test_materials_doctor_reports_settings_without_creating_destination(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from campusctl.config import validate_config
+    from campusctl.presentation import _doctor
+
+    monkeypatch.setenv("CAMPUSCTL_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setenv("CAMPUSCTL_DATA_DIR", str(tmp_path / "data"))
+    config = config_path()
+    config.parent.mkdir(parents=True)
+    monkeypatch.setenv("CAMPUSCTL_TEST_DEST", str(tmp_path / "destination"))
+    config.write_text('[materials]\ndownload_dir = "$CAMPUSCTL_TEST_DEST/{course}/materials"\nadopt_existing = true\n')
+    result, _ = cli.doctor_result()
+    assert result["materials"] == {
+        "download_dir": "$CAMPUSCTL_TEST_DEST/{course}/materials",
+        "adopt_existing": True,
+        "semester": None,
+    }
+    assert not (tmp_path / "destination").exists()
+    lines, _ = _doctor(result, 100, [])
+    assert "[ok] Materials downloads: configured (adoption on)" in lines
+    monkeypatch.delenv("CAMPUSCTL_TEST_DEST")
+    invalid, error = cli.doctor_result()
+    assert error is not None and error.code == "config-invalid"
+    assert invalid["materials"] == {"download_dir": None, "adopt_existing": None, "semester": None}
+    assert not (tmp_path / "destination").exists()
+    with pytest.raises(ConfigError):
+        validate_config({"materials": {"download_dir": "{semester}", "semester": ""}}, path=config)
+
+
 def test_secure_keyring_backend_reads_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
     backend = type("SecureBackend", (), {"priority": 1})()
     _fake_keyring(monkeypatch, backend, password="test-password")

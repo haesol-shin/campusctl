@@ -187,10 +187,10 @@ async def _download(
 ) -> dict[str, Any]:
     from campusctl.browser import open_session
     from campusctl.material_files import (
-        default_download_dir,
+        adopt_attachment,
         prepare_output_dir,
         publish_attachment,
-        safe_component,
+        resolve_download_layout,
         verified_receipt,
         write_receipt,
     )
@@ -214,9 +214,11 @@ async def _download(
     post_id = row["archive_entry"]["board_item_id"]
     file_id = row["file_id"]
     async with open_session(config, data_dir=root, headless=headless, operation="materials.download") as session:
-        destination = out if out is not None else default_download_dir() / safe_component(row["course"]["label"])
+        destination, course_root = resolve_download_layout(config, row, out)
         output_dir = prepare_output_dir(root, entity_id, destination)
-        receipt = verified_receipt(root, entity_id, output_dir)
+        if course_root is not None:
+            prepare_output_dir(root, entity_id, course_root)
+        receipt = verified_receipt(root, entity_id, output_dir, course_root)
         if receipt is not None:
             return _result(row, receipt["path"], receipt["size_bytes"], receipt["sha256"], "skipped-existing")
         page = session.page
@@ -288,11 +290,17 @@ async def _download(
             "fetching selected archive attachment",
         )
         try:
-            published = publish_attachment(
-                fetched.temp_path, output_dir, row["filename"], fetched.sha256, fetched.size_bytes
+            published = (
+                adopt_attachment(fetched.temp_path, output_dir, course_root, row["filename"], fetched.size_bytes, fetched.sha256)
+                if course_root is not None else None
             )
+            if published is None:
+                published = publish_attachment(
+                    fetched.temp_path, output_dir, row["filename"], fetched.sha256, fetched.size_bytes
+                )
             write_receipt(
-                root, entity_id, output_dir, published.path, fetched.size_bytes, fetched.sha256, fetched.media_type
+                root, entity_id, output_dir, published.path, fetched.size_bytes, fetched.sha256,
+                fetched.media_type, course_root if published.outcome == "adopted" else None
             )
         finally:
             fetched.temp_path.unlink(missing_ok=True)
@@ -337,7 +345,7 @@ def render(command: str, result: dict[str, Any], width: int) -> list[str]:
         return lines + _warnings(catalog.get("enrollment_state"), result.get("failed_courses"), width)
     if command == "materials.download" and isinstance(result.get("material"), dict):
         material = result["material"]
-        label = {"saved": "Saved", "reused": "Reused", "skipped-existing": "Skipped existing"}.get(
+        label = {"saved": "Saved", "reused": "Reused", "adopted": "Adopted", "skipped-existing": "Skipped existing"}.get(
             material.get("outcome")
         )
         return [f"{label}: {material['path']}"] if label else []

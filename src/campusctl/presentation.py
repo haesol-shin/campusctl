@@ -343,6 +343,14 @@ def _doctor(result: dict[str, Any], width: int, errors: object) -> tuple[list[st
                     )
                 )
 
+    materials = result.get("materials")
+    if isinstance(materials, dict) and materials.get("adopt_existing") is not None:
+        if materials.get("download_dir") is None:
+            checks.append("[ok] Materials downloads: default")
+        else:
+            adoption = "on" if materials["adopt_existing"] else "off"
+            checks.append(f"[ok] Materials downloads: configured (adoption {adoption})")
+
     catalog = result.get("catalog")
     catalog_missing = isinstance(catalog, dict) and catalog.get("present") is False
     if isinstance(catalog, dict) and isinstance(catalog.get("present"), bool):

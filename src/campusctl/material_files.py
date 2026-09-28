@@ -157,6 +157,129 @@ def default_download_dir() -> Path:
                     break
     return downloads / "campusctl"
 
+_ENV_REF = re.compile(r"\$([A-Za-z_][A-Za-z_0-9]*)|\$\{([A-Za-z_][A-Za-z_0-9]*)\}|%([A-Za-z_][A-Za-z_0-9]*)%")
+_SCAN_ENTRIES = 10_000
+_SCAN_BYTES = 1_000_000_000
+
+
+def _layout_invalid(key: str) -> CampusError:
+    return CampusError(
+        "config-invalid",
+        f"Invalid configuration (key: {key}).",
+        "Edit the named configuration key using the documented format.",
+        "user-action",
+    )
+
+
+def _layout_component(raw: str, key: str, *, course_label: bool = False) -> str:
+    if (
+        not isinstance(raw, str)
+        or not raw.strip()
+        or raw.startswith(("/", "\\"))
+        or re.match(r"^[A-Za-z]:", raw)
+        or any(ord(ch) < 32 or ord(ch) == 127 for ch in raw)
+        or any(part in {".", ".."} for part in re.split(r"[/\\]", raw))
+        or (not course_label and ("/" in raw or "\\" in raw))
+    ):
+        raise _layout_invalid(key)
+    return safe_component(raw.replace("/", "_").replace("\\", "_") if course_label else raw)
+
+
+def _expand_layout(template: str) -> str:
+    if template.startswith("~"):
+        if not template.startswith(("~/", "~\\")):
+            raise _layout_invalid("materials.download_dir")
+        template = str(_home_dir()) + template[1:]
+
+    def substitute(match: re.Match[str]) -> str:
+        if match.group(3) and sys.platform != "win32":
+            raise _layout_invalid("materials.download_dir")
+        value = os.environ.get(match.group(1) or match.group(2) or match.group(3))
+        if not value:
+            raise _layout_invalid("materials.download_dir")
+        if "/" in value or "\\" in value:
+            if (
+                match.start() != 0
+                or match.end() < len(template) and template[match.end()] not in "/\\"
+                or not (value.startswith("/") if sys.platform != "win32" else __import__("ntpath").isabs(value))
+            ):
+                raise _layout_invalid("materials.download_dir")
+        return value
+
+    expanded = _ENV_REF.sub(substitute, template)
+    if "$" in expanded or (sys.platform == "win32" and "%" in expanded):
+        raise _layout_invalid("materials.download_dir")
+    return expanded
+
+
+def _layout_parts(template: str) -> tuple[str, list[str]]:
+    from campusctl.config import _material_component
+
+    expanded = _expand_layout(template)
+    if sys.platform == "win32":
+        import ntpath
+
+        anchor, remainder = ntpath.splitdrive(expanded)
+        if not anchor or not remainder.startswith(("/", "\\")):
+            raise _layout_invalid("materials.download_dir")
+        parts = re.split(r"[/\\]", remainder[1:])
+        prefix = anchor + "\\"
+    else:
+        if not expanded.startswith("/"):
+            raise _layout_invalid("materials.download_dir")
+        parts = expanded[1:].split("/")
+        prefix = "/"
+    if expanded.rstrip("/\\") == prefix.rstrip("/\\"):
+        return prefix, []
+    if not parts or any(not part for part in parts):
+        raise _layout_invalid("materials.download_dir")
+    for part in parts:
+        if part in ("{course}", "{course_id}", "{semester}"):
+            continue
+        if "{" in part or "}" in part:
+            raise _layout_invalid("materials.download_dir")
+        _material_component(part, "materials.download_dir", Path("config.toml"))
+    return prefix, parts
+
+
+def check_download_environment(config: dict[str, Any]) -> None:
+    template = config.get("materials", {}).get("download_dir")
+    if template is not None:
+        _layout_parts(template)
+
+
+def resolve_download_layout(config: dict[str, Any], row: dict[str, Any], out: Path | None) -> tuple[Path, Path | None]:
+    """Resolve a validated course destination without creating any directories."""
+    if out is not None:
+        return Path(os.path.abspath(out.expanduser())), None
+    settings = config.get("materials", {})
+    template = settings.get("download_dir")
+    if template is None:
+        return default_download_dir() / safe_component(row["course"]["label"]), None
+    prefix, parts = _layout_parts(template)
+    values = {
+        "{course}": ("materials.download_dir", row["course"]["label"], True),
+        "{course_id}": ("materials.download_dir", row["course"]["id"], False),
+        "{semester}": ("materials.semester", settings.get("semester"), False),
+    }
+    resolved: list[str] = []
+    course_root = None
+    for part in parts:
+        if part in values:
+            key, value, label = values[part]
+            part = _layout_component(value, key, course_label=label)
+        resolved.append(part)
+        if settings.get("adopt_existing") and len(resolved) == next(
+            (i + 1 for i, component in enumerate(parts) if component in ("{course}", "{course_id}")), -1
+        ):
+            course_root = Path(prefix, *resolved)
+    destination = Path(prefix, *resolved)
+    if course_root is not None and len(parts) - next(
+        i + 1 for i, part in enumerate(parts) if part in ("{course}", "{course_id}")
+    ) > 4:
+        raise _layout_invalid("materials.download_dir")
+    return destination, course_root
+
 
 def _conflict() -> CampusError:
     return CampusError(
@@ -518,6 +641,123 @@ def publish_attachment(
                             )
 
 
+def _scan_conflict() -> CampusError:
+    return CampusError(
+        "output-path-conflict",
+        "Course material scan could not safely verify existing files within its limits.",
+        "Remove unsafe entries or narrow the course directory and retry.",
+        "user-action",
+    )
+
+
+def adopt_attachment(
+    temp_path: Path, output_dir: Path, course_root: Path, filename: str, size_bytes: int, sha256: str
+) -> PublishedAttachment | None:
+    """Compare a verified transfer with bounded, pinned existing course files."""
+    if os.name == "nt":
+        raise _scan_conflict()
+    try:
+        directory = _check_directory(output_dir)
+        root = _check_directory(course_root)
+        if not directory.is_relative_to(root) or len(directory.relative_to(root).parts) > 4:
+            raise _scan_conflict()
+        primary, _ = _candidates(directory, filename, sha256)
+        with _pinned_directory(root) as (root_fd, _):
+            assert root_fd is not None
+            candidates: list[tuple[Path, tuple[str, str, str]]] = []
+            entries = 0
+
+            def walk(fd: int, relative: Path, depth: int) -> None:
+                nonlocal entries
+                for name in sorted(os.listdir(fd)):
+                    entries += 1
+                    if entries > _SCAN_ENTRIES:
+                        raise _scan_conflict()
+                    info = os.stat(name, dir_fd=fd, follow_symlinks=False)
+                    path = relative / name
+                    if stat.S_ISLNK(info.st_mode):
+                        continue
+                    if stat.S_ISDIR(info.st_mode):
+                        if depth < 4:
+                            child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+                            try:
+                                if (os.fstat(child).st_dev, os.fstat(child).st_ino) != (info.st_dev, info.st_ino):
+                                    raise _scan_conflict()
+                                walk(child, path, depth + 1)
+                                named = os.stat(name, dir_fd=fd, follow_symlinks=False)
+                                if (named.st_dev, named.st_ino) != (info.st_dev, info.st_ino):
+                                    raise _scan_conflict()
+                            finally:
+                                os.close(child)
+                    elif stat.S_ISREG(info.st_mode) and unicodedata.normalize("NFC", name).casefold() == primary.name.casefold():
+                        text = path.as_posix()
+                        normalized = unicodedata.normalize("NFC", text)
+                        candidates.append((root / path, (normalized.casefold(), normalized, text)))
+
+            walk(root_fd, Path(), 0)
+            exact = [item for item in candidates if item[0] == primary]
+            inside = sorted((item for item in candidates if item[0].parent == directory and item[0] != primary), key=lambda item: item[1])
+            outside = sorted((item for item in candidates if item[0].parent != directory), key=lambda item: item[1])
+            read_bytes = 0
+
+            def candidate_read(fd: int, count: int) -> bytes:
+                nonlocal read_bytes
+                if count > _SCAN_BYTES - read_bytes:
+                    raise _scan_conflict()
+                data = os.read(fd, count)
+                read_bytes += len(data)
+                if len(data) != count:
+                    raise _scan_conflict()
+                return data
+            with _pinned_directory(directory) as (source_dir_fd, _):
+                source_fd = _open_regular(temp_path.name, dir_fd=source_dir_fd)
+                try:
+                    _verify_temp_identity(source_fd, temp_path.name, dir_fd=source_dir_fd)
+                    if os.fstat(source_fd).st_size != size_bytes or _digest_fd(source_fd) != (size_bytes, sha256):
+                        raise _scan_conflict()
+                    _verify_temp_identity(source_fd, temp_path.name, dir_fd=source_dir_fd)
+                    for candidate, _ in exact + inside + outside:
+                        with _pinned_directory(candidate.parent) as (candidate_dir_fd, _):
+                            fd = _open_regular(candidate.name, dir_fd=candidate_dir_fd)
+                            try:
+                                if os.fstat(fd).st_size != size_bytes:
+                                    continue
+                                sample = min(size_bytes, 64 * 1024)
+                                os.lseek(fd, 0, os.SEEK_SET)
+                                os.lseek(source_fd, 0, os.SEEK_SET)
+                                identical = candidate_read(fd, sample) == os.read(source_fd, sample)
+                                if identical:
+                                    end_offset = sample if size_bytes <= 128 * 1024 else size_bytes - sample
+                                    os.lseek(fd, end_offset, os.SEEK_SET)
+                                    os.lseek(source_fd, end_offset, os.SEEK_SET)
+                                    remaining = size_bytes - end_offset
+                                    identical = candidate_read(fd, remaining) == os.read(source_fd, remaining)
+                                if identical and size_bytes > 128 * 1024:
+                                    os.lseek(fd, 0, os.SEEK_SET)
+                                    os.lseek(source_fd, 0, os.SEEK_SET)
+                                    while os.lseek(fd, 0, os.SEEK_CUR) < size_bytes:
+                                        remaining = size_bytes - os.lseek(fd, 0, os.SEEK_CUR)
+                                        chunk = candidate_read(fd, min(1024 * 1024, remaining))
+                                        if chunk != os.read(source_fd, len(chunk)):
+                                            identical = False
+                                            break
+                                if os.fstat(fd).st_size != size_bytes:
+                                    raise _scan_conflict()
+                                _verify_temp_identity(fd, candidate.name, dir_fd=candidate_dir_fd)
+                                if identical:
+                                    _verify_temp_identity(source_fd, temp_path.name, dir_fd=source_dir_fd)
+                                    return PublishedAttachment(candidate, "reused" if candidate.parent == directory else "adopted")
+                            finally:
+                                os.close(fd)
+                finally:
+                    os.close(source_fd)
+    except (OSError, CampusError) as error:
+        if isinstance(error, CampusError) and error.code == "output-path-too-long":
+            raise
+        raise _scan_conflict() from None
+    return None
+
+
 def receipts_path(root: Path) -> Path:
     return root / "materials" / "receipts.json"
 
@@ -526,15 +766,9 @@ def _url_bearing(value: str) -> bool:
     return re.search(r"[A-Za-z][A-Za-z0-9+.-]*://", value) is not None
 
 
-def _valid_receipt_item(item: Any) -> bool:
-    if not isinstance(item, dict) or set(item) != {
-        "entity_id",
-        "output_dir",
-        "path",
-        "size_bytes",
-        "sha256",
-        "observed_mime",
-    }:
+def _valid_receipt_item(item: Any, version: int) -> bool:
+    fields = {"entity_id", "output_dir", "path", "size_bytes", "sha256", "observed_mime"}
+    if not isinstance(item, dict) or set(item) != (fields | {"course_root"} if version == 2 else fields):
         return False
     entity_id, output_dir, path, digest, mime = (
         item["entity_id"],
@@ -553,7 +787,13 @@ def _valid_receipt_item(item: Any) -> bool:
         and Path(output_dir).is_absolute()
         and isinstance(path, str)
         and Path(path).is_absolute()
-        and Path(path).parent == Path(output_dir)
+        and (
+            (Path(path).parent == Path(output_dir) and (version == 1 or item["course_root"] is None))
+            or (version == 2 and isinstance(item["course_root"], str)
+                and Path(item["course_root"]).is_absolute()
+                and Path(path).is_relative_to(Path(item["course_root"]))
+                and 1 <= len(Path(path).relative_to(Path(item["course_root"])).parts) <= 5)
+        )
         and isinstance(digest, str)
         and _DIGEST.fullmatch(digest) is not None
         and type(item["size_bytes"]) is int
@@ -579,9 +819,9 @@ def _read_receipts(path: Path) -> list[dict[str, Any]]:
         ) from None
     if (
         not isinstance(data, dict)
-        or data.get("schema_version") != 1
+        or data.get("schema_version") not in (1, 2)
         or not isinstance(data.get("items"), list)
-        or not all(_valid_receipt_item(item) for item in data["items"])
+        or not all(_valid_receipt_item(item, data["schema_version"]) for item in data["items"])
     ):
         raise _conflict()
     return data["items"]
@@ -590,21 +830,30 @@ def _read_receipts(path: Path) -> list[dict[str, Any]]:
 def _receipt_file(path: Path, directory: Path, size: int, digest: str) -> bool:
     if (
         not path.is_absolute()
-        or path.parent != directory
-        or path.is_symlink()
+        or not path.is_relative_to(directory)
+        or not 1 <= len(path.relative_to(directory).parts) <= 5
         or not _DIGEST.fullmatch(digest)
         or type(size) is not int
         or size <= 0
     ):
         return False
     try:
-        return _digest_file(path) == (size, digest)
+        with _pinned_directory(path.parent) as (dir_fd, _):
+            fd = _open_regular(path.name if dir_fd is not None else path, dir_fd=dir_fd)
+            try:
+                measured = _digest_fd(fd)
+                _verify_temp_identity(fd, path.name if dir_fd is not None else path, dir_fd=dir_fd)
+                return measured == (size, digest)
+            finally:
+                os.close(fd)
     except (OSError, CampusError):
         return False
 
 
-def verified_receipt(root: Path, entity_id: str, output_dir: Path) -> dict[str, Any] | None:
-    """Find a receipt only when its target remains byte-verified in the same directory."""
+def verified_receipt(
+    root: Path, entity_id: str, output_dir: Path, course_root: Path | None = None
+) -> dict[str, Any] | None:
+    """Return only a byte-verified receipt for the current destination and course root."""
     directory = _check_directory(output_dir)
     receipt_file = receipts_path(root)
     _check_directory(receipt_file.parent, create=True)
@@ -616,14 +865,20 @@ def verified_receipt(root: Path, entity_id: str, output_dir: Path) -> dict[str, 
         if (
             isinstance(path_string, str)
             and isinstance(digest, str)
-            and _receipt_file(Path(path_string), directory, item.get("size_bytes"), digest)
+            and (
+                _receipt_file(Path(path_string), directory, item.get("size_bytes"), digest)
+                if item.get("course_root") is None
+                else course_root is not None and item["course_root"] == str(course_root)
+                and _receipt_file(Path(path_string), course_root, item.get("size_bytes"), digest)
+            )
         ):
             return item
     return None
 
 
 def write_receipt(
-    root: Path, entity_id: str, output_dir: Path, path: Path, size_bytes: int, sha256: str, observed_mime: str | None
+    root: Path, entity_id: str, output_dir: Path, path: Path, size_bytes: int, sha256: str,
+    observed_mime: str | None, course_root: Path | None = None
 ) -> None:
     """Atomically record only a verified publication under the session lock."""
     directory = _check_directory(output_dir)
@@ -632,7 +887,9 @@ def write_receipt(
         or not isinstance(observed_mime, (str, type(None)))
         or _url_bearing(entity_id)
         or (observed_mime is not None and _url_bearing(observed_mime))
-        or not _receipt_file(Path(path), directory, size_bytes, sha256)
+        or (course_root is None and Path(path).parent != directory)
+        or (course_root is not None and (not directory.is_relative_to(course_root) or Path(path).parent == directory))
+        or not _receipt_file(Path(path), course_root if course_root is not None else directory, size_bytes, sha256)
     ):
         raise _conflict()
     target = receipts_path(root)
@@ -650,6 +907,7 @@ def write_receipt(
             "size_bytes": size_bytes,
             "sha256": sha256,
             "observed_mime": observed_mime,
+            "course_root": str(course_root) if course_root is not None else None,
         }
     )
     temp_name = ".receipts." + secrets.token_hex(16) + ".tmp"
@@ -661,7 +919,8 @@ def write_receipt(
             try:
                 with os.fdopen(fd, "w", encoding="utf-8") as destination:
                     json.dump(
-                        {"schema_version": 1, "items": items}, destination, ensure_ascii=False, separators=(",", ":")
+                        {"schema_version": 2, "items": [{**item, "course_root": item.get("course_root")} for item in items]},
+                        destination, ensure_ascii=False, separators=(",", ":")
                     )
                     destination.write("\n")
                     destination.flush()
