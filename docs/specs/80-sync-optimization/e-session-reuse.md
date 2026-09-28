@@ -99,7 +99,7 @@ For E3, offline tests cover local headless configuration, explicit `--headless`,
 
 ## Live verification
 
-Owner-held sanitized evidence (2026-09-28): the G2 full-path run passed with local headless Chromium, producing a complete notice package, two assignment fetches, and an official material download. This satisfies the headless assignment and notice fetch support gate; it does not establish CDP headless support or answer whether local-profile authentication persists across restarts.
+Owner-held sanitized evidence (2026-09-28): the G2 full-path run passed with local headless Chromium, producing a complete notice package, two assignment fetches, and an official material download. Sync took 65.9 s (profile wall 65.3 s), notice fetch 13.8 s, the two-ID assignment fetch 19.5 s, and material download 14.0 s; per-invocation login took about 4.0–4.5 s. This satisfies the headless assignment and notice fetch support gate; it does not establish CDP headless support or answer whether local-profile authentication persists across restarts.
 
 The run's approved notice reads can affect view/read state as ordinary reading. Do not retry a possibly opened detail or infer a new account-identity check from a successful package.
 
