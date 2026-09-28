@@ -219,7 +219,7 @@ def _layout_parts(template: str) -> tuple[str, list[str]]:
     expanded = _expand_layout(template)
     if sys.platform == "win32":
         anchor, remainder = ntpath.splitdrive(expanded)
-        if not anchor or (remainder and not remainder.startswith(("/", "\\"))):
+        if not anchor or not ntpath.isabs(expanded):
             raise _layout_invalid("materials.download_dir")
         parts = re.split(r"[/\\]", remainder[1:]) if remainder else []
         prefix = anchor + "\\"

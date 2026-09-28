@@ -776,6 +776,10 @@ def test_template_expansion_on_macos_and_windows(tmp_path: Path, monkeypatch: py
             Path(unc),
             None,
         )
+    monkeypatch.setenv("CAMPUSCTL_DRIVE", "C:")
+    with pytest.raises(CampusError) as failure:
+        material_files._layout_parts("$CAMPUSCTL_DRIVE")
+    assert failure.value.code == "config-invalid"
     monkeypatch.setenv("CAMPUSCTL_FOLDER", "CON.txt")
     with pytest.raises(CampusError) as failure:
         material_files._layout_parts(template)
