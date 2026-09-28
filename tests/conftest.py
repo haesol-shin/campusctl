@@ -5,7 +5,6 @@ from pathlib import Path
 
 import pytest
 
-
 # Measured call seconds for the real-browser sync cases (2026-09-28, local Chromium).
 # Longest-processing-time assignment keeps the 9–17s cases on separate runners.
 _SYNC_SECONDS = {
