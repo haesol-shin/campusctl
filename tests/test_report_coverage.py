@@ -79,24 +79,34 @@ def test_diff_coverage_reports_only_changed_executable_lines(tmp_path: Path, mon
         "src/campusctl/fresh.py": {1},
     }
     candidate = tmp_path / "coverage.json"
-    candidate.write_text(json.dumps({"files": {
-        "src/campusctl/logic.py": {
-            "summary": {"covered_lines": 2, "num_statements": 3},
-            "executed_lines": [1, 2], "missing_lines": [3],
-        },
-        "src/campusctl/moved.py": {
-            "summary": {"covered_lines": 1, "num_statements": 2},
-            "executed_lines": [1], "missing_lines": [2],
-        },
-        "src/campusctl/empty.py": {
-            "summary": {"covered_lines": 0, "num_statements": 0},
-            "executed_lines": [], "missing_lines": [],
-        },
-        "src/campusctl/fresh.py": {
-            "summary": {"covered_lines": 1, "num_statements": 1},
-            "executed_lines": [1], "missing_lines": [],
-        },
-    }}))
+    candidate.write_text(
+        json.dumps(
+            {
+                "files": {
+                    "src/campusctl/logic.py": {
+                        "summary": {"covered_lines": 2, "num_statements": 3},
+                        "executed_lines": [1, 2],
+                        "missing_lines": [3],
+                    },
+                    "src/campusctl/moved.py": {
+                        "summary": {"covered_lines": 1, "num_statements": 2},
+                        "executed_lines": [1],
+                        "missing_lines": [2],
+                    },
+                    "src/campusctl/empty.py": {
+                        "summary": {"covered_lines": 0, "num_statements": 0},
+                        "executed_lines": [],
+                        "missing_lines": [],
+                    },
+                    "src/campusctl/fresh.py": {
+                        "summary": {"covered_lines": 1, "num_statements": 1},
+                        "executed_lines": [1],
+                        "missing_lines": [],
+                    },
+                }
+            }
+        )
+    )
     report = report_coverage.diff_summary(candidate, changed)
     assert "| `src/campusctl/logic.py` | 2 | 1 | 3 |" in report
     assert "| `src/campusctl/moved.py` | 1 | 0 | 2 |" in report

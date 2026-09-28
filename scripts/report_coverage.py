@@ -50,8 +50,17 @@ def changed_lines(base: str) -> dict[str, set[int]]:
     ).stdout.strip()
     patch = subprocess.run(
         [
-            "git", "-c", "core.quotePath=false", "diff", "--no-ext-diff",
-            "--unified=0", "--find-renames", merge_base, "HEAD", "--", "src/campusctl/",
+            "git",
+            "-c",
+            "core.quotePath=false",
+            "diff",
+            "--no-ext-diff",
+            "--unified=0",
+            "--find-renames",
+            merge_base,
+            "HEAD",
+            "--",
+            "src/campusctl/",
         ],
         capture_output=True,
         text=True,
@@ -70,9 +79,7 @@ def changed_lines(base: str) -> dict[str, set[int]]:
                 # Git quotes filenames containing whitespace, with C-style escapes.
                 name = ast.literal_eval(name)
             filename = name[2:] if name.startswith("b/src/campusctl/") else None
-        elif filename is not None and (
-            match := re.match(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", line)
-        ):
+        elif filename is not None and (match := re.match(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", line)):
             in_hunk = True
             start = int(match[1])
             count = int(match[2]) if match[2] is not None else 1
@@ -106,8 +113,7 @@ def diff_summary(candidate: Path, changed: dict[str, set[int]]) -> str:
         if len(uncovered) > 30:
             shown += f", … (+{len(uncovered) - 30} more)"
         lines.append(
-            f"| `{name.replace('|', '&#124;')}` | {len(missing | executed)} | "
-            f"{len(executed)} | {shown or '—'} |"
+            f"| `{name.replace('|', '&#124;')}` | {len(missing | executed)} | {len(executed)} | {shown or '—'} |"
         )
     if omitted:
         lines.append(f"\n{omitted} more modules omitted; see the coverage artifact.")
