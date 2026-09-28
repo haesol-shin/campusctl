@@ -171,7 +171,7 @@ def test_assignment_fetch_json_and_human(tmp_path: Path, monkeypatch: pytest.Mon
     assert "Assignments fetch output selection" in exc_conf.value.message
     assert str(existing_file) not in exc_conf.value.message
 
-    # CDP headless is rejected before navigation; local headless is a candidate.
+    # CDP headless is rejected before navigation; local headless is supported.
     monkeypatch.setattr(
         "campusctl.config.load_config",
         lambda: {"browser": {"cdp_endpoint": "http://browser.invalid:9222"}},
