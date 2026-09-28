@@ -409,6 +409,73 @@ def test_cms_response_binds_selected_transfer_without_page_interceptor(tmp_path:
     asyncio.run(scenario())
 
 
+def test_non_cms_relative_archive_response_binds_and_downloads(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        path = "/term-1/course-1/board/manager-1/post-1/stored.pdf"
+        url = "https://dcs-learning.cnu.ac.kr/file" + path
+        payload = {"header": {"code": 200}, "body": {"is_full": True, "path": path, "name": "example.pdf"}}
+        target = OfficialAttachmentTarget("file-1", "archive", "post-1", "#official-file", url)
+        browser = page(Response(url=url), payload=payload, duplicate_url=url, late_url=url)
+        fetched = await fetch_official_attachment(
+            browser, target, RequestPolicy("example.pdf"), tmp_path, max_bytes=200_000_000
+        )
+        assert browser.context.request.calls == [(url, {}, 0)]
+        assert fetched.temp_path.read_bytes() == BODY
+        assert browser.route_handler is None
+        fetched.temp_path.unlink()
+
+        for stored_name, encoded_name in (
+            ("stored notes.pdf", "stored%20notes.pdf"),
+            ("자료.pdf", "%EC%9E%90%EB%A3%8C.pdf"),
+        ):
+            named_path = path.replace("stored.pdf", stored_name)
+            named_url = url.replace("stored.pdf", encoded_name)
+            named_payload = {
+                "header": {"code": 200},
+                "body": {"is_full": True, "path": named_path, "name": "example.pdf"},
+            }
+            named_target = OfficialAttachmentTarget("file-1", "archive", "post-1", "#official-file", named_url)
+            named_browser = page(
+                Response(url=named_url), payload=named_payload, duplicate_url=named_url, late_url=named_url
+            )
+            named_file = await fetch_official_attachment(
+                named_browser, named_target, RequestPolicy("example.pdf"), tmp_path, max_bytes=200_000_000
+            )
+            assert named_browser.context.request.calls == [(named_url, {}, 0)]
+            assert named_file.temp_path.read_bytes() == BODY
+            named_file.temp_path.unlink()
+
+        unavailable = page(Response(url=url, status=404), payload=payload)
+        with pytest.raises(CampusError) as denied:
+            await fetch_official_attachment(
+                unavailable, target, RequestPolicy("example.pdf"), tmp_path, max_bytes=200_000_000
+            )
+        assert denied.value.code == "policy-blocked"
+        assert unavailable.context.request.calls == [(url, {}, 0)]
+        assert not list(tmp_path.iterdir())
+
+        for bad_path, name in (
+            (path.replace("/post-1/", "/../"), "example.pdf"),
+            (path.replace("/post-1/", "/%2e%2e/"), "example.pdf"),
+            (path.replace("/post-1/", "/other-post/"), "example.pdf"),
+            (path, ""),
+            (path, None),
+        ):
+            bad_payload = {"header": {"code": 200}, "body": {"is_full": True, "path": bad_path}}
+            if name is not None:
+                bad_payload["body"]["name"] = name
+            browser = page(Response(url=url), payload=bad_payload)
+            with pytest.raises(CampusError) as denied:
+                await fetch_official_attachment(
+                    browser, target, RequestPolicy("example.pdf"), tmp_path, max_bytes=200_000_000
+                )
+            assert denied.value.code == "policy-blocked"
+            assert not browser.context.request.calls
+            assert not list(tmp_path.iterdir())
+
+    asyncio.run(scenario())
+
+
 def test_invalid_bodies_and_dispose_failure_leave_no_temp(tmp_path: Path) -> None:
     asyncio.run(_invalid_bodies(tmp_path))
 
