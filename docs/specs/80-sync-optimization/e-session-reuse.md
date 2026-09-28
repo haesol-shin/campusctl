@@ -31,7 +31,9 @@ Keep `ensure_logged_in(page, config, *, target_url, expected_selector, timeout_m
 4. Preserve `login-failed` and `login-action-required` as `user-action`/2; preserve credential-provider errors unchanged; navigation, inconclusive readiness and timeouts remain `lms-unavailable`/1 (`login.py:24-57,89-99,211-247`). No new public error codes.
 5. Do not add mid-operation automatic login/replay. If expiry occurs after the entry probe, existing course/detail identity failures must prevent publication and retain current error/stale semantics. Reopening a notice can add another view, so an uncertain detail attempt must not be retried implicitly. A later explicit invocation can probe and authenticate normally.
 
-This is bounded safety hardening and evidence of already-implemented reuse, not a claim to have newly implemented persistence. If live evidence shows the local profile loses authentication on close, record that as an unresolved LMS/browser lifecycle question; do not silently enable session restoration flags.
+This is bounded safety hardening and evidence of already-implemented reuse, not a claim to have newly implemented persistence.
+
+**Decision (owner, 2026-09-28):** the local profile does not keep the LMS login across invocations. Owner-held sanitized evidence (2026-09-28) shows six sequential invocations sharing one profile, each submitting credentials once in about 4.0–4.5 s, and session-type cookies present after login. campusctl accepts this cost: it closes the browser after each command like a person closing a browser, and does not export cookies, restore sessions or keep a browser running. Callers that need several details use one multi-ID fetch, which logs in once.
 
 ### E2 — Implement approved multi-ID fetch
 
@@ -105,5 +107,5 @@ The run's approved notice reads can affect view/read state as ordinary reading. 
 
 ## Open questions / approval gates
 
-1. Does the actual LMS keep its session across local persistent-context close/reopen, or only in a still-running CDP browser? The baseline `auth` duration alone cannot answer. Verify login/landing origins and selector coexistence before E1 recognition hardening. A live account-identity signal and an authenticated empty-roster marker are also unverified; do not invent selectors or weaken roster checks.
+1. Login/landing origins and selector coexistence remain unverified before E1 recognition hardening. A live account-identity signal and an authenticated empty-roster marker are also unverified; do not invent selectors or weaken roster checks.
 2. Local headless assignment and notice fetch are supported after G2. Multi-ID fetch is approved; sync-plus-fetch is rejected; loopback telemetry is resolved in the operator environment and requires no campusctl change.
