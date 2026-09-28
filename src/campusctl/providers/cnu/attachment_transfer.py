@@ -73,6 +73,22 @@ def _selected_url(payload: Any, target: OfficialAttachmentTarget) -> str:
         ):
             raise _blocked()
         urls = ["https://dcs-lcms.cnu.ac.kr/upload" + quote(path, safe="/")]
+    elif (
+        isinstance(body, dict)
+        and "path" in body
+        and not (isinstance(body["path"], str) and body["path"].startswith(("https://", "http://")))
+    ):
+        path, name = body["path"], body.get("name")
+        if (
+            not isinstance(path, str)
+            or not path.startswith("/")
+            or any(char in path for char in "\\%?#")
+            or any(segment in {".", ".."} for segment in path.split("/"))
+            or not isinstance(name, str)
+            or not name
+        ):
+            raise _blocked()
+        urls = ["https://dcs-learning.cnu.ac.kr/file" + quote(path, safe="/")]
     else:
         urls: list[str] = []
 
