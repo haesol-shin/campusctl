@@ -88,16 +88,20 @@ def _matching_rows(catalog: dict[str, Any], entity_ids: list[str]) -> list[dict[
 
 
 def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    assignments = subparsers.add_parser("assignments", help="inspect cached assignments")
-    assignments.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
+    assignments = subparsers.add_parser("assignments", help="list or fetch assignment details")
+    assignments.add_argument(
+        "--json", action="store_true", default=argparse.SUPPRESS, help="emit the JSON response envelope"
+    )
     commands = assignments.add_subparsers(dest="assignments_command")
     listing = commands.add_parser("list", help="list cached assignments")
-    listing.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
+    listing.add_argument(
+        "--json", action="store_true", default=argparse.SUPPRESS, help="emit the JSON response envelope"
+    )
     listing.add_argument("--course", help="limit results to one course ID")
-    listing.add_argument("--refresh", action="store_true")
-    fetch = commands.add_parser("fetch", help="package selected assignment details")
-    fetch.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
-    fetch.add_argument("entity_ids", nargs="+", metavar="ENTITY_ID", help="full IDs from assignments list")
+    listing.add_argument("--refresh", action="store_true", help="sync assignments before listing")
+    fetch = commands.add_parser("fetch", help="fetch selected assignment details")
+    fetch.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="emit the JSON response envelope")
+    fetch.add_argument("entity_ids", nargs="+", metavar="ID", help="full assignment IDs from the list")
     fetch.add_argument("--out", type=Path, metavar="DIR", help="new package directory")
 
 

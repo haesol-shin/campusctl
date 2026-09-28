@@ -6,7 +6,10 @@ import unicodedata
 from collections.abc import Callable
 from typing import Any, TextIO
 
+from campusctl.catalog import catalog_path
 from campusctl.commands import discover_domain_modules
+from campusctl.domain_catalog import domain_catalog_path
+from campusctl.paths import data_dir
 
 _DOMAIN_RENDERERS: dict[str, Callable[[str, dict[str, Any], int], list[str]]] = {
     name: module.render for name, module in discover_domain_modules().items()
@@ -259,7 +262,19 @@ def _errors(errors: object, width: int, color: bool) -> list[str]:
     for error in errors:
         if not isinstance(error, dict):
             continue
-        sentence, code = _error_sentence(error)
+        if error.get("code") == "catalog-missing" and error.get("domain") in (
+            "lectures",
+            "assignments",
+            "notices",
+            "materials",
+        ):
+            domain = error["domain"]
+            sentence = (
+                f"{domain.capitalize()} catalog is missing; run 'campusctl sync --only {domain}' (catalog-missing)."
+            )
+            code = "catalog-missing"
+        else:
+            sentence, code = _error_sentence(error)
         matches = list(_QUOTED_COMMAND.finditer(sentence))
         commands: list[str] = []
         if matches and _cells(sentence) > width:
@@ -507,7 +522,8 @@ def _cache_advice(result: dict[str, Any], width: int) -> list[str]:
         return []
     lines = []
     if isinstance(cache.get("age_seconds"), int):
-        lines.extend(_wrap(f"Catalog generated {cache['age_seconds']} seconds ago.", width))
+        age = cache["age_seconds"]
+        lines.extend(_wrap(f"Catalog generated {age} {'second' if age == 1 else 'seconds'} ago.", width))
     if cache.get("stale"):
         lines.extend(
             _wrap(
@@ -575,7 +591,11 @@ def _sync(result: dict[str, Any], width: int) -> list[str]:
     courses = result.get("courses", 0)
     lectures = result.get("lectures", 0)
     incomplete = result.get("incomplete", 0)
-    lines = _wrap(f"Synced {courses} courses, {lectures} lectures, {incomplete} unfinished.", width)
+    lines = _wrap(
+        f"Synced {courses} {'course' if courses == 1 else 'courses'}, "
+        f"{lectures} {'lecture' if lectures == 1 else 'lectures'}, {incomplete} unfinished.",
+        width,
+    )
     failed = result.get("failed_courses")
     if isinstance(failed, list):
         for course in failed:
@@ -737,7 +757,28 @@ def render_human(
     elif command in {"sync", "sync.lectures"}:
         lines = _sync(result, terminal_width)
     elif command == "status":
-        lines = _status(result, terminal_width)
+        missing_all = (
+            envelope.get("status") == "user-action"
+            and any(
+                isinstance(error, dict) and error.get("code") == "catalog-missing"
+                for error in envelope.get("errors", [])
+            )
+            and not result
+        )
+        if missing_all:
+            root = data_dir()
+            paths = (
+                catalog_path(root),
+                *(domain_catalog_path(domain, root) for domain in ("assignments", "notices", "materials")),
+            )
+            absent = not any(path.exists() for path in paths)
+            lines = [
+                "No coursework has been synced yet. Next: campusctl sync"
+                if absent
+                else "No readable local catalog is available. Next: campusctl sync"
+            ]
+        else:
+            lines = _status(result, terminal_width)
     elif command == "lectures.play":
         lines = _play(result, terminal_width)
     elif command == "doctor":
@@ -751,6 +792,14 @@ def render_human(
     if command in {"lectures.list", "assignments.list", "notices.list", "materials.list"}:
         lines.extend(_cache_advice(result, terminal_width))
     error_values = envelope.get("errors")
+    if command == "status" and missing_all:
+        error_values = []
+    if isinstance(error_values, list) and command.split(".")[0] in ("lectures", "assignments", "notices", "materials"):
+        domain = command.split(".")[0]
+        error_values = [
+            {**error, "domain": domain} if isinstance(error, dict) and error.get("code") == "catalog-missing" else error
+            for error in error_values
+        ]
     if command == "doctor" and suppress_catalog_error:
         error_values = []
     errors = _errors(error_values, terminal_width, color)

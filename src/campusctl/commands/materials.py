@@ -25,18 +25,24 @@ CAPABILITY: dict[str, Any] = {"commands": ["list", "download"]}
 
 
 def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    from campusctl.cli import EnvelopeArgumentParser
+    from campusctl.cli import _OUTPUT_NOTE, EnvelopeArgumentParser
 
-    domain = subparsers.add_parser("materials", help="inspect and download official course materials")
-    domain.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
+    domain = subparsers.add_parser("materials", help="list or download official files")
+    domain.add_argument(
+        "--json", action="store_true", default=argparse.SUPPRESS, help="emit the JSON response envelope"
+    )
     commands = domain.add_subparsers(dest="materials_command", parser_class=EnvelopeArgumentParser)
     listing = commands.add_parser("list", help="list cached archive files")
-    listing.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
+    listing.add_argument(
+        "--json", action="store_true", default=argparse.SUPPRESS, help="emit the JSON response envelope"
+    )
     listing.add_argument("--course", help="limit results to one course ID")
-    listing.add_argument("--refresh", action="store_true")
-    download = commands.add_parser("download", help="save one selected archive file")
-    download.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
-    download.add_argument("entity_id", nargs="?", help="full ID or printed human number")
+    listing.add_argument("--refresh", action="store_true", help="sync materials before listing")
+    download = commands.add_parser("download", help="download one official file", epilog=_OUTPUT_NOTE)
+    download.add_argument(
+        "--json", action="store_true", default=argparse.SUPPRESS, help="emit the JSON response envelope"
+    )
+    download.add_argument("entity_id", nargs="?", metavar="ID", help="full material ID or printed number")
     download.add_argument("--out", type=Path, help="destination directory")
 
 

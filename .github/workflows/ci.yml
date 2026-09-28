@@ -246,7 +246,7 @@ jobs:
                   raise AssertionError(f"{name} did not resolve under the uv tool bin directory: {path}")
 
           help_result = subprocess.run(["campusctl", "--help", "--json"], capture_output=True, timeout=30)
-          if help_result.returncode != 0 or b"Campus LMS control CLI" not in help_result.stdout:
+          if help_result.returncode != 0 or b"Check CNU coursework from the terminal or an AI agent." not in help_result.stdout:
               raise AssertionError("campusctl --help did not complete successfully")
 
           temp_root = os.path.join(os.environ["RUNNER_TEMP"], "campusctl-smoke-" + os.urandom(8).hex())

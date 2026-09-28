@@ -20,6 +20,8 @@ JSON responses carry `status`, `result` and `errors` in a versioned envelope. Sc
 
 `status` and list commands read local catalogs without network access. Pass `--refresh` to a list command or run `campusctl sync` when you need current data. A stale warning, unknown enrollment, failed course or missing coverage means an empty or filtered list may be incomplete; check the LMS when a domain cannot be refreshed. `campusctl status` summarizes assignments due soon, unread notices and open unfinished lectures from the available local catalogs.
 
+Before the first sync, human `campusctl status` says “No coursework has been synced yet. Next: campusctl sync” rather than reporting zero counts. If local catalog files exist but none can be read, it asks you to resync instead. Missing catalog errors name the affected domain and its sync command without showing local paths. JSON errors and exit codes remain unchanged.
+
 ## Courses, numbers and IDs
 
 In human output, `campusctl courses list` numbers courses for `--course NUMBER`; a unique part of a course name also works. `campusctl materials list` numbers files for `campusctl materials download NUMBER`. With no ID, material download offers a single-file picker in an interactive terminal.
@@ -47,7 +49,7 @@ Course: Practice Course
 
 To play one: campusctl lectures play cnu_lecture:example-course:welcome-01
 To refresh: campusctl sync
-Catalog generated 1 seconds ago.
+Catalog generated 1 second ago.
 ```
 
 Play only a lecture you chose by its full ID with `campusctl lectures play ID`. Playback uses the official player in a visible browser, one lecture at a time; campusctl checks the LMS row afterward and sends no separate progress or attendance request. It does not seek ahead, fake progress, force unsupported speeds or play in the background. YouTube uses native autoplay at 1x only; other supported media use only rates their player supports.
