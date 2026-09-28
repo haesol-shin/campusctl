@@ -695,7 +695,6 @@ def test_todo_accepts_filtered_grid_when_response_covers_total(
     assert minimum <= clock.now() < minimum + 0.1
 
 
-
 def test_todo_without_pager_accepts_visible_rows_below_server_total(monkeypatch: pytest.MonkeyPatch) -> None:
     page = FakePage()
     page.handler = lambda route: route.continue_()
@@ -709,9 +708,7 @@ def test_todo_without_pager_accepts_visible_rows_below_server_total(monkeypatch:
         }
         for number in range(1, 6)
     ]
-    page.todo_response = {
-        "body": {"list": [{"row_idx": number} for number in range(1, 6)], "tot_cnt": 10}
-    }
+    page.todo_response = {"body": {"list": [{"row_idx": number} for number in range(1, 6)], "tot_cnt": 10}}
     monkeypatch.setattr(notices, "_ORIGIN", L)
     monkeypatch.setattr(notices, "_TODO_URL", L + "/std/todo")
     clock = VirtualClock()
