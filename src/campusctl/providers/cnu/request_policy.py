@@ -36,9 +36,9 @@ ALLOWED_EXTENSIONS = frozenset(
     ]
 )
 _OBSERVED = {
-    "pdf": "application/x-pdf",
-    "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-    "zip": "application/zip",
+    "pdf": frozenset({"application/pdf", "application/x-pdf"}),
+    "pptx": frozenset({"application/vnd.openxmlformats-officedocument.presentationml.presentation"}),
+    "zip": frozenset({"application/zip"}),
 }
 _OLE = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
 _HEADERS = {
@@ -99,7 +99,7 @@ def guard_response(
     if mime and mime.startswith(("video/", "audio/")):
         raise _unsupported()
     expected = _OBSERVED.get(policy.extension)
-    if expected is not None and mime != expected:
+    if expected is not None and mime not in expected:
         raise _unsupported()
 
 

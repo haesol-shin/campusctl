@@ -5,7 +5,6 @@
   ],
   "responses": [
     {"name": "observed-pdf", "filename": "example.pdf", "mime": "application/x-pdf", "hex": "255044462d312e340a", "valid": true},
-    {"name": "pdf-wrong-mime", "filename": "example.pdf", "mime": "application/pdf", "hex": "255044462d312e340a", "valid": false},
     {"name": "observed-pptx", "filename": "example.pptx", "mime": "application/vnd.openxmlformats-officedocument.presentationml.presentation", "zip_entries": ["[Content_Types].xml"], "valid": true},
     {"name": "pptx-wrong-mime", "filename": "example.pptx", "mime": "application/zip", "zip_entries": ["[Content_Types].xml"], "valid": false},
     {"name": "pptx-missing-entry", "filename": "example.pptx", "mime": "application/vnd.openxmlformats-officedocument.presentationml.presentation", "zip_entries": ["other.xml"], "valid": false},
