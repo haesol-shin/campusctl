@@ -588,6 +588,19 @@ def test_layout_validation_and_environment(tmp_path: Path, monkeypatch: pytest.M
         with pytest.raises(CampusError) as failure:
             resolve_download_layout(template, row, None)
         assert failure.value.code == "config-invalid"
+    with pytest.raises(CampusError) as failure:
+        validate_config(
+            {"materials": {"download_dir": str(tmp_path / "bad\u0085" / "{course}")}},
+            path=tmp_path / "config.toml",
+        )
+    assert failure.value.code == "config-invalid"
+    with pytest.raises(CampusError) as failure:
+        resolve_download_layout(
+            {"materials": {"download_dir": str(tmp_path / "{semester}"), "semester": "bad\u0085"}},
+            row,
+            None,
+        )
+    assert failure.value.code == "config-invalid"
     for invalid in ("relative/{course}", str(tmp_path / "{unknown}"), str(tmp_path / "../{course}")):
         with pytest.raises(CampusError):
             resolve_download_layout({"materials": {"download_dir": invalid}}, row, None)

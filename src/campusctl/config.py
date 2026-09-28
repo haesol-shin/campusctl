@@ -44,7 +44,7 @@ def _material_component(value: str, key: str, path: Path) -> None:
         or normalized.endswith((" ", "."))
         or len(normalized.encode("utf-8")) > 200
         or _DEVICE.fullmatch(normalized)
-        or any(ord(ch) < 32 or ord(ch) == 127 or ch in '<>:"|?*\\/' for ch in normalized)
+        or any(unicodedata.category(ch) == "Cc" or ch in '<>:"|?*\\/' for ch in normalized)
     ):
         raise _invalid(path, key, "unsafe path component")
 

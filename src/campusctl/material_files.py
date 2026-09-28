@@ -179,7 +179,7 @@ def _layout_component(raw: str, key: str, *, course_label: bool = False) -> str:
         or not raw.strip()
         or raw.startswith(("/", "\\"))
         or re.match(r"^[A-Za-z]:", raw)
-        or any(ord(ch) < 32 or ord(ch) == 127 for ch in raw)
+        or any(unicodedata.category(ch) == "Cc" for ch in raw)
         or any(part in {".", ".."} for part in re.split(r"[/\\]", raw))
         or (not course_label and ("/" in raw or "\\" in raw))
     ):
