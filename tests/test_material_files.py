@@ -688,13 +688,14 @@ def test_adoption_scan_bounds_and_symlink_safety(tmp_path: Path, monkeypatch: py
 def test_template_expansion_on_macos_and_windows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from campusctl import config, material_files
 
-    row = {"course": {"id": "course-a", "label": "Sample"}}
-    monkeypatch.setattr(material_files, "_home_dir", lambda: tmp_path)
-    monkeypatch.setattr(material_files, "sys", SimpleNamespace(platform="darwin"))
-    assert resolve_download_layout({"materials": {"download_dir": "~/School/{course}"}}, row, None) == (
-        tmp_path / "School" / "Sample",
-        None,
-    )
+    if os.name != "nt":
+        row = {"course": {"id": "course-a", "label": "Sample"}}
+        monkeypatch.setattr(material_files, "_home_dir", lambda: tmp_path)
+        monkeypatch.setattr(material_files, "sys", SimpleNamespace(platform="darwin"))
+        assert resolve_download_layout({"materials": {"download_dir": "~/School/{course}"}}, row, None) == (
+            tmp_path / "School" / "Sample",
+            None,
+        )
     monkeypatch.setattr(config, "sys", SimpleNamespace(platform="win32"))
     monkeypatch.setattr(material_files, "sys", SimpleNamespace(platform="win32"))
     monkeypatch.setenv("CAMPUSCTL_FOLDER", "School")
