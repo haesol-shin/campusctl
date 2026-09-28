@@ -66,6 +66,8 @@ adopt_existing = true
 
 `adopt_existing` defaults to `false`. Enabling it requires exactly one `{course}` or `{course_id}` component; the configured destination must be no deeper than four child-directory levels below that course root. After every first-time official verified transfer, campusctl scans at most four levels and checks matching-name existing files by size, start/end samples and full bytes (samples alone cannot authorize adoption), with limits of 10,000 entries and 1,000,000,000 candidate bytes read. An identical file in the destination is reused; one elsewhere under the course root is adopted in place. A private receipt allows later retries to skip the transfer only after verifying the exact output directory and file bytes; adopted receipts also require the same course root. `doctor` validates configuration and environment references without creating directories or scanning files; its JSON `result.materials` describes the raw settings, while human output reports only default/configured and adoption on/off.
 
+Windows cannot yet pin every scanned directory and reparse-point target securely, so opt-in adoption fails closed with `output-path-conflict` rather than using an unverified match. Leave `adopt_existing = false` for ordinary configured downloads on Windows.
+
 `playback.default_speed` accepts `1.0`, `1.25`, or `1.5`. On Windows, write absolute TOML paths with forward slashes (for example, `C:/path/to/file`) or use single-quoted TOML literal strings.
 
 ## Authentication and first-run check
