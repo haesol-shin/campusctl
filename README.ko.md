@@ -19,6 +19,30 @@
 - **내 컴퓨터에만 보관.** 비밀번호는 운영체제 키링에, 목록은 로컬 폴더에 저장합니다.
 - **가볍게 실행.** Windows, macOS, Linux에서 백그라운드 서비스 없이 필요할 때만 실행합니다.
 
+## AI 에이전트에서 사용하기
+
+코딩 에이전트에게 campusctl 스킬 설치를 요청합니다. 다음 문구를 붙여 넣습니다:
+
+```text
+Install only the campusctl agent skill for my user account.
+Clone https://github.com/haesol-shin/campusctl.git to a stable location such as ~/src/campusctl, or update that clone if it already exists.
+Put the complete skills/campusctl directory, including its agents subdirectory, in this harness's documented user-level skills directory; prefer a symlink where supported and otherwise copy it.
+Do not change unrelated files or global shell configuration.
+Check whether `campusctl --version --json` runs and report its result; if campusctl is not already installed or not on PATH, report that instead of installing it.
+Do NOT run `campusctl auth set`, ask for or handle passwords, run `campusctl sync`, or run `campusctl lectures play`.
+Report the clone path, skill destination, link/copy choice, and verification result, then tell me to restart the agent.
+```
+
+직접 설치하려면 다음 명령 중 하나를 실행합니다:
+
+```sh
+npx skills add https://github.com/haesol-shin/campusctl -g
+# or
+bunx skills add https://github.com/haesol-shin/campusctl -g
+```
+
+스킬은 campusctl 자체를 설치하지 않습니다. 아래 [빠른 시작](#quick-start)을 따릅니다. 수동 설치 방법은 [에이전트 스킬 안내](docs/agent-skill.ko.md)에 있습니다.
+
 ## 필요 조건
 
 - [uv](https://docs.astral.sh/uv/getting-started/installation/): campusctl을 설치하고 실행할 때 사용합니다.
@@ -120,18 +144,6 @@ campusctl materials download 1
 강의 목록과 브라우저 프로필은 campusctl의 로컬 데이터 폴더에 보관합니다. 명령이 끝나면 로컬 브라우저 세션이 닫힙니다. 경로와 공유 브라우저 설정은 [설정 안내](docs/configuration.ko.md)를 참고합니다.
 
 </details>
-
-## AI 에이전트에서 사용하기
-
-다음 명령 중 하나로 스킬을 전역 설치합니다:
-
-```sh
-npx skills add https://github.com/haesol-shin/campusctl -g
-# or
-bunx skills add https://github.com/haesol-shin/campusctl -g
-```
-
-수동 설치 방법과 복사해 쓸 문구는 [에이전트 스킬 안내](docs/agent-skill.ko.md)에 있습니다.
 
 ## 한계
 

@@ -19,6 +19,30 @@
 - **Stays on your computer.** Your password stays in the OS keyring and your lists in a local folder.
 - **Lightweight.** Run on demand on Windows, macOS or Linux without a background service.
 
+## Use with AI agents
+
+Ask your coding agent to install the campusctl skill. Paste this prompt:
+
+```text
+Install only the campusctl agent skill for my user account.
+Clone https://github.com/haesol-shin/campusctl.git to a stable location such as ~/src/campusctl, or update that clone if it already exists.
+Put the complete skills/campusctl directory, including its agents subdirectory, in this harness's documented user-level skills directory; prefer a symlink where supported and otherwise copy it.
+Do not change unrelated files or global shell configuration.
+Check whether `campusctl --version --json` runs and report its result; if campusctl is not already installed or not on PATH, report that instead of installing it.
+Do NOT run `campusctl auth set`, ask for or handle passwords, run `campusctl sync`, or run `campusctl lectures play`.
+Report the clone path, skill destination, link/copy choice, and verification result, then tell me to restart the agent.
+```
+
+Or install the skill yourself with either command:
+
+```sh
+npx skills add https://github.com/haesol-shin/campusctl -g
+# or
+bunx skills add https://github.com/haesol-shin/campusctl -g
+```
+
+The skill does not install campusctl itself; follow the [quick start](#quick-start) below. See [the agent skill guide](docs/agent-skill.md) for manual installs.
+
 ## Prerequisites
 
 - [uv](https://docs.astral.sh/uv/getting-started/installation/) to install and run campusctl
@@ -120,18 +144,6 @@ The `1` comes from your most recent `materials list`; full IDs work without list
 The catalog and browser profile stay in campusctl's local data directory; the local browser context closes when the command ends. See the [configuration guide](docs/configuration.md) for the paths and shared-browser options.
 
 </details>
-
-## Use with AI agents
-
-Install the skill globally with either command:
-
-```sh
-npx skills add https://github.com/haesol-shin/campusctl -g
-# or
-bunx skills add https://github.com/haesol-shin/campusctl -g
-```
-
-See [details, manual install, and a copy-paste prompt](docs/agent-skill.md).
 
 ## Limitations
 
