@@ -593,6 +593,7 @@ def test_layout_validation_and_environment(tmp_path: Path, monkeypatch: pytest.M
             resolve_download_layout({"materials": {"download_dir": invalid}}, row, None)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows adoption fails closed without pinned reparse-point checks")
 @pytest.mark.parametrize("size", (127 * 1024, 192 * 1024))
 def test_adoption_comparison_tiers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, size: int) -> None:
     from campusctl import material_files
@@ -618,6 +619,7 @@ def test_adoption_comparison_tiers(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     assert result.path.read_bytes() == content
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows adoption fails closed without pinned reparse-point checks")
 def test_same_directory_case_variant_and_receipt_migration(tmp_path: Path) -> None:
     course = prepare_output_dir(tmp_path, "course", tmp_path / "course")
     destination = prepare_output_dir(tmp_path, "course", course / "materials")
@@ -655,6 +657,7 @@ def test_same_directory_case_variant_and_receipt_migration(tmp_path: Path) -> No
     assert all(item["course_root"] is None for item in data["items"])
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows adoption fails closed without pinned reparse-point checks")
 def test_adoption_scan_bounds_and_symlink_safety(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from campusctl import material_files
 

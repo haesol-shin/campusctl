@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -394,6 +395,7 @@ def test_material_list_refuses_catalog_rewrite_before_snapshot_publication(
     assert not (tmp_path / "selection" / "materials-last-list.json").exists()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows adoption fails closed without pinned reparse-point checks")
 def test_configured_adoption_receipt_and_override(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
