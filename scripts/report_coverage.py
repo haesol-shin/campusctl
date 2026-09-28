@@ -87,9 +87,26 @@ def changed_lines(base: str) -> dict[str, set[int]]:
     return result
 
 
-def diff_summary(candidate: Path, changed: dict[str, set[int]]) -> str:
-    """Show only changed executable statements, bounded for job-summary readability."""
+def diff_report(candidate: Path, changed: dict[str, set[int]]) -> dict[str, dict[str, list[int]]]:
+    """Keep the complete statement intersections for the coverage artifact."""
     files = json.loads(candidate.read_text())["files"]
+    result: dict[str, dict[str, list[int]]] = {}
+    for name in sorted(changed):
+        entry = files.get(name)
+        if entry is None:
+            continue
+        missing = set(entry["missing_lines"]) & changed[name]
+        executed = set(entry["executed_lines"]) & changed[name]
+        result[name] = {
+            "changed_statements": sorted(missing | executed),
+            "covered_lines": sorted(executed),
+            "uncovered_lines": sorted(missing),
+        }
+    return result
+
+
+def diff_summary(files: dict[str, dict[str, list[int]]]) -> str:
+    """Show bounded statement intersections, linking truncation to the full artifact."""
     lines = [
         "### PR diff coverage",
         "",
@@ -99,24 +116,22 @@ def diff_summary(candidate: Path, changed: dict[str, set[int]]) -> str:
         "| --- | ---: | ---: | --- |",
     ]
     omitted = 0
-    for name in sorted(changed):
-        entry = files.get(name)
-        if entry is None:
-            continue
-        missing = set(entry["missing_lines"]) & changed[name]
-        executed = set(entry["executed_lines"]) & changed[name]
-        uncovered = sorted(missing)
-        if len(lines) >= 45:
+    for name, entry in files.items():
+        uncovered = entry["uncovered_lines"]
+        if len(lines) >= 46:
             omitted += 1
             continue
         shown = ", ".join(map(str, uncovered[:30]))
         if len(uncovered) > 30:
             shown += f", … (+{len(uncovered) - 30} more)"
         lines.append(
-            f"| `{name.replace('|', '&#124;')}` | {len(missing | executed)} | {len(executed)} | {shown or '—'} |"
+            f"| `{name.replace('|', '&#124;')}` | {len(entry['changed_statements'])} | "
+            f"{len(entry['covered_lines'])} | {shown or '—'} |"
         )
     if omitted:
-        lines.append(f"\n{omitted} more modules omitted; see the coverage artifact.")
+        lines.append(f"\n{omitted} more modules omitted; download `diff-coverage.json` from the `browser-coverage` artifact for all lines.")
+    elif any(len(entry["uncovered_lines"]) > 30 for entry in files.values()):
+        lines.append("\nDownload `diff-coverage.json` from the `browser-coverage` artifact for all uncovered lines.")
     elif len(lines) == 6:
         lines.append("| No changed executable statements | 0 | 0 | — |")
     return "\n".join(lines) + "\n"
@@ -126,7 +141,9 @@ if __name__ == "__main__":
     report = summary(Path("coverage.json"), Path("baseline/coverage.json"))
     if os.environ.get("GITHUB_EVENT_NAME") == "pull_request":
         try:
-            report += "\n" + diff_summary(Path("coverage.json"), changed_lines(os.environ["PR_BASE_SHA"]))
+            diff = diff_report(Path("coverage.json"), changed_lines(os.environ["PR_BASE_SHA"]))
+            Path("diff-coverage.json").write_text(json.dumps({"files": diff}, indent=2) + "\n")
+            report += "\n" + diff_summary(diff)
         except (OSError, KeyError, ValueError, subprocess.CalledProcessError) as exc:
             report += f"\n### PR diff coverage\n\nUnavailable: {type(exc).__name__}; see coverage artifact.\n"
     with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a") as output:

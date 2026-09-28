@@ -107,7 +107,8 @@ def test_diff_coverage_reports_only_changed_executable_lines(tmp_path: Path, mon
             }
         )
     )
-    report = report_coverage.diff_summary(candidate, changed)
+    intersections = report_coverage.diff_report(candidate, changed)
+    report = report_coverage.diff_summary(intersections)
     assert "| `src/campusctl/logic.py` | 2 | 1 | 3 |" in report
     assert "| `src/campusctl/moved.py` | 1 | 0 | 2 |" in report
     assert "| `src/campusctl/fresh.py` | 1 | 1 | — |" in report
@@ -128,6 +129,38 @@ def test_diff_coverage_reports_only_changed_executable_lines(tmp_path: Path, mon
     rendered = job_summary.read_text()
     assert "Comparable main baseline missing" in rendered
     assert "| `src/campusctl/logic.py` | 2 | 1 | 3 |" in rendered
+    artifact = json.loads((tmp_path / "diff-coverage.json").read_text())["files"]
+    assert artifact["src/campusctl/logic.py"] == {
+        "changed_statements": [1, 3],
+        "covered_lines": [1],
+        "uncovered_lines": [3],
+    }
+
+
+def test_truncated_summary_references_complete_intersection_artifact(tmp_path: Path) -> None:
+    changed = {f"src/campusctl/{index:02}.py": {1} for index in range(42)}
+    changed["src/campusctl/00.py"] = set(range(1, 41))
+    candidate = tmp_path / "coverage.json"
+    candidate.write_text(
+        json.dumps(
+            {
+                "files": {
+                    name: {"executed_lines": [], "missing_lines": sorted(lines)}
+                    for name, lines in changed.items()
+                }
+            }
+        )
+    )
+
+    intersections = report_coverage.diff_report(candidate, changed)
+    summary = report_coverage.diff_summary(intersections)
+
+    assert intersections["src/campusctl/00.py"]["uncovered_lines"] == list(range(1, 41))
+    assert intersections["src/campusctl/41.py"]["uncovered_lines"] == [1]
+    assert "… (+10 more)" in summary
+    assert "src/campusctl/41.py" not in summary
+    assert "2 more modules omitted" in summary
+    assert "download `diff-coverage.json` from the `browser-coverage` artifact" in summary
 
 
 def test_deleted_lines_have_no_new_side_statement(tmp_path: Path, monkeypatch) -> None:

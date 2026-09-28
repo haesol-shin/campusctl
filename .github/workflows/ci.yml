@@ -132,13 +132,6 @@ jobs:
           key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('uv.lock') }}
       - run: uv run playwright install --with-deps chromium
       - run: uv run pytest -q --cov=campusctl --cov-report=json:coverage.json -o faulthandler_timeout=30
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: browser-coverage
-          path: coverage.json
-          if-no-files-found: ignore
-          retention-days: 30
       - name: Report per-file and PR diff coverage
         if: always()
         continue-on-error: true
@@ -155,6 +148,15 @@ jobs:
             gh run download "$run_id" --repo "$GITHUB_REPOSITORY" --name browser-coverage --dir baseline || true
           fi
           python scripts/report_coverage.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: browser-coverage
+          path: |
+            coverage.json
+            diff-coverage.json
+          if-no-files-found: ignore
+          retention-days: 30
 
   windows-smoke:
     name: Windows installation and runtime smoke
