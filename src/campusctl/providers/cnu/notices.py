@@ -473,11 +473,7 @@ async def _grid_snapshot(page: Any, capture: _TodoCapture) -> list[dict[str, Any
                             not require_next and snapshot.get("next_disabled") is True
                         ):
                             return snapshot
-                        if (
-                            not require_next
-                            and not pagination_present
-                            and now - unchanged_since >= _GRID_NO_CONTROL_QUIET_SECONDS
-                        ):
+                        if not pagination_present and now - unchanged_since >= _GRID_NO_CONTROL_QUIET_SECONDS:
                             return snapshot
                 else:
                     signature = None

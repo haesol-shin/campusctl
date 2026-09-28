@@ -695,6 +695,39 @@ def test_todo_accepts_filtered_grid_when_response_covers_total(
     assert minimum <= clock.now() < minimum + 0.1
 
 
+
+def test_todo_without_pager_accepts_visible_rows_below_server_total(monkeypatch: pytest.MonkeyPatch) -> None:
+    page = FakePage()
+    page.handler = lambda route: route.continue_()
+    page.todo = [
+        {
+            "number": str(number),
+            "course_label": "Example Course",
+            "title": f"Visible {number}",
+            "date": "2026-09-01 08:00",
+            "read_yn": "읽음",
+        }
+        for number in range(1, 6)
+    ]
+    page.todo_response = {
+        "body": {"list": [{"row_idx": number} for number in range(1, 6)], "tot_cnt": 10}
+    }
+    monkeypatch.setattr(notices, "_ORIGIN", L)
+    monkeypatch.setattr(notices, "_TODO_URL", L + "/std/todo")
+    clock = VirtualClock()
+
+    async def collect() -> tuple[dict[str, list[dict[str, Any]]], set[str]]:
+        capture = await notices.open_notice_todo(page)
+        return await notices.collect_notice_todo(page, COURSES, capture=capture)
+
+    rows, failures = asyncio.run(drive(collect(), clock))
+    assert failures == set()
+    assert [item["title"] for item in rows["course-a"]] == [f"Visible {number}" for number in range(1, 6)]
+    assert rows["course-b"] == []
+    assert 1.5 <= clock.now() < 1.6
+    assert not page.listeners
+
+
 def test_todo_waits_for_late_rows_and_next_before_collecting(monkeypatch: pytest.MonkeyPatch) -> None:
     first = {
         "number": "1",
@@ -766,11 +799,11 @@ def test_todo_waits_for_late_rows_and_next_before_collecting(monkeypatch: pytest
 
 
 @pytest.mark.parametrize(
-    ("response_complete", "control_hidden"),
-    [(False, False), (True, False), (True, True)],
+    ("response_complete", "pending_control"),
+    [(False, "absent"), (True, "absent"), (True, "hidden"), (False, "disabled")],
 )
 def test_todo_waits_for_late_next_after_response_settles(
-    monkeypatch: pytest.MonkeyPatch, response_complete: bool, control_hidden: bool
+    monkeypatch: pytest.MonkeyPatch, response_complete: bool, pending_control: str
 ) -> None:
     first = {
         "number": "1",
@@ -805,9 +838,9 @@ def test_todo_waits_for_late_next_after_response_settles(
                     "empty": False,
                     "rows": [first],
                     "next": next_page,
-                    "next_present": control_hidden or next_page is not None,
-                    "next_disabled": False,
-                    "pagination_present": control_hidden or next_page is not None,
+                    "next_present": pending_control != "absent" or next_page is not None,
+                    "next_disabled": pending_control == "disabled" and next_page is None,
+                    "pagination_present": pending_control != "absent" or next_page is not None,
                 }
             return await super().evaluate(expression)
 
@@ -860,15 +893,12 @@ def test_todo_outer_timeout_cancels_pending_response_and_closes_capture(monkeypa
     assert not page.listeners
 
 
-@pytest.mark.parametrize(
-    ("response_complete", "pagination_shell"),
-    [(False, False), (True, True)],
-)
-def test_todo_missing_terminal_proof_times_out(
-    monkeypatch: pytest.MonkeyPatch, response_complete: bool, pagination_shell: bool
+@pytest.mark.parametrize("response_complete", [False, True])
+def test_todo_present_pagination_without_enabled_next_times_out(
+    monkeypatch: pytest.MonkeyPatch, response_complete: bool
 ) -> None:
     page = FakePage()
-    page.todo_pagination_shell = pagination_shell
+    page.todo_pagination_shell = True
     page.handler = lambda route: route.continue_()
     page.todo = [
         {
