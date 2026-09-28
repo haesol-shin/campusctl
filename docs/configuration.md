@@ -1,3 +1,5 @@
+**English** | [한국어](configuration.ko.md)
+
 # Configuration
 
 `campusctl` uses a local TOML file for the account name and runtime settings. By default, the password stays in your operating system keyring; do not put it in `config.toml`, command arguments, or environment variables.

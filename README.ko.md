@@ -1,175 +1,80 @@
-<h1 align="center">campusctl</h1>
+[English](README.md) | **한국어**
 
-<p align="center">
-  <a href="https://github.com/haesol-shin/campusctl/actions/workflows/ci.yml?query=branch%3Amain"><img src="https://github.com/haesol-shin/campusctl/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
-  <img src="https://img.shields.io/badge/Python-%3E%3D3.11%20%7C%20Windows%20%7C%20macOS%20%7C%20Linux-3776AB" alt="Python >=3.11 · Windows · macOS · Linux">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
-</p>
-<p align="center"><a href="README.md">English</a> | <b>한국어</b></p>
-<p align="center">자세한 문서는 영어로 제공됩니다.</p>
+충남대 LMS 강의와 과제, 공지, 자료를 터미널이나 AI 에이전트에서 확인하세요.
 
-<p align="center"><em>터미널이나 AI 에이전트를 통해 캠퍼스 강의 진행 상황을 확인하세요.</em></p>
+`campusctl`은 충남대 학생이 강의·과제·공지·자료를 터미널이나 AI 에이전트에서 확인할 수 있도록 일반 LMS 브라우저로 동기화하는 로컬 CLI이며, 현재 충남대(CNU) LMS만 지원합니다.
 
-`campusctl`은 충남대학교(Chungnam National University, CNU) LMS의 강의, 과제, 과목 공지, 자료를 확인하는 로컬 CLI입니다. 현재 CNU LMS만 지원합니다. 목록은 로컬에 보관하고 LMS 작업에는 Chromium을 사용합니다.
-
-## 주요 기능
-
-- `campusctl sync` 한 번으로 네 영역의 자료를 함께 동기화하며 과목당 한 번 선택합니다.
-- `campusctl lectures list`로 미완료 강의를, `campusctl status`로 과제·공지·강의 현황을 확인합니다.
-- `sync --only DOMAIN`으로 영역을 좁히거나 목록의 `--refresh`로 해당 영역만 새로 고칩니다.
-- 전체 ID로 명시적으로 선택한 과제 또는 공지 하나 이상을 한 번에 읽기 쉬운 패키지로 가져옵니다. 공지를 열면 조회수와 읽음 상태가 바뀔 수 있습니다.
-- 선택한 자료 하나를 운영체제의 다운로드 폴더 아래 `campusctl/<과목 이름>/`에 저장합니다.
-- 한 번에 하나씩 화면이 표시되는 브라우저에서 CNU 공식 플레이어로 강의를 재생하고, 이후 LMS 상태를 확인합니다.
-- 스크립트와 에이전트에서 사용할 수 있는 JSON 출력을 제공합니다.
-- 기본적으로 운영체제 키링에 비밀번호를 보관합니다.
-- 백그라운드 서비스나 상주 브라우저 없이 Windows, macOS, Linux에서 실행합니다.
-
-## 설치
-
-먼저 [uv](https://docs.astral.sh/uv/getting-started/installation/)와 [Git](https://git-scm.com/downloads)을 설치합니다. campusctl에는 Python 3.11 이상이 필요합니다.
-
-### Windows (PowerShell)
-
-```powershell
-uv tool install --with-executables-from playwright git+https://github.com/haesol-shin/campusctl
-uv tool update-shell
-```
-
-### macOS
-
-```bash
-uv tool install --with-executables-from playwright git+https://github.com/haesol-shin/campusctl
-uv tool update-shell
-```
-
-### Linux
-
-```bash
-uv tool install --with-executables-from playwright git+https://github.com/haesol-shin/campusctl
-uv tool update-shell
-```
-
-설치 후 새 터미널을 열고 `campusctl setup`으로 설정, Chromium 설치, 자격 증명, 선택적 첫 동기화를 순서대로 진행하세요. 비대화형 또는 JSON 모드에서는 브라우저만 확인·설치하므로 `campusctl config init --username ID`와 `campusctl auth set`을 별도로 사용하세요.
-
-Linux에서는 필요할 경우 다음 명령으로 브라우저 시스템 라이브러리를 설치합니다:
-
-```bash
-uv tool run --from playwright playwright install-deps chromium
-```
-
-이 명령은 관리자 권한을 요구할 수 있습니다. PATH 설정, Linux 시스템 라이브러리, 브라우저 캐시 위치, 버전 고정, 업데이트, 제거 또는 체크아웃 설치는 [설치 안내](docs/installation.md)를 참조하세요. 명령을 찾을 수 없으면 `uv tool update-shell`을 실행하고 새 터미널을 여세요.
-
-## 빠른 시작
-
-터미널에서 안내에 따라 설정하세요. 비밀번호 입력은 화면에 표시되지 않으며 기본적으로 운영체제 키링에 저장됩니다. 첫 전체 동기화는 선택 사항입니다.
-
-```console
-$ campusctl setup
-$ campusctl sync
-$ campusctl status
-$ campusctl lectures list
-$ campusctl courses list
-$ campusctl assignments list
-$ campusctl notices list
-$ campusctl assignments fetch <ASSIGNMENT_ENTITY_ID>
-$ campusctl notices fetch <NOTICE_ENTITY_ID>
-$ campusctl materials list
-$ campusctl materials download 1
-```
-
-`sync`는 한 브라우저 세션에서 강의·과제·공지·자료를 모두 갱신하고 과목당 한 번 선택합니다. `--only lectures,notices`로 영역을 제한할 수 있습니다. 과목이나 영역이 실패하면 이전 목록은 유지하고 부분 실패를 표시합니다. 목록은 `--refresh`를 지정하지 않으면 네트워크를 사용하지 않습니다. `campusctl --profile sync`(또는 `--refresh`를 지정한 목록)는 표준 오류 출력에 `campusctl-profile:` JSON 한 줄을 기록합니다. 스키마 버전 2에는 구간별 시간(`spans`), 문서 시간(`documents`), 잠금 구간(`coverage`)과 실패한 검사만 담는 `diagnostics`가 포함됩니다. 페이지 준비 상태, 과목 식별, 할 일 표, 자료실 상태 및 모달 연결의 실패 기록에는 과목 이름이나 URL 대신 실행 중에만 유효한 과목 순번을 사용합니다. 측정값은 성능을 보장하지 않습니다.
-
-사람이 읽는 출력에서 `courses list`의 번호나 고유한 과목 이름 일부를 `--course`에 지정할 수 있습니다. `materials list`의 번호는 `materials download 번호`에 쓰며, 인자 없이 실행하면 대화형 터미널에서 파일 한 개를 선택합니다. 번호는 마지막으로 출력한 목록에 묶여 있어 카탈로그가 바뀌면 무효가 됩니다. 전체 ID는 목록 기록 없이 사용할 수 있으며 `--json`에서는 전체 ID가 필요합니다. 선택한 공식 첨부파일 한 개는 운영체제 다운로드 폴더의 `campusctl/<과목 이름>/`에 저장됩니다. 다른 위치는 `--out DIR`을 사용하세요.
-
-전역 `--headless`와 `--headed`는 명령 앞에 지정하며 `browser.headless` 설정보다 우선합니다. 기본값은 화면 표시입니다. `campusctl --headless sync`, `campusctl --headless assignments fetch <ASSIGNMENT_ENTITY_ID>`, `campusctl --headless notices fetch <NOTICE_ENTITY_ID>`, `campusctl --headless materials download <ENTITY_ID>`는 로컬 Chromium 프로필에서 지원됩니다. CDP 세션에는 headless 모드를 사용할 수 없고 공식 플레이어 재생은 화면 표시 모드만 지원합니다.
-
-스크립트나 에이전트에서는 `--json`을 추가하세요. 터미널에서는 기본적으로 사람이 읽기 쉬운 형식으로 출력합니다.
-
-영어 가짜 카탈로그로 너비 80열에서 `CAMPUSCTL_OUTPUT=human`을 설정해 CLI를 실행하고 캡처한 출력 예시입니다. 마감일은 CNU 현지 시간이며, `-`는 마감일 정보가 없음을 뜻하고 `opens MM-DD`는 아직 열리지 않은 강의를 나타냅니다:
+## 30초 미리보기
 
 ```text
-2 lectures (updated 2026-09-24 12:00 UTC)
-
-Course: Introduction to Biology
-  Cell Structure  2026-10-15 23:59  opens 10-15
-    cnu_lecture:biology-101:lecture-01
-
-Course: World History
-  The Roman Republic  -    unfinished
-    cnu_lecture:history-201:lecture-07
-
-To play one: campusctl lectures play cnu_lecture:history-201:lecture-07
-To refresh: campusctl sync
+Coursework status (local catalogs)
+Assignments due soon: 1; unknown: 0
+  Practice assignment
+  See: campusctl assignments list
+Unread notices: 1; unknown: 0
+  Course update
+  See: campusctl notices list
+Open incomplete lectures: 1; unknown: 0
+  Welcome lecture
+  See: campusctl lectures list
 ```
 
-<details>
-<summary>브라우저 및 로컬 데이터</summary>
+<a id="quick-start"></a>
+## 빠른 시작
 
-강의 목록과 브라우저 프로필은 campusctl의 로컬 데이터 디렉터리에 보관되며, 명령이 끝나면 로컬 브라우저 컨텍스트가 닫힙니다. 경로와 공유 브라우저 옵션은 [설정 안내](docs/configuration.md)를 참조하세요.
+1. **설치.** 먼저 [uv](https://docs.astral.sh/uv/getting-started/installation/)와 [Git](https://git-scm.com/downloads)을 설치하세요(Python 3.11 이상). Windows, macOS, Linux에서 다음 명령 하나로 설치합니다:
 
-</details>
+   ```sh
+   uv tool install --with-executables-from playwright git+https://github.com/haesol-shin/campusctl
+   ```
 
-## AI 에이전트에서 사용하기
+   `uv tool update-shell`을 실행하고 새 터미널을 여세요. 그래야 `campusctl`을 `PATH`에서 찾을 수 있습니다.
 
-다음 명령 중 하나로 스킬을 전역 설치하세요:
+   <details>
+   <summary>Linux 브라우저 시스템 라이브러리</summary>
 
-```sh
-npx skills add https://github.com/haesol-shin/campusctl -g
-# or
-bunx skills add https://github.com/haesol-shin/campusctl -g
-```
+   ```sh
+   uv tool run --from playwright playwright install-deps chromium
+   ```
 
-[자세한 내용, 수동 설치 및 복사해 사용할 프롬프트](docs/agent-skill.md)를 참조하세요.
+   </details>
 
-## campusctl을 사용하는 이유
+2. **설정.** 대화형 터미널에서 `campusctl setup`을 실행하세요. 설정, Chromium 확인·설치, 화면에 보이지 않는 비밀번호 입력과 키링 저장을 안내하며 첫 동기화는 선택할 수 있습니다.
+3. **확인.** `campusctl status`로 확인하세요. 설정 중 동기화를 건너뛰었다면 먼저 `campusctl sync`를 실행하세요.
 
-- 각 강의를 열기 전에 미완료이거나 기한이 다가오는 강의를 확인할 수 있습니다.
-- 브라우저 프로세스를 계속 실행하지 않고 로컬 강의 목록을 새로 고치고 확인할 수 있습니다.
-- 재생할 강의는 직접 선택하면서 에이전트가 구조화된 결과를 읽게 할 수 있습니다.
-- 재생 결과는 공식 LMS 강의 행에 표시된 상태를 따릅니다. 출석 미반영으로 표시된 강의는 LMS에 표시된 시청 진도가 필요한 전체 시간에 도달한 경우에만 “watched (not counted)”로 표시되며, 이 상태는 현재 재생 명령 이전에 기록된 진도일 수도 있습니다.
+## 자주 쓰는 작업
 
-## campusctl을 사용하지 말아야 할 때
+| 작업 | 명령 |
+| --- | --- |
+| 네 가지 목록 새로 고침 | `campusctl sync` |
+| 남은 강의 보기 | `campusctl lectures list` |
+| 선택한 강의 재생 | `campusctl lectures play ID` |
+| 과제 목록 보기 | `campusctl assignments list` |
+| 선택한 과제 자세히 보기 | `campusctl assignments fetch ID` |
+| 공지 목록 보기 | `campusctl notices list` |
+| 선택한 공지 자세히 보기 | `campusctl notices fetch ID` |
+| 자료 목록 보기 | `campusctl materials list` |
+| 자료 하나 내려받기 | `campusctl materials download ID` |
 
-- campusctl은 재생 중 앞으로 건너뛰거나, 지원되지 않는 속도를 강제로 적용하거나, 진도를 위조하거나, 백그라운드에서 재생하지 않습니다.
-- 재생은 화면이 표시되는 브라우저에서 한 번에 하나씩 공식 플레이어를 사용합니다. YouTube는 기본 자동 재생으로 1배속만 사용하며, 다른 미디어는 해당 플레이어가 지원하는 속도로만 재생합니다.
-- CNU LMS는 계정당 로그인 세션 하나만 허용하는 것으로 관찰되었습니다. 해당 계정으로 로그인된 다른 자동화와 campusctl을 동시에 실행하지 마세요.
-- campusctl은 CNU와 제휴하지 않으며 LMS가 변경되면 작동하지 않을 수 있습니다.
+## AI 에이전트
 
-## 업그레이드
+스킬을 전역 설치하려면 `npx skills add https://github.com/haesol-shin/campusctl -g` 또는 `bunx skills add https://github.com/haesol-shin/campusctl -g`를 실행하세요. 자세한 방법은 [에이전트 스킬 설치 안내](docs/agent-skill.ko.md)를 참고하세요.
 
-업데이트하려면 `uv tool upgrade campusctl`을 실행하세요. `campusctl sync`는 네 영역을 갱신하며 `--only`로 범위를 좁힐 수 있습니다.
+## 알아두면 좋아요
 
-## 문서
-
-- [설정 및 브라우저 세션](docs/configuration.md)
-- [무인 Linux 및 서버 설정](docs/configuration.md#unattended-linux)
-- [에이전트 스킬 설정](docs/agent-skill.md)
-- [문제 해결](docs/troubleshooting.md)
-- [CLI 계약](docs/contracts/cli.md)
-- [과제](docs/contracts/assignments.md), [공지](docs/contracts/notices.md), [자료](docs/contracts/materials.md) 계약
+- 목록과 `status`는 로컬에 저장된 정보를 읽어 오프라인에서도 볼 수 있습니다. 새 정보가 필요하면 `--refresh` 또는 `campusctl sync`를 사용하세요.
+- 강의 재생은 화면에 보이는 공식 플레이어에서 한 번에 하나씩만 진행합니다. 명령이 끝나면 로컬 브라우저 세션이 닫힙니다.
+- 비밀번호는 운영체제 키링에, 목록은 로컬 데이터 폴더에 저장됩니다. 자세한 내용은 [설정 안내](docs/configuration.ko.md)를 보세요.
+- 공지 상세를 열면 조회수가 늘거나 읽음 상태가 바뀔 수 있습니다.
 
 ## 자주 묻는 질문
 
-#### campusctl은 공식 도구인가요?
+- **공식 도구인가요?** 아니요. 충남대와 제휴하지 않은 독립 프로젝트입니다. [사용 안내](docs/usage.ko.md)를 보세요.
+- **출석이 처리되나요?** 공식 플레이어로 재생한 뒤 LMS 상태를 확인하지만, 무엇이 출석으로 인정되는지는 LMS에 달려 있습니다. [사용 안내](docs/usage.ko.md)를 보세요.
+- **비밀번호와 데이터는 어디에 저장되나요?** 운영체제 키링과 campusctl의 로컬 데이터 폴더에 저장됩니다. [설정 안내](docs/configuration.ko.md#paths)를 보세요.
+- **다운로드한 자료는 어디에 있나요?** 운영체제 다운로드 폴더의 `campusctl/<course label>/` 아래에 저장되며, `--out DIR`로 다른 위치를 고를 수 있습니다. [사용 안내](docs/usage.ko.md)를 보세요.
+- **과제나 공지 본문도 볼 수 있나요?** 네, 목록에서 선택한 전체 ID를 `fetch`로 가져올 수 있습니다. [사용 안내](docs/usage.ko.md)를 보세요.
 
-아니요. 독립 프로젝트이며 CNU와 제휴하지 않습니다.
+## 문서
 
-#### 출석을 처리하나요?
-
-campusctl은 공식 플레이어로 강의를 재생한 뒤 LMS 강의 상태를 읽으며, 진도나 출석을 별도로 요청하지 않습니다. 플레이어가 기록하는 내용은 LMS에 달려 있습니다.
-
-#### 비밀번호와 데이터는 어디에 저장되나요?
-
-기본 비밀번호 제공자는 운영체제 키링입니다. 강의 목록과 브라우저 프로필은 campusctl의 로컬 데이터 디렉터리에 보관됩니다. 경로는 [설정 안내](docs/configuration.md#paths)를 참조하세요.
-
-#### 내려받은 자료는 어디에 저장되나요?
-
-운영체제의 다운로드 폴더 아래 `campusctl/<과목 이름>/`에 저장됩니다. Windows에서 다운로드 폴더 위치를 변경했다면 변경된 위치를 따릅니다. 다른 폴더에 저장하려면 `materials download <ENTITY_ID> --out DIR`을 사용하세요.
-
-#### 과제나 공지의 본문도 볼 수 있나요?
-
-네. `assignments list` 또는 `notices list`에서 선택한 전체 ID 하나 이상을 가져올 수 있습니다. 여러 개라면 `campusctl assignments fetch ID1 ID2` 또는 `campusctl notices fetch ID1 ID2`를 실행하세요. 로컬 데이터 디렉터리의 `sources/` 아래에 `content.md`와 `package.json`이 생성됩니다. 서로 다른 ID 한 개에는 아직 존재하지 않는 패키지 디렉터리를 `--out DIR`로 지정할 수 있고, `--json`의 `result.source_package`에서 경로, 완전성 및 생략된 리소스를 확인할 수 있습니다. 여러 ID에는 `--out`을 사용하지 마세요. JSON 결과는 순서대로 담긴 `result.items`이며 항목마다 `outcome`이 있습니다. `reason_code`는 `partial` 또는 `failed` 항목에만, `source_package`는 `completed` 또는 `partial` 항목에만 있습니다. 공지 상세를 열면 조회수가 한 번 증가하거나 읽음 상태가 바뀔 수 있지만, fetch는 읽음 처리 버튼을 누르지 않습니다. 공지 첨부파일은 내려받지 않고 생략합니다. 로컬 Chromium에서 fetch는 화면 표시와 headless 모드를 모두 지원하며 과제를 제출하지 않습니다. 자세한 내용은 [과제](docs/contracts/assignments.md#selected-detail-fetch) 및 [공지](docs/contracts/notices.md#selected-detail-fetch) 계약을 참조하세요. 공지는 각 과목 게시판에서 가져오고, 읽음 여부는 할 일 목록과 일치할 때만 표시합니다. 게시판에 다음 페이지가 있으면 `notice-board-paginated` 오류와 함께 그 과목의 이전 목록이 유지됩니다. 해당 과목은 LMS에서 확인하세요.
-
-## 라이선스
-
-MIT — [LICENSE](LICENSE)를 참조하세요.
+[설치](docs/installation.ko.md) · [사용 안내](docs/usage.ko.md) · [설정](docs/configuration.ko.md) · [문제 해결](docs/troubleshooting.ko.md) · [에이전트 스킬](docs/agent-skill.ko.md) · [CLI 계약](docs/contracts/cli.md) · [MIT 라이선스](LICENSE)

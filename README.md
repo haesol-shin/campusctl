@@ -1,178 +1,80 @@
-<h1 align="center">campusctl</h1>
+**English** | [한국어](README.ko.md)
 
-<p align="center">
-  <a href="https://github.com/haesol-shin/campusctl/actions/workflows/ci.yml?query=branch%3Amain"><img src="https://github.com/haesol-shin/campusctl/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
-  <img src="https://img.shields.io/badge/Python-%3E%3D3.11%20%7C%20Windows%20%7C%20macOS%20%7C%20Linux-3776AB" alt="Python >=3.11 · Windows · macOS · Linux">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
-</p>
-<p align="center"><b>English</b> | <a href="README.ko.md">한국어</a></p>
+Check your CNU coursework from the terminal or your AI agent.
 
-<p align="center"><em>Keep track of your campus lectures from the terminal — or through your AI agent.</em></p>
+`campusctl` shows CNU students their lectures, assignments, notices and materials in a local CLI or an AI agent, syncing through the normal LMS browser; the Chungnam National University (CNU) LMS is its only supported provider.
 
-`campusctl` is a local CLI for tracking lectures, assignments, course notices, and materials in the Chungnam National University (CNU) LMS, its only supported provider. It keeps local catalogs and opens Chromium for LMS operations.
-
-## Highlights
-
-- Sync lectures, assignments, notices, and materials in one combined pass: `campusctl sync` selects each course once.
-- List unfinished lectures and inspect lecture health and cached coursework: `campusctl lectures list`, `campusctl status`.
-- Refresh a particular domain with `sync --only DOMAIN` or `list --refresh`.
-- Fetch readable source packages for one or more explicitly selected assignment or notice IDs in one session; notice reading can change view and read state.
-- Download one selected material into your OS Downloads folder under `campusctl/<course label>/`.
-- Play a lecture in CNU's official player through a visible browser, one at a time; campusctl checks the LMS state afterward.
-- JSON output for scripts and agents.
-- Keep the password in the operating system keyring by default.
-- Run on Windows, macOS, or Linux without a background service or resident browser.
-
-## Installation
-
-Install [uv](https://docs.astral.sh/uv/getting-started/installation/) and [Git](https://git-scm.com/downloads) first; campusctl requires Python 3.11 or newer.
-
-### Windows (PowerShell)
-
-```powershell
-uv tool install --with-executables-from playwright git+https://github.com/haesol-shin/campusctl
-uv tool update-shell
-```
-
-### macOS
-
-```bash
-uv tool install --with-executables-from playwright git+https://github.com/haesol-shin/campusctl
-uv tool update-shell
-```
-
-### Linux
-
-```bash
-uv tool install --with-executables-from playwright git+https://github.com/haesol-shin/campusctl
-uv tool update-shell
-```
-
-After installing, open a new terminal. Run `campusctl setup` for guided configuration, browser installation, credentials, and an optional first sync. In noninteractive or JSON mode, setup checks or installs Chromium without prompting; use `campusctl config init --username ID` and `campusctl auth set` separately.
-
-On Linux, install the browser's system dependencies if needed:
-
-```bash
-uv tool run --from playwright playwright install-deps chromium
-```
-
-This may require administrator access. For PATH setup, Linux system libraries, browser cache locations, pinning, updates, uninstall, or a checkout install, see the [installation guide](docs/installation.md). If `campusctl` is not found, run `uv tool update-shell` and open a new terminal.
-
-## Quickstart
-
-Run guided setup in a terminal. Password input is hidden and stored in the OS keyring by default; never pass a password as an argument. The first full sync is optional during setup.
-
-```console
-$ campusctl setup
-$ campusctl sync
-$ campusctl status
-$ campusctl lectures list
-$ campusctl courses list
-$ campusctl assignments list
-$ campusctl notices list
-$ campusctl assignments fetch <ASSIGNMENT_ENTITY_ID>
-$ campusctl notices fetch <NOTICE_ENTITY_ID>
-$ campusctl materials list
-$ campusctl materials download 1
-```
-
-`sync` refreshes all four metadata domains in one browser session, selecting each course once; `--only lectures,notices` narrows the domains. A failing course or domain retains its previous catalog rows and is reported as partial, not freshly checked. Lists read local catalogs without network access unless you pass `--refresh`. Use `campusctl --profile sync` (or a list with `--refresh`) to emit one `campusctl-profile:` JSON line on stderr (schema version 2) with spans, document timings, lock coverage and sanitized failed-check diagnostics. The `diagnostics` array records failed page-readiness, course-identity, to-do-grid, archive-state or modal-binding checks, using run-local course ordinals rather than names or URLs; passing checks add no records. Profiling makes no performance guarantee.
-
-In human output, `courses list` numbers courses for `--course NUMBER`; a unique course-name fragment is also accepted. `materials list` numbers files for `materials download NUMBER`; a bare download opens a single-file picker in an interactive terminal. Numbers refer to the last printed list and fail if its catalog changes. Full IDs work without a printed list and are required with `--json`. Downloads save one selected official attachment under your OS Downloads folder at `campusctl/<course label>/`; use `--out DIR` for another directory.
-
-Global `--headless` and `--headed` precede the command, overriding `browser.headless` in configuration; headed is the default. For example, `campusctl --headless sync`, `campusctl --headless assignments fetch <ASSIGNMENT_ENTITY_ID>`, `campusctl --headless notices fetch <NOTICE_ENTITY_ID>`, and `campusctl --headless materials download <ENTITY_ID>` use a local Chromium profile. A configured CDP session cannot use headless mode. Official-player playback remains headed.
-
-Add `--json` when scripts or agents need JSON output; terminal output is human-readable by default.
-
-The sample below was captured from the CLI with an English fake catalog at 80 columns and `CAMPUSCTL_OUTPUT=human`. Due dates use CNU local time, `-` means no due date is listed, and `opens MM-DD` marks a lecture that is not open yet:
+## 30-second demo
 
 ```text
-2 lectures (updated 2026-09-24 12:00 UTC)
-
-Course: Introduction to Biology
-  Cell Structure  2026-10-15 23:59  opens 10-15
-    cnu_lecture:biology-101:lecture-01
-
-Course: World History
-  The Roman Republic  -    unfinished
-    cnu_lecture:history-201:lecture-07
-
-To play one: campusctl lectures play cnu_lecture:history-201:lecture-07
-To refresh: campusctl sync
+Coursework status (local catalogs)
+Assignments due soon: 1; unknown: 0
+  Practice assignment
+  See: campusctl assignments list
+Unread notices: 1; unknown: 0
+  Course update
+  See: campusctl notices list
+Open incomplete lectures: 1; unknown: 0
+  Welcome lecture
+  See: campusctl lectures list
 ```
 
-<details>
-<summary>Browser and local data</summary>
+<a id="quick-start"></a>
+## Quick start
 
-The catalog and browser profile stay in campusctl's local data directory; the local browser context closes when the command ends. See the [configuration guide](docs/configuration.md) for the paths and shared-browser options.
+1. **Install.** Install [uv](https://docs.astral.sh/uv/getting-started/installation/) and [Git](https://git-scm.com/downloads) (Python 3.11+), then run this on Windows, macOS or Linux:
 
-</details>
+   ```sh
+   uv tool install --with-executables-from playwright git+https://github.com/haesol-shin/campusctl
+   ```
 
-## Use with AI agents
+   Run `uv tool update-shell` and open a new terminal so `campusctl` is on `PATH`.
 
-Install the skill globally with either command:
+   <details>
+   <summary>Linux browser system libraries</summary>
 
-```sh
-npx skills add https://github.com/haesol-shin/campusctl -g
-# or
-bunx skills add https://github.com/haesol-shin/campusctl -g
-```
+   ```sh
+   uv tool run --from playwright playwright install-deps chromium
+   ```
 
-See [details, manual install, and a copy-paste prompt](docs/agent-skill.md).
+   </details>
 
-## Why campusctl?
+2. **Set up.** In an interactive terminal, run `campusctl setup` for guided configuration, Chromium and hidden keyring password entry; it offers an optional first sync.
+3. **Check.** Run `campusctl status`. If setup skipped the sync, run `campusctl sync` first.
 
-- See what is unfinished or due before opening each lecture.
-- Refresh and inspect a local catalog without keeping a browser process running.
-- Let an agent read structured results while you remain in control of which lecture to play.
-- Playback outcomes follow the official LMS row. A row flagged as not counted for attendance is labeled “watched (not counted)” only when its displayed watched progress reaches the required duration; this status may reflect progress recorded before the current play command.
+## Common tasks
 
-## When shouldn't I use campusctl?
+| Task | Command |
+| --- | --- |
+| Refresh all four catalogs | `campusctl sync` |
+| List unfinished lectures | `campusctl lectures list` |
+| Play a lecture you chose | `campusctl lectures play ID` |
+| List assignments | `campusctl assignments list` |
+| Read an assignment you chose | `campusctl assignments fetch ID` |
+| List course notices | `campusctl notices list` |
+| Read a notice you chose | `campusctl notices fetch ID` |
+| List material files | `campusctl materials list` |
+| Download one material | `campusctl materials download ID` |
 
-- campusctl does not seek ahead, force unsupported speeds, fake progress, or play in the background.
-- Playback uses the official player, one lecture at a time in a visible browser. YouTube relies on native autoplay at 1x only; other supported media use only the playback rates their player supports.
-- CNU is observed to allow one LMS login session per account; do not run campusctl alongside another logged-in automation on that account.
-- campusctl is not affiliated with CNU, and changes to the LMS may break it.
+## AI agents
 
-## Upgrading
+Install the skill globally with `npx skills add https://github.com/haesol-shin/campusctl -g` (or `bunx skills add https://github.com/haesol-shin/campusctl -g`); see [agent skill setup](docs/agent-skill.md).
 
-Run `uv tool upgrade campusctl` to update. Run `campusctl sync` to refresh all four catalogs; use `--only` to limit a refresh.
+## Good to know
 
-## Documentation
-
-- [Configuration and browser sessions](docs/configuration.md)
-- [Unattended Linux and server setup](docs/configuration.md#unattended-linux)
-- [Agent skill setup](docs/agent-skill.md)
-- [Troubleshooting](docs/troubleshooting.md)
-- [CLI contract](docs/contracts/cli.md)
-- [Assignments](docs/contracts/assignments.md), [notices](docs/contracts/notices.md), and [materials](docs/contracts/materials.md) contracts
-
-## Contributing: scan exceptions
-
-CI scans commits and the current tree with `.gitleaks.toml` for default secret detectors and `.gitleaks-public.toml` for local paths and emails, then checks tracked files for binary content. If a safe fixture or example needs an exception, request it in a PR for review. A narrowly scoped path regex in `.gitleaks-public.toml` `[allowlist] paths` exempts that path from the public path/email rules and the binary check only; a default secret-detector finding needs its specific fingerprint in `.gitleaksignore`. Do not add private data to justify an exception.
+- Lists and `status` read cached catalogs offline; pass `--refresh` or run `campusctl sync` for new data.
+- Playback uses one visible official player at a time; the local browser context closes when the command ends.
+- Your password stays in the OS keyring and catalogs stay in a local data directory; see [configuration](docs/configuration.md).
+- Opening a notice detail may add a view and change its read state.
 
 ## FAQ
 
-#### Is campusctl official?
+- **Is campusctl official?** No; it is independent and not affiliated with CNU. See [usage](docs/usage.md).
+- **Does it mark attendance?** It plays through the official player and reads LMS state afterward; the LMS decides what counts. See [usage](docs/usage.md).
+- **Where are password and data stored?** In your OS keyring and campusctl's local data directory. See [configuration](docs/configuration.md#paths).
+- **Where are downloads saved?** In your OS Downloads folder under `campusctl/<course label>/`, or elsewhere with `--out DIR`. See [usage](docs/usage.md).
+- **Can I read assignment or notice details?** Yes, fetch explicitly selected full IDs. See [usage](docs/usage.md).
 
-No. It is an independent project and is not affiliated with CNU.
+## Documentation
 
-#### Does it mark my attendance?
-
-campusctl plays through the official player and reads the LMS lecture state afterward; it sends no separate progress or attendance request. What the player records is up to the LMS.
-
-#### Where are my password and data stored?
-
-The default password provider is your OS keyring. The catalog and browser profile stay in campusctl's local data directory; see the [configuration guide](docs/configuration.md#paths).
-
-#### Where are downloaded materials saved?
-
-In your OS Downloads folder under `campusctl/<course label>/` (including a redirected Windows Downloads folder). Use `materials download <ENTITY_ID> --out DIR` to choose another folder.
-
-#### Can I read assignment or notice details here?
-
-Yes. Choose one or more full IDs from `assignments list` or `notices list`, then run `campusctl assignments fetch ID1 ID2` or `campusctl notices fetch ID1 ID2` for multiple explicitly selected details (one ID also works). Fetch writes `content.md` and `package.json` under the local data directory's `sources/` tree. With one distinct ID, `--out DIR` selects a new, nonexistent package directory, and `--json` reports `result.source_package` with its path, completeness and omitted resources. With multiple distinct IDs, omit `--out`; JSON returns ordered `result.items` with each item's `outcome`, a `reason_code` for partial or failed items, and a `source_package` for completed or partial items. A notice detail open may add one view and change its read state, even though fetch never clicks mark-read. Notice attachments are omitted, not downloaded. Local fetch supports headed and headless Chromium; it does not submit assignments. See the [assignment](docs/contracts/assignments.md#selected-detail-fetch) and [notice](docs/contracts/notices.md#selected-detail-fetch) contracts. Notices come from each course board; read state is unknown when no matching to-do row exists. A board with additional pages reports `notice-board-paginated` for that course and retains its previous rows; check the LMS for that course.
-
-## License
-
-MIT — see [LICENSE](LICENSE).
+[Installation](docs/installation.md) · [Usage](docs/usage.md) · [Configuration](docs/configuration.md) · [Troubleshooting](docs/troubleshooting.md) · [Agent skill](docs/agent-skill.md) · [CLI contract](docs/contracts/cli.md) · [MIT license](LICENSE)
