@@ -1,6 +1,6 @@
 # Set up campusctl for a user
 
-Follow these steps only when the user asks you to install or set up campusctl. Leave account setup to the user.
+Follow these steps only when the user asks you to install or set up campusctl. Leave account setup to the user: never run `campusctl setup` (with any flags, including `--json`), `campusctl config init`, or `campusctl auth set`.
 
 ## Trust boundary
 
@@ -34,7 +34,7 @@ Confirm that the skill installer reports success and its destination for the int
 
 ## Check readiness
 
-You may run read-only `campusctl doctor --json` and report its findings. Do not run `campusctl config init`, `campusctl auth set`, `campusctl setup`, `campusctl sync`, or `campusctl lectures play`. The user runs `campusctl setup` in their own interactive terminal; do not collect credentials for them.
+You may run read-only `campusctl doctor --json` and report its findings. Never run `campusctl setup` (with any flags, including `--json`), `campusctl config init`, or `campusctl auth set`, and do not run `campusctl sync` or `campusctl lectures play`. The user runs `campusctl setup` in their own interactive terminal; do not collect credentials for them.
 
 ## Report to the user
 

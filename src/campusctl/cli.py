@@ -113,7 +113,9 @@ class RootArgumentParser(EnvelopeArgumentParser):
             "    https://raw.githubusercontent.com/haesol-shin/campusctl/main/docs/agent-guide.md\n"
             "  Use campusctl for the user:\n"
             "    SKIP if the campusctl skill is already loaded. Otherwise read\n"
-            "    https://raw.githubusercontent.com/haesol-shin/campusctl/main/skills/campusctl/SKILL.md"
+            "    https://raw.githubusercontent.com/haesol-shin/campusctl/main/skills/campusctl/SKILL.md\n"
+            "  Never run `campusctl setup` (with any flags, including `--json`), `campusctl config init`,\n"
+            "  or `campusctl auth set` yourself. The user runs `campusctl setup` in their own terminal."
         )
         return super().format_help()
 

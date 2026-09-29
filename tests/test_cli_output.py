@@ -455,6 +455,8 @@ def test_help_groups_commands_and_resolves_paths_at_render_time(
     assert "https://raw.githubusercontent.com/haesol-shin/campusctl/main/docs/agent-guide.md" in help_text
     assert "SKIP if the campusctl skill is already loaded. Otherwise read" in help_text
     assert "https://raw.githubusercontent.com/haesol-shin/campusctl/main/skills/campusctl/SKILL.md" in help_text
+    assert "Never run `campusctl setup` (with any flags, including `--json`), `campusctl config init`," in help_text
+    assert "or `campusctl auth set` yourself. The user runs `campusctl setup` in their own terminal." in help_text
     assert not (tmp_path / "data").exists()
 
     _, stdout = _streams(monkeypatch, stdin_tty=False, stdout_tty=False)

@@ -6,3 +6,4 @@
 
 - Put skill installation and agent setup requests near the top of both READMEs
 - Clarify self-install instructions and link the setup guide from the skill
+- Tell agents in the setup guide and root help never to run setup, config init or auth set
