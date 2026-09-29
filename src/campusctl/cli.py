@@ -106,7 +106,16 @@ class RootArgumentParser(EnvelopeArgumentParser):
         self.epilog = (
             "Examples:\n  campusctl setup\n  campusctl sync\n  campusctl status\n\n"
             f"Config: {config_path().resolve()}\nData: {data_dir().resolve()}\n"
-            "Docs: https://github.com/haesol-shin/campusctl/blob/main/docs/usage.md\n\n" + _OUTPUT_NOTE
+            "Docs: https://github.com/haesol-shin/campusctl/blob/main/docs/usage.md\n\n"
+            + _OUTPUT_NOTE
+            + "\n\nAre you an AI agent? Read these only when your task asks for it:\n"
+            "  Help a user install or set up campusctl:\n"
+            "    https://raw.githubusercontent.com/haesol-shin/campusctl/main/docs/agent-guide.md\n"
+            "  Use campusctl for the user:\n"
+            "    SKIP if the campusctl skill is already loaded. Otherwise read\n"
+            "    https://raw.githubusercontent.com/haesol-shin/campusctl/main/skills/campusctl/SKILL.md\n"
+            "  Never run `campusctl setup` (with any flags, including `--json`), `campusctl config init`,\n"
+            "  or `campusctl auth set` yourself. The user runs `campusctl setup` in their own terminal."
         )
         return super().format_help()
 

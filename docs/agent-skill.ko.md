@@ -1,6 +1,8 @@
 [English](agent-skill.md) | **한국어**
 
-# 에이전트 스킬 설치
+# 스킬 직접 설치
+
+[README의 AI 에이전트 안내](../README.ko.md#agent-setup)에 스킬 설치 명령 한 줄이 있습니다. Node.js와 npx 또는 Bun과 bunx가 필요합니다.
 
 ```sh
 # Choose one:
@@ -59,16 +61,4 @@ ln -s "$HOME/src/campusctl/skills/campusctl" "$HOME/.claude/skills/campusctl"
 
 `git -C "$HOME/src/campusctl" pull`로 저장소를 업데이트하면 심볼릭 링크에도 반영됩니다. 복제본을 옮겼다면 링크를 다시 만드세요.
 
-## 에이전트에게 스킬 설치 요청하기
-
-코딩 에이전트에게 아래 문구를 전달할 수 있습니다. 스킬만 설치하며 campusctl이나 계정 자격 증명은 설정하지 않습니다.
-
-```text
-Install only the campusctl agent skill for my user account.
-Clone https://github.com/haesol-shin/campusctl.git to a stable location such as ~/src/campusctl, or update that clone if it already exists.
-Put the complete skills/campusctl directory, including its agents subdirectory, in this harness's documented user-level skills directory; prefer a symlink where supported and otherwise copy it.
-Do not change unrelated files or global shell configuration.
-Check whether `campusctl --version --json` runs and report its result; if campusctl is not already installed or not on PATH, report that instead of installing it.
-Do NOT run `campusctl auth set`, ask for or handle passwords, run `campusctl sync`, or run `campusctl lectures play`.
-Report the clone path, skill destination, link/copy choice, and verification result, then tell me to restart the agent.
-```
+에이전트에게 campusctl 설치와 설정을 맡기려면 [README의 AI 에이전트 안내](../README.ko.md#agent-setup)에 있는 요청 문구 한 줄을 사용합니다.

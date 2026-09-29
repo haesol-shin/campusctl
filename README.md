@@ -19,6 +19,25 @@
 - **Stays on your computer.** Your password stays in the OS keyring and your lists in a local folder.
 - **Lightweight.** Run on demand on Windows, macOS or Linux without a background service.
 
+<a id="agent-setup"></a>
+## Use with AI agents
+
+Install the skill:
+
+```sh
+npx skills add https://github.com/haesol-shin/campusctl -g
+```
+
+To hand setup to your agent, paste this one line:
+
+```text
+Read https://raw.githubusercontent.com/haesol-shin/campusctl/main/docs/agent-guide.md and set up campusctl for me.
+```
+
+The skill does not install campusctl itself; follow the [quick start](#quick-start) below.
+
+bunx, the Node.js requirement and manual install → [agent-skill guide](docs/agent-skill.md).
+
 ## Prerequisites
 
 - [uv](https://docs.astral.sh/uv/getting-started/installation/) to install and run campusctl
@@ -121,18 +140,6 @@ The catalog and browser profile stay in campusctl's local data directory; the lo
 
 </details>
 
-## Use with AI agents
-
-Install the skill globally with either command:
-
-```sh
-npx skills add https://github.com/haesol-shin/campusctl -g
-# or
-bunx skills add https://github.com/haesol-shin/campusctl -g
-```
-
-See [details, manual install, and a copy-paste prompt](docs/agent-skill.md).
-
 ## Limitations
 
 - No seeking ahead, faked progress or background play: use one visible official player at a time.
@@ -149,7 +156,8 @@ Run `uv tool upgrade campusctl` to update. Run `campusctl sync` to refresh all f
 - [Usage and commands](docs/usage.md)
 - [Configuration and browser sessions](docs/configuration.md)
 - [Unattended Linux and server setup](docs/configuration.md#unattended-linux)
-- [Agent skill setup](docs/agent-skill.md)
+- [Install the skill yourself](docs/agent-skill.md)
+- [Agent setup guide (English)](docs/agent-guide.md)
 - [Troubleshooting](docs/troubleshooting.md)
 - [CLI contract](docs/contracts/cli.md)
 - [Assignments](docs/contracts/assignments.md), [notices](docs/contracts/notices.md), and [materials](docs/contracts/materials.md) contracts

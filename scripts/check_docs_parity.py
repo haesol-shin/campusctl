@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import unquote
 
+# Agent setup, contracts and specs are English-only; only public bilingual guides belong here.
 PAIRS = (
     ("README.md", "README.ko.md"),
     ("docs/installation.md", "docs/installation.ko.md"),

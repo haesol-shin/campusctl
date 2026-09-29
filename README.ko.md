@@ -19,6 +19,25 @@
 - **내 컴퓨터에만 보관.** 비밀번호는 운영체제 키링에, 목록은 로컬 폴더에 저장합니다.
 - **가볍게 실행.** Windows, macOS, Linux에서 백그라운드 서비스 없이 필요할 때만 실행합니다.
 
+<a id="agent-setup"></a>
+## AI 에이전트에서 사용하기
+
+스킬을 설치합니다:
+
+```sh
+npx skills add https://github.com/haesol-shin/campusctl -g
+```
+
+에이전트에게 설치와 설정을 맡기려면 다음 한 줄을 붙여 넣습니다:
+
+```text
+Read https://raw.githubusercontent.com/haesol-shin/campusctl/main/docs/agent-guide.md and set up campusctl for me.
+```
+
+스킬은 campusctl 자체를 설치하지 않습니다. 아래 [빠른 시작](#quick-start)을 따릅니다.
+
+bunx, Node.js 필요 조건과 수동 설치 방법은 [에이전트 스킬 안내](docs/agent-skill.ko.md)에 있습니다.
+
 ## 필요 조건
 
 - [uv](https://docs.astral.sh/uv/getting-started/installation/): campusctl을 설치하고 실행할 때 사용합니다.
@@ -121,18 +140,6 @@ campusctl materials download 1
 
 </details>
 
-## AI 에이전트에서 사용하기
-
-다음 명령 중 하나로 스킬을 전역 설치합니다:
-
-```sh
-npx skills add https://github.com/haesol-shin/campusctl -g
-# or
-bunx skills add https://github.com/haesol-shin/campusctl -g
-```
-
-수동 설치 방법과 복사해 쓸 문구는 [에이전트 스킬 안내](docs/agent-skill.ko.md)에 있습니다.
-
 ## 한계
 
 - 앞으로 건너뛰거나 진도를 위조하거나 백그라운드에서 재생하지 않습니다. 화면에 보이는 공식 플레이어에서 한 번에 하나씩 재생합니다.
@@ -149,7 +156,8 @@ bunx skills add https://github.com/haesol-shin/campusctl -g
 - [사용법과 명령](docs/usage.ko.md)
 - [설정 및 브라우저 세션](docs/configuration.ko.md)
 - [무인 Linux 및 서버 설정](docs/configuration.ko.md#unattended-linux)
-- [에이전트 스킬 설정](docs/agent-skill.ko.md)
+- [스킬 직접 설치](docs/agent-skill.ko.md)
+- [에이전트 설정 안내(영어)](docs/agent-guide.md)
 - [문제 해결](docs/troubleshooting.ko.md)
 - [CLI 계약](docs/contracts/cli.md)
 - [과제](docs/contracts/assignments.md), [공지](docs/contracts/notices.md), [자료](docs/contracts/materials.md) 계약

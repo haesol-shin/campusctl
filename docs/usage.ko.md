@@ -81,3 +81,5 @@ Catalog generated 1 second ago.
 ## 업데이트와 문제 해결
 
 `uv tool upgrade campusctl`로 업데이트한 뒤 `campusctl setup`으로 Chromium을 확인하거나 설치하세요. `campusctl sync`로 목록을 새로 고칠 수 있습니다. 버전 고정, 제거, 체크아웃 설치는 [설치 안내](installation.ko.md)를, 오류별 해결책은 [문제 해결](troubleshooting.ko.md)을 보세요.
+
+최상위 `campusctl --help`에는 에이전트가 설치를 도울 때 보는 [설정 안내(영어)](agent-guide.md)와 사용 작업에 필요한 [campusctl 스킬](../skills/campusctl/SKILL.md) 링크도 있습니다. 스킬을 이미 불러온 에이전트는 해당 링크를 건너뛸 수 있습니다.

@@ -1,6 +1,8 @@
 **English** | [한국어](agent-skill.ko.md)
 
-# Agent skill setup
+# Install the agent skill yourself
+
+The [README AI agents section](../README.md#agent-setup) has the one-line skill install command. Use Node.js with npx or Bun with bunx.
 
 ```sh
 # Choose one:
@@ -59,16 +61,4 @@ ln -s "$HOME/src/campusctl/skills/campusctl" "$HOME/.claude/skills/campusctl"
 
 A symlink reflects updates after you run `git -C "$HOME/src/campusctl" pull`; if you move the clone, recreate the symlink.
 
-## Ask your agent to install the skill
-
-Give your coding agent this prompt. It installs only the skill; it does not install campusctl or configure account credentials.
-
-```text
-Install only the campusctl agent skill for my user account.
-Clone https://github.com/haesol-shin/campusctl.git to a stable location such as ~/src/campusctl, or update that clone if it already exists.
-Put the complete skills/campusctl directory, including its agents subdirectory, in this harness's documented user-level skills directory; prefer a symlink where supported and otherwise copy it.
-Do not change unrelated files or global shell configuration.
-Check whether `campusctl --version --json` runs and report its result; if campusctl is not already installed or not on PATH, report that instead of installing it.
-Do NOT run `campusctl auth set`, ask for or handle passwords, run `campusctl sync`, or run `campusctl lectures play`.
-Report the clone path, skill destination, link/copy choice, and verification result, then tell me to restart the agent.
-```
+To let an agent install and set up campusctl instead, use the one-line request in the [README AI agents section](../README.md#agent-setup).
