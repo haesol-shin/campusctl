@@ -105,7 +105,11 @@ For `sync --only lectures`, the result returns `courses`, `lectures`, `incomplet
 
 Before browser-session startup, catalog validation rejects a selected row with `open: false` as `lecture-not-open` (`user-action`, exit 2); `open: null` does not reject. The complete request is validated before any item starts, so a closed row prevents playback of every ID in a multi-ID request. When `available_from` is present, the error message includes the opening date.
 
-Every item with outcome `failed` includes a `reason_code` matching the CLI error code for that failure.
+Every item with outcome `failed` includes a `reason_code` matching the CLI error code for that failure; the envelope `errors[]` entry for the stopped queue uses that same code. Alongside the envelope, each failed item emits one `campusctl-play-diagnostic: {…}` JSON line on stderr (schema version 1) with exactly these fields: `index` (one-based position in the request), `stage` (`start`, `room`, `row`, `preview`, `frame`, `video`, `playback`, `verify`, or `close`), `reason_code`, `frame_panopto` (nullable), `video_count`, `splash_visible`, `splash_clicks`, and `page_state` (one of `ready`, `auth`, `processing`, `splash`, or `unknown`). The line carries no titles, IDs, URLs, or free text.
+
+`lecture-row-unavailable` reports a missing, non-LV, closed, or never-visible course-room row; `player-frame-unavailable` reports that no player frame appeared before its deadline; `player-video-unavailable` reports a loaded frame without a `<video>` element; `playback-stalled` reports the stall watchdog; `playback-timeout` reports the watch-time limit. `playback-failed` remains for unclassified failures.
+
+In replay mode an item finishes when the official player reports its end event or this page session's `video.played` coverage reaches the duration minus a two-second tolerance; a seek to the end without watched coverage does not finish replay. Non-replay completion is unchanged. While opening the Panopto player, campusctl clicks the visible splash control at most twice (once on first sight and one retry after ten seconds if still no video) and waits up to 60 seconds for the frame's video element (30 seconds for the frame itself).
 
 ## Browser and session
 
@@ -159,7 +163,7 @@ In JSON mode, unknown exceptions are returned with code `internal` and their exc
 - `lock-unavailable`, `session-busy`
 - `catalog-missing`, `catalog-invalid`, `catalog-schema-unsupported`, `catalog-outdated`, `catalog-write-failed`
 - `browser-not-installed` remediation is `Run 'campusctl setup' to install the browser.`; `browser-install-failed` reports installer failure with status `error`, exit 1.
-- `browser-endpoint-unreachable`, `lecture-unknown`, `lecture-not-open`, `lecture-complete`, `lecture-unsupported`, `lecture-not-playable`, `login-failed`, `login-action-required`, `lms-unavailable`, `playback-failed`, `playback-unverified`, `youtube-autoplay-blocked`, `playback-speed-unavailable`
+- `browser-endpoint-unreachable`, `lecture-unknown`, `lecture-not-open`, `lecture-complete`, `lecture-unsupported`, `lecture-not-playable`, `lecture-row-unavailable`, `player-frame-unavailable`, `player-video-unavailable`, `login-failed`, `login-action-required`, `lms-unavailable`, `playback-failed`, `playback-stalled`, `playback-timeout`, `playback-unverified`, `youtube-autoplay-blocked`, `playback-speed-unavailable`
 - `headless-unavailable`, `entity-unknown`, `resource-omitted`, `fetch-failed`, `unsupported-media-type`, `file-too-large`, `download-failed`, `output-path-conflict`; `policy-blocked` applies only to rejected selected-file transfers, not page requests
 - `internal`
 

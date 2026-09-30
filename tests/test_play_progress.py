@@ -194,7 +194,7 @@ def test_human_tty_early_stop_finishes_progress_on_a_clean_line(
     captured = capsys.readouterr()
 
     assert exit_code == 1
-    assert captured.err == ""
+    assert captured.err.startswith(player.PLAY_DIAGNOSTIC_PREFIX)
     assert "\r  00:10 / 00:10\n  Done: failed\n" in captured.out
     assert captured.out.endswith("\n")
 
