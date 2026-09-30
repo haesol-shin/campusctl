@@ -265,6 +265,8 @@ class FakeFrame:
 
     async def evaluate(self, script: str, *args: Any) -> dict[str, Any]:
         self.page.evaluations.append(script)
+        if "campusctl-classify-player-page" in script:
+            return {"page_state": "ready" if self.video_ready else "splash", "video_count": int(self.video_ready)}
         if "campusctl-read-youtube-video-state" in script:
             if self.page.youtube_mode == "blocked":
                 return {
@@ -321,6 +323,7 @@ class FakeFrame:
                 "paused": True,
                 "ended": False,
                 "playedUntil": 2.0,
+                "playedCoverage": 2.0,
                 "playbackRate": self.playback_rate,
             }
         if self.paused:
@@ -331,6 +334,7 @@ class FakeFrame:
                 "paused": True,
                 "ended": False,
                 "playedUntil": 0.0,
+                "playedCoverage": 0.0,
                 "playbackRate": self.playback_rate,
             }
         return {
@@ -340,6 +344,7 @@ class FakeFrame:
             "paused": False,
             "ended": True,
             "playedUntil": 10.0,
+            "playedCoverage": 10.0,
             "playbackRate": self.playback_rate,
         }
 
@@ -564,7 +569,7 @@ def _prepare(
 def _invoke(capsys: pytest.CaptureFixture[str], entity_ids: list[str], *options: str) -> tuple[int, dict[str, Any]]:
     code = cli.main(["lectures", "play", *entity_ids, *options, "--json"])
     captured = capsys.readouterr()
-    assert captured.err == ""
+    assert all(line.startswith(player.PLAY_DIAGNOSTIC_PREFIX) for line in captured.err.splitlines())
     return code, json.loads(captured.out)
 
 
@@ -693,7 +698,7 @@ def test_play_pauses_queue_when_the_lecture_title_stays_hidden(
 
     assert exit_code == 1
     assert [item["outcome"] for item in response["result"]["items"]] == ["failed", "not-started"]
-    assert response["errors"][0]["code"] == "playback-failed"
+    assert response["errors"][0]["code"] == "lecture-row-unavailable"
     assert "remained hidden" in response["errors"][0]["message"]
     assert not [call for call in page.calls if call[0] == "open-player"]
     _assert_no_dom_visibility_mutations(page)
@@ -1040,7 +1045,7 @@ def test_youtube_stall_after_two_minutes_fails_and_closes_modal(
     exit_code, response = _invoke(capsys, [FIRST_ID])
 
     assert exit_code == 1
-    assert response["errors"][0]["code"] == "playback-failed"
+    assert response["errors"][0]["code"] == "playback-stalled"
     assert response["result"]["items"][0]["outcome"] == "failed"
     assert clock[0] > player.PLAYER_STALL_SECONDS
     assert ("close", "row-1") in page.calls
@@ -1197,6 +1202,7 @@ def test_panopto_splash_control_creates_video_before_waiting_for_it(monkeypatch:
     play_index = next(index for index, call in enumerate(page.calls) if call[0] == "play")
     video_wait_index = next(index for index, call in enumerate(page.calls) if call[0] == "video-wait")
     assert play_index < video_wait_index
+    assert len([call for call in page.calls if call[0] == "play"]) == 1
 
 
 @pytest.mark.parametrize(("speed_option_present", "speed_applies"), [(False, True), (True, False)])

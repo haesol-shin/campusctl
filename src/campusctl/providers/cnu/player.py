@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import math
+import sys
 from collections.abc import Callable
 from contextlib import suppress
 from typing import Any
@@ -28,7 +30,12 @@ PLAY_BUTTON_SELECTOR = (
 COMPLETION_POLL_SECONDS = 600.0
 COMPLETION_POLL_INTERVAL_SECONDS = 30.0
 PLAYER_FRAME_WAIT_SECONDS = 30.0
+PLAYER_VIDEO_WAIT_SECONDS = 60.0
 PLAYER_POLL_INTERVAL_SECONDS = 1.0
+PLAYER_SPLASH_RETRY_SECONDS = 10.0
+PLAYER_MAX_SPLASH_CLICKS = 2
+REPLAY_COVERAGE_TOLERANCE_SECONDS = 2.0
+PLAY_DIAGNOSTIC_PREFIX = "campusctl-play-diagnostic: "
 YOUTUBE_AUTOPLAY_WAIT_SECONDS = 30.0
 YOUTUBE_POLL_INTERVAL_SECONDS = 30.0
 YOUTUBE_AFTER_END_SECONDS = 60.0
@@ -82,6 +89,12 @@ COLLAPSED_TOGGLES_JS = r"""/* campusctl-read-collapse-toggles */(rowId) => {
 READ_VIDEO_JS = r"""/* campusctl-read-video-state */() => {
     const video = document.querySelector('video');
     if (!video) return {exists: false};
+    let playedCoverage = 0;
+    if (video.played && video.played.length) {
+        for (let index = 0; index < video.played.length; index++) {
+            playedCoverage += video.played.end(index) - video.played.start(index);
+        }
+    }
     return {
         exists: true,
         currentTime: video.currentTime,
@@ -91,9 +104,31 @@ READ_VIDEO_JS = r"""/* campusctl-read-video-state */() => {
         playedUntil: video.played && video.played.length
             ? video.played.end(video.played.length - 1)
             : 0,
+        playedCoverage: playedCoverage,
         playbackRate: video.playbackRate
     };
 }"""
+
+CLASSIFY_PLAYER_PAGE_JS = r"""/* campusctl-classify-player-page */(splashSelector) => {
+    const videoCount = document.querySelectorAll('video').length;
+    if (videoCount > 0) return {page_state: 'ready', video_count: videoCount};
+    const path = ((window.location && window.location.pathname) || '').toLowerCase();
+    if (path.includes('/login') || path.includes('/auth') || path.includes('/signin') || path.includes('/sso')) {
+        return {page_state: 'auth', video_count: videoCount};
+    }
+    const text = ((document.body && document.body.textContent) || '').toLowerCase();
+    if (text.includes('being processed') || text.includes('under processing')
+        || text.includes('처리 중') || text.includes('처리중')) {
+        return {page_state: 'processing', video_count: videoCount};
+    }
+    if (splashSelector && document.querySelector(splashSelector)) {
+        return {page_state: 'splash', video_count: videoCount};
+    }
+    return {page_state: 'unknown', video_count: videoCount};
+}"""
+
+PAGE_STATES = frozenset({"ready", "auth", "processing", "splash", "unknown"})
+PLAY_STAGES = frozenset({"start", "room", "row", "preview", "frame", "video", "playback", "verify", "close"})
 
 
 READ_YOUTUBE_JS = r"""/* campusctl-read-youtube-video-state */() => {
@@ -120,6 +155,61 @@ class _PlaybackFailure(Exception):
         self.elapsed_seconds = max(0.0, elapsed_seconds)
         self.code = code
         self.message = message
+
+
+class _PlayDiagnostic:
+    """Sanitized per-item failure facts; only fixed tokens reach stderr."""
+
+    __slots__ = ("frame", "frame_panopto", "page_state", "splash_clicks", "splash_visible", "stage", "video_count")
+
+    def __init__(self) -> None:
+        self.stage = "start"
+        self.frame_panopto: bool | None = None
+        self.video_count = 0
+        self.splash_visible = False
+        self.splash_clicks = 0
+        self.page_state = "unknown"
+        self.frame: Any | None = None
+
+    async def refresh(self) -> None:
+        """Re-read the open player frame so a failure reports its page state."""
+        frame = self.frame
+        if frame is None:
+            return
+        with suppress(Exception):
+            value = await bounded(
+                frame.evaluate(CLASSIFY_PLAYER_PAGE_JS, PLAY_BUTTON_SELECTOR),
+                PROTOCOL_TIMEOUT_SECONDS,
+                "classifying the player page",
+            )
+            if isinstance(value, dict):
+                state = value.get("page_state")
+                if isinstance(state, str) and state in PAGE_STATES:
+                    self.page_state = state
+                count = value.get("video_count")
+                if isinstance(count, int) and not isinstance(count, bool) and count >= 0:
+                    self.video_count = count
+        with suppress(Exception):
+            control = await _visible_locator(frame, PLAY_BUTTON_SELECTOR, "checking the player splash control")
+            self.splash_visible = control is not None
+
+    def record(self, index: int, reason_code: str) -> str:
+        payload = {
+            "schema_version": 1,
+            "index": index,
+            "stage": self.stage if self.stage in PLAY_STAGES else "unknown",
+            "reason_code": reason_code,
+            "frame_panopto": self.frame_panopto if isinstance(self.frame_panopto, bool) else None,
+            "video_count": max(0, self.video_count),
+            "splash_visible": bool(self.splash_visible),
+            "splash_clicks": min(max(0, self.splash_clicks), PLAYER_MAX_SPLASH_CLICKS),
+            "page_state": self.page_state if self.page_state in PAGE_STATES else "unknown",
+        }
+        return PLAY_DIAGNOSTIC_PREFIX + json.dumps(payload, separators=(",", ":"), sort_keys=True)
+
+
+def _emit_play_diagnostic(diagnostic: _PlayDiagnostic, index: int, reason_code: str) -> None:
+    print(diagnostic.record(index + 1, reason_code), file=sys.stderr)
 
 
 def _not_started(entity_id: str, replay: bool = False) -> dict[str, Any]:
@@ -310,7 +400,10 @@ async def _expand_row_through_ui(page: Any, row_id: str) -> None:
         "reading the CNU lecture week",
     )
     if not isinstance(weekno, str) or not weekno.strip():
-        raise _PlaybackFailure(message="The requested lecture's course week could not be found.")
+        raise _PlaybackFailure(
+            code="lecture-row-unavailable",
+            message="The requested lecture's course week could not be found.",
+        )
     weekno = weekno.strip()
     week_container_selector = f"[id={_css_string(f'weekIdx{weekno}')}]"
 
@@ -330,7 +423,10 @@ async def _expand_row_through_ui(page: Any, row_id: str) -> None:
             "finding the CNU show-all-weeks control",
         )
         if not show_all_count:
-            raise _PlaybackFailure(message="The requested lecture's course week could not be opened.")
+            raise _PlaybackFailure(
+                code="lecture-row-unavailable",
+                message="The requested lecture's course week could not be opened.",
+            )
         show_all_status = await bounded(
             show_all.get_attribute("data-status"),
             PROTOCOL_TIMEOUT_SECONDS,
@@ -357,7 +453,10 @@ async def _expand_row_through_ui(page: Any, row_id: str) -> None:
             "waiting for the selected CNU week to become visible",
         )
     except Exception:
-        raise _PlaybackFailure(message="The requested lecture's course week did not become visible.") from None
+        raise _PlaybackFailure(
+            code="lecture-row-unavailable",
+            message="The requested lecture's course week did not become visible.",
+        ) from None
 
     selectors = await bounded(
         page.evaluate(COLLAPSED_TOGGLES_JS, row_id),
@@ -383,7 +482,10 @@ async def _expand_row_through_ui(page: Any, row_id: str) -> None:
             "waiting for the CNU lecture title to become visible",
         )
     except Exception:
-        raise _PlaybackFailure(message="The requested lecture remained hidden after opening its course week.") from None
+        raise _PlaybackFailure(
+            code="lecture-row-unavailable",
+            message="The requested lecture remained hidden after opening its course week.",
+        ) from None
 
 
 async def _close_player(page: Any) -> None:
@@ -393,50 +495,107 @@ async def _close_player(page: Any) -> None:
     await bounded(close_button.click(timeout=7000), PROTOCOL_TIMEOUT_SECONDS, "closing the lecture player")
 
 
-async def _player_frame(page: Any) -> Any:
+async def _player_frame(page: Any, diagnostic: _PlayDiagnostic | None = None) -> Any:
     clock = current_clock()
-    deadline = clock.monotonic() + PLAYER_FRAME_WAIT_SECONDS
+    started_at = clock.monotonic()
+    frame_deadline = started_at + PLAYER_FRAME_WAIT_SECONDS
+    video_deadline = started_at + PLAYER_VIDEO_WAIT_SECONDS
+    if diagnostic is not None:
+        diagnostic.stage = "frame"
     frame = None
-    while clock.monotonic() < deadline:
-        iframe = await bounded(
-            page.query_selector(PLAYER_FRAME_SELECTOR),
-            PROTOCOL_TIMEOUT_SECONDS,
-            "finding the Panopto player frame",
-        )
-        if iframe is not None:
-            candidate = await bounded(
-                iframe.content_frame(), PROTOCOL_TIMEOUT_SECONDS, "opening the Panopto player frame"
+    video = None
+    splash_clicks = 0
+    first_click_at: float | None = None
+    while current_clock().monotonic() < video_deadline:
+        now = current_clock().monotonic()
+        if frame is None and now >= frame_deadline:
+            break
+        if frame is None:
+            iframe = await bounded(
+                page.query_selector(PLAYER_FRAME_SELECTOR),
+                PROTOCOL_TIMEOUT_SECONDS,
+                "finding the Panopto player frame",
             )
-            if candidate is not None:
-                frame_url = getattr(candidate, "url", "")
-                video = await bounded(
-                    candidate.query_selector("video"),
-                    PROTOCOL_TIMEOUT_SECONDS,
-                    "checking the Panopto video frame",
+            if iframe is not None:
+                candidate = await bounded(
+                    iframe.content_frame(), PROTOCOL_TIMEOUT_SECONDS, "opening the Panopto player frame"
                 )
-                if "Embed.aspx" in frame_url or video is not None:
-                    frame = candidate
-                    if video is not None:
-                        break
-                    play_button = await _visible_locator(
-                        frame,
-                        PLAY_BUTTON_SELECTOR,
-                        "finding a visible Panopto splash play control",
+                if candidate is not None:
+                    frame_url = str(getattr(candidate, "url", "") or "")
+                    host = ""
+                    with suppress(ValueError, TypeError):
+                        host = (urlsplit(frame_url).hostname or "").lower()
+                    if diagnostic is not None:
+                        diagnostic.frame = candidate
+                        diagnostic.frame_panopto = "panopto" in host
+                    video = await bounded(
+                        candidate.query_selector("video"),
+                        PROTOCOL_TIMEOUT_SECONDS,
+                        "checking the Panopto video frame",
                     )
-                    if play_button is not None:
-                        await bounded(
-                            play_button.click(timeout=7000),
-                            PROTOCOL_TIMEOUT_SECONDS,
-                            "starting the Panopto player",
-                        )
-        await clock.sleep(min(PLAYER_POLL_INTERVAL_SECONDS, max(0.0, deadline - clock.monotonic())))
+                    if "Embed.aspx" in frame_url or video is not None:
+                        frame = candidate
+        else:
+            video = await bounded(
+                frame.query_selector("video"),
+                PROTOCOL_TIMEOUT_SECONDS,
+                "checking the Panopto video frame",
+            )
+        if frame is not None and video is not None:
+            break
+        if frame is not None:
+            if diagnostic is not None:
+                diagnostic.stage = "video"
+            play_button = await _visible_locator(
+                frame,
+                PLAY_BUTTON_SELECTOR,
+                "finding a visible Panopto splash play control",
+            )
+            if diagnostic is not None:
+                diagnostic.splash_visible = play_button is not None
+            if play_button is not None and splash_clicks < PLAYER_MAX_SPLASH_CLICKS:
+                retry_due = (
+                    splash_clicks > 0
+                    and first_click_at is not None
+                    and now - first_click_at >= PLAYER_SPLASH_RETRY_SECONDS
+                )
+                if splash_clicks == 0 or retry_due:
+                    await bounded(
+                        play_button.click(timeout=7000),
+                        PROTOCOL_TIMEOUT_SECONDS,
+                        "starting the Panopto player",
+                    )
+                    splash_clicks += 1
+                    if first_click_at is None:
+                        first_click_at = now
+                    if diagnostic is not None:
+                        diagnostic.splash_clicks = splash_clicks
+        await current_clock().sleep(
+            min(PLAYER_POLL_INTERVAL_SECONDS, max(0.0, video_deadline - current_clock().monotonic()))
+        )
     if frame is None:
-        raise _PlaybackFailure()
-    await bounded(
-        frame.wait_for_selector("video", timeout=15000),
-        16.0,
-        "waiting for the Panopto video",
-    )
+        raise _PlaybackFailure(code="player-frame-unavailable", message="The Panopto player frame did not appear.")
+    if video is None:
+        if diagnostic is not None:
+            diagnostic.stage = "video"
+            await diagnostic.refresh()
+        raise _PlaybackFailure(
+            code="player-video-unavailable",
+            message="The Panopto player frame loaded without a video element.",
+        )
+    try:
+        await bounded(
+            frame.wait_for_selector("video", timeout=15000),
+            16.0,
+            "waiting for the Panopto video",
+        )
+    except Exception:
+        if diagnostic is not None:
+            await diagnostic.refresh()
+        raise _PlaybackFailure(
+            code="player-video-unavailable",
+            message="The Panopto player frame loaded without a video element.",
+        ) from None
     return frame
 
 
@@ -447,7 +606,10 @@ async def _read_video_state(frame: Any) -> dict[str, Any]:
         "reading Panopto playback state",
     )
     if not isinstance(value, dict) or not value.get("exists"):
-        raise _PlaybackFailure()
+        raise _PlaybackFailure(
+            code="player-video-unavailable",
+            message="The Panopto player frame loaded without a video element.",
+        )
     return value
 
 
@@ -472,7 +634,10 @@ async def _youtube_frame(page: Any) -> Any:
                 return candidate
         remaining = deadline - clock.monotonic()
         if remaining <= 0:
-            raise _PlaybackFailure(message="The YouTube embed frame did not appear.")
+            raise _PlaybackFailure(
+                code="player-frame-unavailable",
+                message="The YouTube embed frame did not appear.",
+            )
         await clock.sleep(min(PLAYER_POLL_INTERVAL_SECONDS, remaining))
 
 
@@ -582,19 +747,31 @@ async def _play_youtube_video(
         if status.get("paused"):
             paused_since = now if paused_since is None else paused_since
             if now - paused_since >= PLAYER_STALL_SECONDS:
-                raise _PlaybackFailure(elapsed)
+                raise _PlaybackFailure(
+                    elapsed,
+                    code="playback-stalled",
+                    message="YouTube playback stopped making progress.",
+                )
         else:
             paused_since = None
         if current_time > previous_time + 0.05:
             previous_time = current_time
             last_progress_at = now
         elif now - last_progress_at >= PLAYER_STALL_SECONDS:
-            raise _PlaybackFailure(elapsed)
+            raise _PlaybackFailure(
+                elapsed,
+                code="playback-stalled",
+                message="YouTube playback stopped making progress.",
+            )
         watch_limit = (
             min(PLAYER_MAX_SECONDS, duration + PLAYER_WATCH_SLACK_SECONDS) if duration > 0 else PLAYER_MAX_SECONDS
         )
         if elapsed >= watch_limit:
-            raise _PlaybackFailure(elapsed)
+            raise _PlaybackFailure(
+                elapsed,
+                code="playback-timeout",
+                message="YouTube playback exceeded its watch time limit.",
+            )
         await clock.sleep(YOUTUBE_POLL_INTERVAL_SECONDS)
 
 
@@ -647,7 +824,9 @@ async def _play_visible_lecture(
     on_opened: Callable[[], None] | None = None,
     on_started: Callable[[], None] | None = None,
     on_position: Callable[[float, float], None] | None = None,
+    diagnostic: _PlayDiagnostic | None = None,
 ) -> tuple[float, str]:
+    diagnostic = diagnostic if diagnostic is not None else _PlayDiagnostic()
     started_at: float | None = None
     modal_open = False
     primary_error: BaseException | None = None
@@ -657,7 +836,9 @@ async def _play_visible_lecture(
                 code="playback-speed-unavailable",
                 message="YouTube lectures support only 1.0 playback speed.",
             )
+        diagnostic.stage = "row"
         await _expand_row_through_ui(page, row_id)
+        diagnostic.stage = "preview"
         row_selector = f"[id={_css_string(row_id)}] [data-act='titleDetailContents']"
         title = page.locator(row_selector)
         await bounded(
@@ -672,8 +853,12 @@ async def _play_visible_lecture(
             16.0,
             "waiting for the lecture preview",
         )
+        diagnostic.stage = "frame"
         if media == "youtube":
             frame = await _youtube_frame(page)
+            diagnostic.frame = frame
+            diagnostic.frame_panopto = False
+            diagnostic.stage = "playback"
             if on_opened is not None:
                 on_opened()
 
@@ -686,7 +871,8 @@ async def _play_visible_lecture(
             return await _play_youtube_video(
                 frame, replay=replay, on_started=on_youtube_started, on_position=on_position
             )
-        frame = await _player_frame(page)
+        frame = await _player_frame(page, diagnostic)
+        diagnostic.stage = "playback"
         if on_opened is not None:
             on_opened()
         status = await _read_video_state(frame)
@@ -742,13 +928,21 @@ async def _play_visible_lecture(
                 if isinstance(played_until_value, int | float) and math.isfinite(float(played_until_value))
                 else 0.0
             )
+            played_coverage = _video_number(status, "playedCoverage")
             elapsed = now - started_at
             if on_position is not None and (
                 last_position_event_at is None or now - last_position_event_at >= POSITION_PROGRESS_INTERVAL_SECONDS
             ):
                 on_position(current_time, duration)
                 last_position_event_at = now
-            if status.get("ended") or (not replay and duration > 0 and max(current_time, played_until) >= duration):
+            if status.get("ended") or (
+                duration > 0
+                and (
+                    played_coverage >= max(0.0, duration - REPLAY_COVERAGE_TOLERANCE_SECONDS)
+                    if replay
+                    else max(current_time, played_until) >= duration
+                )
+            ):
                 return elapsed, _watch_time(elapsed)
             if status.get("paused"):
                 play_button = await _visible_locator(
@@ -766,14 +960,14 @@ async def _play_visible_lecture(
                 previous_time = current_time
                 last_progress_at = now
             elif now - last_progress_at >= PLAYER_STALL_SECONDS:
-                raise _PlaybackFailure(elapsed)
+                raise _PlaybackFailure(elapsed, code="playback-stalled")
             watch_limit = (
                 min(PLAYER_MAX_SECONDS, duration / speed + PLAYER_WATCH_SLACK_SECONDS)
                 if duration > 0
                 else PLAYER_MAX_SECONDS
             )
             if elapsed >= watch_limit:
-                raise _PlaybackFailure(elapsed)
+                raise _PlaybackFailure(elapsed, code="playback-timeout")
             await current_clock().sleep(PLAYER_POLL_INTERVAL_SECONDS)
     except _PlaybackFailure as error:
         primary_error = error
@@ -786,6 +980,10 @@ async def _play_visible_lecture(
         primary_error = error
         raise
     finally:
+        with suppress(BaseException):
+            await diagnostic.refresh()
+        if primary_error is None:
+            diagnostic.stage = "close"
         if modal_open:
             try:
                 await _close_player(page)
@@ -927,11 +1125,13 @@ async def play_lectures(
     results: list[dict[str, Any]] = []
     for index, lecture in enumerate(lectures):
         entity_id = lecture["entity_id"]
+        diagnostic = _PlayDiagnostic()
         parts = _row_parts(entity_id)
         if parts is None:
             result = {**_not_started(entity_id, replay), "outcome": "failed", "reason_code": "playback-failed"}
             results.append(result)
             _finished(entity_id, result["outcome"])
+            _emit_play_diagnostic(diagnostic, index, "playback-failed")
             results.extend(_not_started_from(index + 1))
             return {"items": results}, [
                 _partial_error(
@@ -949,12 +1149,14 @@ async def play_lectures(
             opened = True
 
         try:
+            diagnostic.stage = "room"
             if index:
                 await ensure_logged_in(page, config, target_url=MY_LECTURE_URL, expected_selector=COURSE_LINK_SELECTOR)
             await _enter_course_room(page, course_id)
+            diagnostic.stage = "row"
             row = await _read_row(page, row_id)
             if row is None or row.get("moduletype") != "LV":
-                raise _PlaybackFailure()
+                raise _PlaybackFailure(code="lecture-row-unavailable")
             state = row.get("state") if isinstance(row.get("state"), str) else None
             if state == "F" and not replay:
                 result = {
@@ -997,7 +1199,7 @@ async def play_lectures(
                 _finished(entity_id, result["outcome"])
                 continue
             if row.get("openyn") == "N":
-                raise _PlaybackFailure()
+                raise _PlaybackFailure(code="lecture-row-unavailable")
             lecture_title = lecture.get("title", "")
 
             elapsed, watch_time = await _play_visible_lecture(
@@ -1006,6 +1208,7 @@ async def play_lectures(
                 selected_speed,
                 media=lecture.get("media", "video"),
                 replay=replay,
+                diagnostic=diagnostic,
                 on_opened=mark_opened,
                 on_started=lambda index=index, entity_id=entity_id, title=lecture_title: _emit(
                     {
@@ -1025,6 +1228,7 @@ async def play_lectures(
                     }
                 ),
             )
+            diagnostic.stage = "verify"
             _emit({"type": "verifying", "entity_id": entity_id})
             try:
                 provider_row = await _poll_completion(page, row_id)
@@ -1095,6 +1299,7 @@ async def play_lectures(
             }
             results.append(result)
             _finished(entity_id, result["outcome"])
+            _emit_play_diagnostic(diagnostic, index, "playback-failed")
             results.extend(_not_started_from(index + 1))
             return {"items": results}, [
                 _partial_error(
@@ -1117,6 +1322,7 @@ async def play_lectures(
             }
             results.append(result)
             _finished(entity_id, result["outcome"])
+            _emit_play_diagnostic(diagnostic, index, error.code)
             results.extend(_not_started_from(index + 1))
             code = error.code
             message = error.message or "A requested lecture could not be played."
@@ -1138,6 +1344,7 @@ async def play_lectures(
             }
             results.append(result)
             _finished(entity_id, result["outcome"])
+            _emit_play_diagnostic(diagnostic, index, "playback-failed")
             results.extend(_not_started_from(index + 1))
             return {"items": results}, [
                 _partial_error(

@@ -1,4 +1,4 @@
-"""Replay runs the official controls and waits for this invocation's native end."""
+"""Replay runs the official controls and requires this session's watched coverage or end."""
 
 from __future__ import annotations
 
@@ -91,7 +91,7 @@ def test_replay_does_not_credit_stale_f_without_native_end(monkeypatch: pytest.M
         async def evaluate(self, script: str, *args: Any) -> dict[str, Any]:
             state = await super().evaluate(script, *args)
             if "campusctl-read-video-state" in script and not state["paused"]:
-                state.update(ended=False, currentTime=10.0, playedUntil=10.0)
+                state.update(ended=False, currentTime=10.0, playedUntil=10.0, playedCoverage=0.5)
             return state
 
     page = ReplayPage(states={"row-1": "F", "row-2": "N"})
@@ -154,8 +154,11 @@ def test_replay_modal_without_official_embed_is_not_player_opened(
     if missing == "video":
         page.frame = MissingVideoFrame(page)
     monkeypatch.setattr(player, "PLAYER_FRAME_WAIT_SECONDS", 0.01)
+    monkeypatch.setattr(player, "PLAYER_VIDEO_WAIT_SECONDS", 0.02)
     items, error = asyncio.run(_run(monkeypatch, tmp_path, page, [_lecture(FIRST_ID, completion="complete")]))
     assert error is not None and items[0]["outcome"] == "failed"
+    assert items[0]["reason_code"] == f"player-{missing}-unavailable"
+    assert error[0].code == items[0]["reason_code"]
     assert items[0]["player_opened"] is False and items[0]["replay_requested"] is True
     assert ("open-player", "row-1") in page.calls
     assert ("close", "row-1") in page.calls
@@ -245,7 +248,7 @@ Object.defineProperties(video, {
   duration: {get: () => 10},
   paused: {get: () => !playing},
   ended: {get: () => playing && reads >= 2},
-  played: {get: () => ({length: playing ? 1 : 0, end: () => position})}
+  played: {get: () => ({length: playing ? 1 : 0, start: () => 0, end: () => position})}
 });
 for (const property of ['hidden', 'visibilityState']) {
   Object.defineProperty(document, property, {
