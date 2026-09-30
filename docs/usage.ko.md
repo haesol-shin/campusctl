@@ -56,6 +56,8 @@ Catalog generated 1 second ago.
 
 출석 미반영으로 표시된 행은 화면의 시청 진도가 필요한 전체 시간에 도달했을 때만 `watched (not counted)`로 표시됩니다. 그 진도는 이번 재생 전에 기록된 것일 수도 있으며, 출석 인정 보장은 아닙니다. CNU는 계정당 LMS 로그인 세션 하나만 허용하는 것으로 관찰되어, 같은 계정으로 로그인한 다른 자동화와 campusctl을 함께 실행하지 않는 편이 안전합니다. 브라우저 세션은 [설정 안내](configuration.ko.md)를 보세요.
 
+재생 실패 코드가 `player-frame-unavailable`이면 같은 계정의 다른 세션이 플레이어 페이지를 교체했을 수 있습니다. 해당 계정의 다른 LMS 세션을 닫고 다시 시도하세요. 실패 항목은 표준 오류 출력에 민감 정보가 제거된 `campusctl-play-diagnostic:` 줄을 기록합니다(진단 스키마 버전 2). `frame_kind`는 URL이 아니라 고정된 값(`panopto`, `youtube`, `lms`, `blank`, `other`, `none` 중 하나)입니다. 전체 오류 코드와 진단 필드는 [CLI 계약](contracts/cli.md#command-results)을 참고하세요.
+
 ## 과제와 공지 상세
 
 `assignments list`와 `notices list`는 목록 정보를 보여줍니다. 자세한 내용을 읽으려면 전체 ID 하나 이상을 고른 뒤 `campusctl assignments fetch ID1 ID2` 또는 `campusctl notices fetch ID1 ID2`를 실행하세요. ID 하나도 가능합니다. 선택한 상세 항목은 한 브라우저 세션에서 가져옵니다. 가져온 내용은 로컬 데이터 폴더의 `sources/` 아래에 `content.md`와 `package.json`으로 저장됩니다. 서로 다른 ID 하나만 가져올 때 `--out DIR`은 아직 존재하지 않는 새 패키지 폴더를 가리켜야 합니다. JSON의 `result.source_package`에서 경로, 완전성, 생략된 리소스를 볼 수 있습니다.
