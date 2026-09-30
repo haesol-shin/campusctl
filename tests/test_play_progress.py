@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import sys
 from types import SimpleNamespace
 from typing import Any
 
@@ -197,6 +198,25 @@ def test_human_tty_early_stop_finishes_progress_on_a_clean_line(
     assert captured.err.startswith(player.PLAY_DIAGNOSTIC_PREFIX)
     assert "\r  00:10 / 00:10\n  Done: failed\n" in captured.out
     assert captured.out.endswith("\n")
+
+
+def test_human_tty_progress_line_ends_before_stderr_diagnostic(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    page = FakePage(complete_after_play={"row-1": True}, fail_close=True)
+    _prepare(tmp_path, monkeypatch, page)
+    stream = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", stream)
+    monkeypatch.setattr(sys, "stderr", stream)
+    monkeypatch.setattr(stream, "isatty", lambda: True)
+
+    exit_code = cli.main(["lectures", "play", FIRST_ID])
+
+    assert exit_code == 1
+    content = stream.getvalue()
+    progress_line = "\r  00:10 / 00:10\n  Done: failed\n"
+    assert progress_line in content
+    progress_end = content.index(progress_line) + len(progress_line)
+    diagnostic_start = content.index(player.PLAY_DIAGNOSTIC_PREFIX)
+    assert progress_end <= diagnostic_start
 
 
 def test_human_play_survives_a_terminal_write_failure_after_position(

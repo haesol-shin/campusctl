@@ -1130,8 +1130,8 @@ async def play_lectures(
         if parts is None:
             result = {**_not_started(entity_id, replay), "outcome": "failed", "reason_code": "playback-failed"}
             results.append(result)
-            _emit_play_diagnostic(diagnostic, index, "playback-failed")
             _finished(entity_id, result["outcome"])
+            _emit_play_diagnostic(diagnostic, index, "playback-failed")
             results.extend(_not_started_from(index + 1))
             return {"items": results}, [
                 _partial_error(
@@ -1298,8 +1298,8 @@ async def play_lectures(
                 "player_opened": opened,
             }
             results.append(result)
-            _emit_play_diagnostic(diagnostic, index, "playback-failed")
             _finished(entity_id, result["outcome"])
+            _emit_play_diagnostic(diagnostic, index, "playback-failed")
             results.extend(_not_started_from(index + 1))
             return {"items": results}, [
                 _partial_error(
@@ -1321,8 +1321,8 @@ async def play_lectures(
                 "player_opened": opened,
             }
             results.append(result)
-            _emit_play_diagnostic(diagnostic, index, error.code)
             _finished(entity_id, result["outcome"])
+            _emit_play_diagnostic(diagnostic, index, error.code)
             results.extend(_not_started_from(index + 1))
             code = error.code
             message = error.message or "A requested lecture could not be played."
@@ -1343,8 +1343,8 @@ async def play_lectures(
                 "player_opened": opened,
             }
             results.append(result)
-            _emit_play_diagnostic(diagnostic, index, "playback-failed")
             _finished(entity_id, result["outcome"])
+            _emit_play_diagnostic(diagnostic, index, "playback-failed")
             results.extend(_not_started_from(index + 1))
             return {"items": results}, [
                 _partial_error(
