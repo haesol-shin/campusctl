@@ -92,10 +92,10 @@ Playwright 브라우저 캐시의 기본 위치는 다음과 같습니다:
 
 ## 버전 고정
 
-`v0.6.0` 릴리스를 고정해 설치하려면:
+`v0.6.1` 릴리스를 고정해 설치하려면:
 
 ```bash
-uv tool install --with-executables-from playwright git+https://github.com/haesol-shin/campusctl@v0.6.0
+uv tool install --with-executables-from playwright git+https://github.com/haesol-shin/campusctl@v0.6.1
 ```
 
 ## 업데이트 또는 제거

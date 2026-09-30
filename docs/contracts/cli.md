@@ -61,7 +61,7 @@ In JSON mode, successful configuration creation has status `ok` and returns `{"c
 
 ```json
 {
-  "version": "0.6.0",
+  "version": "0.6.1",
   "python": "<version>",
   "platform": "<platform>",
   "config": {"path": "<config-path>", "present": true},
@@ -136,7 +136,7 @@ If sync login or course discovery fails, `sync` aborts before reading or writing
 In JSON mode, every command response is one JSON object encoded as UTF-8 on stdout, including when stdout is redirected to a pipe:
 
 ```json
-{"schema_version":1,"tool":"campusctl","tool_version":"0.6.0","status":"ok","result":{},"errors":[],"generated_at":"2026-01-02T03:04:05Z"}
+{"schema_version":1,"tool":"campusctl","tool_version":"0.6.1","status":"ok","result":{},"errors":[],"generated_at":"2026-01-02T03:04:05Z"}
 ```
 
 `generated_at` is a UTC RFC3339 timestamp ending in `Z`. `status` is `ok`, `partial`, `user-action`, `busy`, or `error`. Each error has `code`, safe `message`, and nullable `remediation` fields.
