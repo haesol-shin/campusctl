@@ -56,6 +56,8 @@ Play only a lecture you chose by its full ID with `campusctl lectures play ID`. 
 
 A row flagged as not counted for attendance is labeled `watched (not counted)` only when its displayed watched progress reaches the required duration; that progress may predate the current play command. This is not a promise of attendance credit. CNU has been observed to allow one LMS login session per account, so do not run campusctl alongside another logged-in automation on that account. See [configuration](configuration.md) for browser sessions.
 
+If playback fails with `player-frame-unavailable`, another session for the same account can replace the player page. Close other LMS sessions for that account and retry. Failed items emit a sanitized `campusctl-play-diagnostic:` line on stderr (diagnostic schema version 2); its `frame_kind` is a fixed token (`panopto`, `youtube`, `lms`, `blank`, `other`, or `none`), not a URL. See the [CLI contract](contracts/cli.md#command-results) for the full reason-code and diagnostic fields.
+
 ## Assignment and notice details
 
 `assignments list` and `notices list` show metadata. To read details, choose one or more full IDs and run `campusctl assignments fetch ID1 ID2` or `campusctl notices fetch ID1 ID2`; one ID works too. Selected details are fetched in one browser session. Fetch writes `content.md` and `package.json` under the local data directory's `sources/` tree. With one distinct ID, `--out DIR` must name a new, nonexistent package directory. JSON then reports `result.source_package` with its path, completeness and omitted resources.

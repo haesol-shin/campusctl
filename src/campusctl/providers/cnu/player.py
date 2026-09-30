@@ -11,6 +11,8 @@ from contextlib import suppress
 from typing import Any
 from urllib.parse import urlsplit
 
+from playwright.async_api import Error as PlaywrightError
+
 from campusctl.browser import PROTOCOL_TIMEOUT_SECONDS, bounded
 from campusctl.catalog import catalog_path, read_catalog, write_catalog
 from campusctl.envelope import CampusError
@@ -157,14 +159,44 @@ class _PlaybackFailure(Exception):
         self.message = message
 
 
+def _frame_kind(frame_url: str, page_url: str) -> str:
+    try:
+        parsed = urlsplit(frame_url)
+        host = (parsed.hostname or "").lower()
+        page_host = (urlsplit(page_url).hostname or "").lower()
+    except (TypeError, ValueError):
+        return "other"
+    if parsed.scheme == "about" and parsed.path == "blank":
+        return "blank"
+    if not host:
+        return "other"
+    if "panopto" in host:
+        return "panopto"
+    if host in {"youtube.com", "youtube-nocookie.com"} or host.endswith((".youtube.com", ".youtube-nocookie.com")):
+        return "youtube"
+    if host == page_host:
+        return "lms"
+    return "other"
+
+
 class _PlayDiagnostic:
     """Sanitized per-item failure facts; only fixed tokens reach stderr."""
 
-    __slots__ = ("frame", "frame_panopto", "page_state", "splash_clicks", "splash_visible", "stage", "video_count")
+    __slots__ = (
+        "frame",
+        "frame_kind",
+        "frame_panopto",
+        "page_state",
+        "splash_clicks",
+        "splash_visible",
+        "stage",
+        "video_count",
+    )
 
     def __init__(self) -> None:
         self.stage = "start"
         self.frame_panopto: bool | None = None
+        self.frame_kind = "none"
         self.video_count = 0
         self.splash_visible = False
         self.splash_clicks = 0
@@ -195,11 +227,14 @@ class _PlayDiagnostic:
 
     def record(self, index: int, reason_code: str) -> str:
         payload = {
-            "schema_version": 1,
+            "schema_version": 2,
             "index": index,
             "stage": self.stage if self.stage in PLAY_STAGES else "unknown",
             "reason_code": reason_code,
             "frame_panopto": self.frame_panopto if isinstance(self.frame_panopto, bool) else None,
+            "frame_kind": self.frame_kind
+            if self.frame_kind in {"panopto", "youtube", "lms", "blank", "other"}
+            else "none",
             "video_count": max(0, self.video_count),
             "splash_visible": bool(self.splash_visible),
             "splash_clicks": min(max(0, self.splash_clicks), PLAYER_MAX_SPLASH_CLICKS),
@@ -511,30 +546,51 @@ async def _player_frame(page: Any, diagnostic: _PlayDiagnostic | None = None) ->
         if frame is None and now >= frame_deadline:
             break
         if frame is None:
-            iframe = await bounded(
-                page.query_selector(PLAYER_FRAME_SELECTOR),
-                PROTOCOL_TIMEOUT_SECONDS,
-                "finding the Panopto player frame",
-            )
-            if iframe is not None:
-                candidate = await bounded(
-                    iframe.content_frame(), PROTOCOL_TIMEOUT_SECONDS, "opening the Panopto player frame"
+            candidate = None
+            try:
+                iframe = await bounded(
+                    page.query_selector(PLAYER_FRAME_SELECTOR),
+                    PROTOCOL_TIMEOUT_SECONDS,
+                    "finding the Panopto player frame",
                 )
-                if candidate is not None:
-                    frame_url = str(getattr(candidate, "url", "") or "")
-                    host = ""
-                    with suppress(ValueError, TypeError):
-                        host = (urlsplit(frame_url).hostname or "").lower()
-                    if diagnostic is not None:
-                        diagnostic.frame = candidate
-                        diagnostic.frame_panopto = "panopto" in host
+                if iframe is not None:
+                    candidate = await bounded(
+                        iframe.content_frame(), PROTOCOL_TIMEOUT_SECONDS, "opening the Panopto player frame"
+                    )
+            except (CampusError, PlaywrightError):
+                raise _PlaybackFailure(
+                    current_clock().monotonic() - started_at,
+                    code="player-frame-unavailable",
+                    message="The Panopto player frame was unavailable.",
+                ) from None
+            if candidate is not None:
+                frame_url = str(getattr(candidate, "url", "") or "")
+                kind = _frame_kind(frame_url, str(getattr(page, "url", "") or ""))
+                recognized_player = kind == "panopto" and "Embed.aspx" in frame_url
+                if diagnostic is not None:
+                    diagnostic.frame = candidate
+                    diagnostic.frame_kind = kind
+                    diagnostic.frame_panopto = kind == "panopto"
+                try:
                     video = await bounded(
                         candidate.query_selector("video"),
                         PROTOCOL_TIMEOUT_SECONDS,
                         "checking the Panopto video frame",
                     )
-                    if "Embed.aspx" in frame_url or video is not None:
-                        frame = candidate
+                except (CampusError, PlaywrightError):
+                    if diagnostic is not None and recognized_player:
+                        diagnostic.stage = "video"
+                    raise _PlaybackFailure(
+                        current_clock().monotonic() - started_at,
+                        code="player-video-unavailable" if recognized_player else "player-frame-unavailable",
+                        message=(
+                            "The Panopto player frame loaded without an accessible video element."
+                            if recognized_player
+                            else "The Panopto player frame was unavailable."
+                        ),
+                    ) from None
+                if "Embed.aspx" in frame_url or video is not None:
+                    frame = candidate
         else:
             video = await bounded(
                 frame.query_selector("video"),
@@ -574,7 +630,11 @@ async def _player_frame(page: Any, diagnostic: _PlayDiagnostic | None = None) ->
             min(PLAYER_POLL_INTERVAL_SECONDS, max(0.0, video_deadline - current_clock().monotonic()))
         )
     if frame is None:
-        raise _PlaybackFailure(code="player-frame-unavailable", message="The Panopto player frame did not appear.")
+        raise _PlaybackFailure(
+            current_clock().monotonic() - started_at,
+            code="player-frame-unavailable",
+            message="The Panopto player frame did not appear.",
+        )
     if video is None:
         if diagnostic is not None:
             diagnostic.stage = "video"
@@ -858,6 +918,9 @@ async def _play_visible_lecture(
             frame = await _youtube_frame(page)
             diagnostic.frame = frame
             diagnostic.frame_panopto = False
+            diagnostic.frame_kind = _frame_kind(
+                str(getattr(frame, "url", "") or ""), str(getattr(page, "url", "") or "")
+            )
             diagnostic.stage = "playback"
             if on_opened is not None:
                 on_opened()
@@ -1315,7 +1378,7 @@ async def play_lectures(
                 "outcome": "failed",
                 "reason_code": error.code,
                 "elapsed_seconds": round(elapsed, 1),
-                "watch_time": _watch_time(elapsed) if elapsed else None,
+                "watch_time": _watch_time(elapsed) if opened and elapsed else None,
                 "provider_state": state,
                 "replay_requested": replay,
                 "player_opened": opened,
@@ -1327,6 +1390,11 @@ async def play_lectures(
             code = error.code
             message = error.message or "A requested lecture could not be played."
             remediation = "Check the LMS session and lecture availability, then retry."
+            if code == "player-frame-unavailable":
+                remediation = (
+                    "Another session for the same account can replace the player page. "
+                    "Close other LMS sessions for that account and retry."
+                )
             if code == "playback-speed-unavailable":
                 message = error.message or "The requested playback speed is unavailable in the player."
                 remediation = "Use 1.0 speed for YouTube or retry at a speed supported by the selected player."
