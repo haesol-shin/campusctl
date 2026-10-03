@@ -138,7 +138,7 @@ jobs:
           key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('uv.lock') }}
       - run: uv run playwright install --with-deps chromium
       - run: uv run pytest -q --shard-id=${{ matrix.shard }} --num-shards=3 --cov=campusctl --cov-report= -o faulthandler_timeout=30
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: browser-coverage-shard-${{ matrix.shard }}
@@ -199,7 +199,7 @@ jobs:
             gh run download "$run_id" --repo "$GITHUB_REPOSITORY" --name browser-coverage --dir baseline || true
           fi
           python scripts/report_coverage.py
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: browser-coverage
