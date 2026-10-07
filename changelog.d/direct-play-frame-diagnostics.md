@@ -1,2 +1,0 @@
-- Classify frame lookup timeouts and browser errors as `player-frame-unavailable` with elapsed time and guidance to close other LMS sessions for the same account before retrying
-- Add fixed-token `frame_kind` to sanitized play diagnostics and bump their schema version to 2; the CLI envelope schema stays unchanged
