@@ -5,7 +5,7 @@ All notable changes to campusctl are documented here. This project follows [Keep
 ## [0.6.2] - 2026-10-07
 
 ### Fixed
-- Fetch unsubmitted assignments with an empty submission record while retaining strict task and course identity checks for populated responses.
+- Fetch unsubmitted assignments with an empty submission record while retaining strict task and course identity checks for populated responses
 - Classify frame lookup timeouts and browser errors as `player-frame-unavailable` with elapsed time and guidance to close other LMS sessions for the same account before retrying
 - Add fixed-token `frame_kind` to sanitized play diagnostics and bump their schema version to 2; the CLI envelope schema stays unchanged
 
