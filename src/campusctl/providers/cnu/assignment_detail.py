@@ -109,6 +109,25 @@ def _response_identity(payload: Any, course_id: str) -> str:
     return report_no
 
 
+def _submission_identity(payload: Any, course_id: str) -> str | None:
+    """Allow only an explicitly empty submission record to omit its identity."""
+    if not isinstance(payload, dict):
+        raise _wrong_task()
+    header = payload.get("header")
+    if not isinstance(header, dict) or str(header.get("code")) not in {"200", "0"}:
+        raise _failed()
+    body = payload.get("body")
+    if (
+        isinstance(body, dict)
+        and "report_no" in body
+        and body["report_no"] is None
+        and "course_id" in body
+        and body["course_id"] in (None, "")
+    ):
+        return None
+    return _response_identity(payload, course_id)
+
+
 def _markdown_text(value: str) -> str:
     return re.sub(r"([\\`*_{}\[\]<>!|])", r"\\\1", value)
 
@@ -161,7 +180,7 @@ def _detail_parts(raw: Any, *, task_id: str, source_url: str) -> tuple[str | Res
 
 
 async def capture_assignment_detail(page: Any, config: dict[str, Any], selected_row: dict[str, Any]) -> DetailSnapshot:
-    """Open the selected catalog task via the course task menu and bind both detail responses.
+    """Open the selected task via the course menu and verify detail and submission identities.
 
     The caller authenticates once and retains the session through package building.
     """
@@ -227,7 +246,7 @@ async def capture_assignment_detail(page: Any, config: dict[str, Any], selected_
         page.expect_response(matches(_DETAIL_PATHS[1]), timeout=SECTION_RESPONSE_TIMEOUT_MS) as std_info,
     ):
         await bounded(selected.click(), PROTOCOL_TIMEOUT_SECONDS, "opening the selected CNU task")
-    for info in (detail_info, std_info):
+    for info, bind_identity in ((detail_info, _response_identity), (std_info, _submission_identity)):
         response = await bounded(info.value, SECTION_RESPONSE_TIMEOUT_MS / 1000, "waiting for CNU task detail")
         if (
             response.status != 200
@@ -235,11 +254,11 @@ async def capture_assignment_detail(page: Any, config: dict[str, Any], selected_
             is not None
         ):
             raise _failed()
-        identity = _response_identity(
+        identity = bind_identity(
             await bounded(response.json(), PROTOCOL_TIMEOUT_SECONDS, "verifying CNU task detail identity"),
             course_id,
         )
-        if identity != task_id:
+        if identity is not None and identity != task_id:
             raise _wrong_task()
     source_url = page.url
     source = urlsplit(source_url)

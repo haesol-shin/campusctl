@@ -100,12 +100,15 @@ class BriefFixture(HTMLParser):
 
 
 class Response:
-    def __init__(self, path: str, native: str | None, course_id: str) -> None:
+    def __init__(
+        self, path: str, native: str | None, course_id: str, body_override: dict[str, Any] | None = None
+    ) -> None:
         self.url = "https://dcs-learning.cnu.ac.kr" + path
         self.request = SimpleNamespace(method="POST")
         self.status = 200
         self.native = native
         self.course_id = course_id
+        self.body_override = body_override
 
     async def finished(self) -> None:
         return None
@@ -120,6 +123,8 @@ class Response:
             body["report_no"] = self.native
             if "contents_id" in body:
                 body["contents_id"] = self.native
+        if self.body_override is not None:
+            body = self.body_override
         return {"header": fixture["header"], "body": body}
 
 
@@ -158,7 +163,9 @@ class SelectedLink:
             native = self.page.std_id if path.endswith("/stdDetail") and self.page.std_id else self.page.observed_id
             if self.page.missing_report and path.endswith("/detail"):
                 native = None
-            response = Response(path, native, self.page.observed_course)
+            response = Response(
+                path, native, self.page.observed_course, self.page.std_body if path.endswith("/stdDetail") else None
+            )
             for waiter in self.page.waiters:
                 if waiter.predicate(response):
                     waiter.value.set_result(response)
@@ -174,12 +181,14 @@ class Page:
         observed_course: str = "course-a",
         std_id: str | None = None,
         missing_report: bool = False,
+        std_body: dict[str, Any] | None = None,
     ) -> None:
         self.fixture = fixture
         self.observed_id = observed_id
         self.observed_course = observed_course
         self.std_id = std_id
         self.missing_report = missing_report
+        self.std_body = std_body
         self.selected_id = "TB_L_REPORT101"
         self.url = "https://dcs-learning.cnu.ac.kr/std/myLecture"
         self.actions: list[str] = []
@@ -306,12 +315,42 @@ def test_wrong_selected_task_fails_before_transfer(monkeypatch: pytest.MonkeyPat
     assert not page.extracted
 
 
+@pytest.mark.parametrize("course_id", [None, ""])
+def test_unsubmitted_assignment_detail_capture(
+    monkeypatch: pytest.MonkeyPatch, brief: BriefFixture, course_id: str | None
+) -> None:
+    page = Page(brief, "TB_L_REPORT101", std_body={"report_no": None, "course_id": course_id, "apply_yn": None})
+    snapshot = asyncio.run(_capture(monkeypatch, page))
+    assert snapshot.provider_native_id == SELECTED["task_id"]
+    assert "Read the instructions" in "".join(part for part in snapshot.parts if isinstance(part, str))
+    assert page.extracted
+
+
+@pytest.mark.parametrize("header", [None, {}, {"code": 500}])
+def test_empty_submission_requires_success_header(
+    monkeypatch: pytest.MonkeyPatch, brief: BriefFixture, header: Any
+) -> None:
+    monkeypatch.setitem(RESPONSES, "stdDetail", {"header": header, "body": {}})
+    page = Page(brief, "TB_L_REPORT101", std_body={"report_no": None, "course_id": None, "apply_yn": None})
+    with pytest.raises(CampusError) as failure:
+        asyncio.run(_capture(monkeypatch, page))
+    assert failure.value.code == "fetch-failed"
+    assert not page.extracted
+
+
 @pytest.mark.parametrize(
     "options",
     [
         {"observed_course": "other-course"},
         {"std_id": "TB_L_REPORT102"},
         {"missing_report": True},
+        {"std_body": {"report_no": "TB_L_REPORT102", "course_id": "course-a"}},
+        {"std_body": {"report_no": "TB_L_REPORT101", "course_id": "other-course"}},
+        {"std_body": {"report_no": None, "course_id": "other-course"}},
+        {"std_body": {"report_no": "TB_L_REPORT102", "course_id": None}},
+        {"std_body": {}},
+        {"std_body": {"report_no": None}},
+        {"std_body": {"course_id": None}},
     ],
 )
 def test_assignment_response_identity_rejects_before_extraction(
