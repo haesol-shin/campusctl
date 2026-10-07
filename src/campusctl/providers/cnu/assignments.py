@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from campusctl.browser import PROTOCOL_TIMEOUT_SECONDS, bounded, profile_span
+from campusctl.browser import PROTOCOL_TIMEOUT_SECONDS, bounded, finish_response, profile_span
 from campusctl.envelope import CampusError
 from campusctl.identity import assignment_entity_id
 from campusctl.wait_clock import current_clock
@@ -259,7 +259,7 @@ async def _collect_assignment_rows(
         raise ValueError("Task response did not follow the committed task document")
     with profile_span("response-completion", wait_kind="response", domain="assignments"):
         completion_error = await bounded(
-            response.finished(), SECTION_RESPONSE_TIMEOUT_MS / 1000, "finishing the CNU task response"
+            finish_response(response), SECTION_RESPONSE_TIMEOUT_MS / 1000, "finishing the CNU task response"
         )
     if completion_error is not None or response.status != 200:
         raise ValueError("Task response failed")

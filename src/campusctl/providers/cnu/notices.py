@@ -10,7 +10,14 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from campusctl.browser import PROTOCOL_TIMEOUT_SECONDS, bounded, profile_check_start, profile_diagnostic, profile_span
+from campusctl.browser import (
+    PROTOCOL_TIMEOUT_SECONDS,
+    bounded,
+    finish_response,
+    profile_check_start,
+    profile_diagnostic,
+    profile_span,
+)
 from campusctl.envelope import CampusError
 from campusctl.identity import notice_entity_id
 from campusctl.wait_clock import current_clock
@@ -414,7 +421,9 @@ async def _grid_snapshot(page: Any, capture: _TodoCapture) -> list[dict[str, Any
             )
             if (
                 response.status != 200
-                or await bounded(response.finished(), SECTION_RESPONSE_TIMEOUT_MS / 1000, "finishing the notice list")
+                or await bounded(
+                    finish_response(response), SECTION_RESPONSE_TIMEOUT_MS / 1000, "finishing the notice list"
+                )
                 is not None
             ):
                 raise ValueError("Notice request did not complete successfully")
@@ -734,7 +743,9 @@ class _NoticeCapture:
             response = matching[0]
             with profile_span("response-completion", wait_kind="response", domain="notices"):
                 if (
-                    await bounded(response.finished(), SECTION_RESPONSE_TIMEOUT_MS / 1000, "finishing board response")
+                    await bounded(
+                        finish_response(response), SECTION_RESPONSE_TIMEOUT_MS / 1000, "finishing board response"
+                    )
                     is not None
                 ):
                     raise ValueError("Board response incomplete")

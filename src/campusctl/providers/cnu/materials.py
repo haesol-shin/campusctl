@@ -12,7 +12,14 @@ from urllib.parse import urlsplit
 
 from playwright.async_api import Error as PlaywrightError
 
-from campusctl.browser import PROTOCOL_TIMEOUT_SECONDS, bounded, profile_check_start, profile_diagnostic, profile_span
+from campusctl.browser import (
+    PROTOCOL_TIMEOUT_SECONDS,
+    bounded,
+    finish_response,
+    profile_check_start,
+    profile_diagnostic,
+    profile_span,
+)
 from campusctl.envelope import CampusError
 from campusctl.identity import material_entity_id
 from campusctl.wait_clock import current_clock
@@ -268,7 +275,10 @@ class _RequestWindow:
                         remaining = deadline - clock.now()
                         if remaining <= 0:
                             raise TimeoutError
-                        if await bounded(response.finished(), remaining, "finishing archive response") is not None:
+                        if (
+                            await bounded(finish_response(response), remaining, "finishing archive response")
+                            is not None
+                        ):
                             raise ValueError("archive response incomplete")
                         if response.status != 200 or len(self.matches(path, method, after=after)) != 1:
                             raise ValueError("archive response failed or duplicated")
