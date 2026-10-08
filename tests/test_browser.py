@@ -173,6 +173,92 @@ def test_bounded_timeout_is_safe_and_names_operation() -> None:
     _run(scenario())
 
 
+@pytest.mark.parametrize("outcome", ["success", "pending-success", "cancel", "timeout"])
+def test_finish_response_does_not_orphan_target_close_tasks(outcome: str) -> None:
+    from types import SimpleNamespace
+
+    from playwright._impl._network import Response as ImplResponse
+
+    async def scenario() -> None:
+        loop = asyncio.get_running_loop()
+        errors: list[dict[str, Any]] = []
+        loop.set_exception_handler(lambda _loop, context: errors.append(context))
+        closed = loop.create_future()
+        impl = object.__new__(ImplResponse)
+        impl._finished_future = loop.create_future()
+        impl._request = SimpleNamespace(_target_closed_future=lambda: closed)
+        response = SimpleNamespace(_impl_obj=impl, finished=impl.finished)
+        baseline = asyncio.all_tasks()
+        try:
+            if outcome == "success":
+                impl._finished_future.set_result(True)
+                assert await browser.finish_response(response) is None
+            elif outcome == "pending-success":
+                waiter = asyncio.create_task(browser.finish_response(response))
+                await settle()
+                assert not waiter.done()
+                impl._finished_future.set_result(True)
+                assert await waiter is None
+            elif outcome == "cancel":
+                waiter = asyncio.create_task(browser.finish_response(response))
+                await settle()
+                waiter.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await waiter
+            else:
+                with pytest.raises(CampusError, match="finishing a test response"):
+                    await browser.bounded(browser.finish_response(response), 0.01, "finishing a test response")
+            await settle()
+            orphaned = asyncio.all_tasks() - baseline
+            closed.set_result(None)
+            await settle()
+            # Retain and retrieve leaked tasks only after recording the failure,
+            # so the regression itself does not pollute other tests' stderr.
+            leaked_errors = await asyncio.gather(*orphaned, return_exceptions=True)
+            assert not orphaned, leaked_errors
+            assert not errors
+            assert not impl._finished_future.cancelled()
+            assert not closed.cancelled()
+        finally:
+            loop.set_exception_handler(None)
+
+    _run(scenario())
+
+
+@pytest.mark.parametrize("outcome", ["closed", "closed-and-finished", "completion-error"])
+def test_finish_response_preserves_errors(outcome: str) -> None:
+    from types import SimpleNamespace
+
+    from playwright._impl._network import Response as ImplResponse
+    from playwright.async_api import Error
+
+    async def scenario() -> None:
+        loop = asyncio.get_running_loop()
+        closed = loop.create_future()
+        impl = object.__new__(ImplResponse)
+        impl._finished_future = loop.create_future()
+        impl._request = SimpleNamespace(_target_closed_future=lambda: closed)
+        response = SimpleNamespace(_impl_obj=impl, finished=impl.finished)
+        if outcome == "closed-and-finished":
+            impl._finished_future.set_result(True)
+            closed.set_result(None)
+        waiter = asyncio.create_task(browser.finish_response(response))
+        await settle()
+        if outcome == "closed":
+            assert not waiter.done()
+            closed.set_result(None)
+        elif outcome == "completion-error":
+            assert not waiter.done()
+            impl._finished_future.set_exception(Error("Response failed"))
+        message = "Response failed" if outcome == "completion-error" else "Target closed"
+        with pytest.raises(Error, match=message):
+            await waiter
+        assert not closed.cancelled()
+        assert not impl._finished_future.cancelled()
+
+    _run(scenario())
+
+
 def test_bounded_virtual_timeout_cancels_pending_operation_at_exact_deadline() -> None:
     async def scenario() -> None:
         clock = VirtualClock()

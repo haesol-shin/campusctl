@@ -6,7 +6,7 @@ import re
 from typing import Any
 from urllib.parse import urlsplit
 
-from campusctl.browser import PROTOCOL_TIMEOUT_SECONDS, bounded
+from campusctl.browser import PROTOCOL_TIMEOUT_SECONDS, bounded, finish_response
 from campusctl.envelope import CampusError
 from campusctl.identity import assignment_entity_id
 from campusctl.source_package import DetailSnapshot, ResourceReference
@@ -250,7 +250,7 @@ async def capture_assignment_detail(page: Any, config: dict[str, Any], selected_
         response = await bounded(info.value, SECTION_RESPONSE_TIMEOUT_MS / 1000, "waiting for CNU task detail")
         if (
             response.status != 200
-            or await bounded(response.finished(), SECTION_RESPONSE_TIMEOUT_MS / 1000, "finishing CNU task detail")
+            or await bounded(finish_response(response), SECTION_RESPONSE_TIMEOUT_MS / 1000, "finishing CNU task detail")
             is not None
         ):
             raise _failed()

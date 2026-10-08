@@ -9,7 +9,7 @@ from html.parser import HTMLParser
 from typing import Any
 from urllib.parse import parse_qs, urljoin, urlsplit
 
-from campusctl.browser import PROTOCOL_TIMEOUT_SECONDS, bounded, profile_span
+from campusctl.browser import PROTOCOL_TIMEOUT_SECONDS, bounded, finish_response, profile_span
 from campusctl.envelope import CampusError
 from campusctl.source_package import DetailSnapshot, ResourceReference
 from campusctl.wait_clock import current_clock
@@ -309,7 +309,7 @@ async def capture_notice_detail(page: Any, selected_row: dict[str, Any]) -> Deta
             ):
                 raise _failed("Notice response is missing, stale, or unsuccessful.")
             if (
-                await bounded(result.finished(), SECTION_RESPONSE_TIMEOUT_MS / 1000, "finishing notice response")
+                await bounded(finish_response(result), SECTION_RESPONSE_TIMEOUT_MS / 1000, "finishing notice response")
                 is not None
             ):
                 raise _failed("Notice response did not complete.")

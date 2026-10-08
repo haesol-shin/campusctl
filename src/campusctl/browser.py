@@ -492,6 +492,33 @@ async def bounded(awaitable: Any, seconds: float, what: str) -> Any:
         ) from None
 
 
+async def finish_response(response: Any) -> Any:
+    """Wait for completion without Playwright's orphaned target-close task.
+
+    Playwright's Response.finished() races a completion future against a new
+    target-close task, but never cancels that task on success or cancellation.
+    Race the same existing futures directly instead. asyncio.wait leaves both
+    shared futures intact when a bounded caller times out or is cancelled.
+    Keep this private-API compatibility boundary here, not in the providers.
+    """
+    impl = getattr(response, "_impl_obj", None)
+    if impl is None:
+        return await response.finished()
+
+    from playwright._impl._network import Response as ImplResponse
+    from playwright.async_api import Error
+
+    if not isinstance(impl, ImplResponse):
+        return await response.finished()
+    closed = impl._request._target_closed_future()
+    await asyncio.wait([impl._finished_future, closed], return_when=asyncio.FIRST_COMPLETED)
+    if closed.done():
+        await closed
+        raise Error("Target closed")
+    await impl._finished_future
+    return None
+
+
 async def close_resource(resource: Any) -> None:
     """Best-effort, bounded cleanup for a Playwright page or context."""
     if resource is None:
