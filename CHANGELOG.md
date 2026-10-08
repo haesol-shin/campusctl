@@ -2,6 +2,11 @@
 
 All notable changes to campusctl are documented here. This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Release dates follow the local date convention (KST, Asia/Seoul).
 
+## [0.6.3] - 2026-10-08
+
+### Fixed
+- Prevent orphaned Playwright response-completion tasks from printing target-closed exceptions after browser commands finish, while preserving response failures and timeouts
+
 ## [0.6.2] - 2026-10-07
 
 ### Fixed
