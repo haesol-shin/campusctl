@@ -2,6 +2,11 @@
 
 All notable changes to campusctl are documented here. This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Release dates follow the local date convention (KST, Asia/Seoul).
 
+## [0.6.4] - 2026-10-12
+
+### Fixed
+- On Linux, downloaded materials now trigger a close-write event on their final name so inotify-based sync clients such as Seafile upload them without a restart
+
 ## [0.6.3] - 2026-10-08
 
 ### Fixed
