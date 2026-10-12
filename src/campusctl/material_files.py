@@ -477,6 +477,35 @@ def _copy_verified(source: int, destination: int, size_bytes: int, sha256: str) 
     os.fsync(destination)
 
 
+def _notify_published(dir_fd: int, name: str, identity: tuple[int, int]) -> bool:
+    """Best-effort close-write event on a freshly linked final name (Linux only).
+
+    ``link()`` gives the final name only ``IN_CREATE``; inotify-based sync clients
+    such as Seafile wait for ``IN_CLOSE_WRITE``. Opening the verified inode for
+    writing and closing it without writing produces that event. Never creates,
+    truncates or writes; any mismatch or failure leaves the publication as is.
+    """
+    try:
+        named = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+    except OSError:
+        return False
+    if not stat.S_ISREG(named.st_mode) or (named.st_dev, named.st_ino) != identity:
+        return False
+    flags = os.O_WRONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
+    try:
+        fd = os.open(name, flags, dir_fd=dir_fd)
+    except OSError:
+        return False
+    try:
+        opened = os.fstat(fd)
+        return stat.S_ISREG(opened.st_mode) and (opened.st_dev, opened.st_ino) == identity
+    except OSError:
+        return False
+    finally:
+        with contextlib.suppress(OSError):
+            os.close(fd)
+
+
 def publish_attachment(
     temp_path: Path, output_dir: Path, filename: str, sha256: str, size_bytes: int
 ) -> PublishedAttachment:
@@ -610,6 +639,8 @@ def publish_attachment(
                 if dir_fd is None and _directory_identity(directory) != identity:
                     raise _conflict()
                 if dir_fd is not None:
+                    if sys.platform.startswith("linux"):
+                        _notify_published(dir_fd, candidate.name, (copy_stat.st_dev, copy_stat.st_ino))
                     os.fsync(dir_fd)
                 return PublishedAttachment(candidate, "saved")
             raise _conflict()

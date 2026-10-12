@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import sys
 import tempfile
 import unicodedata
 from pathlib import Path
@@ -542,6 +543,145 @@ def test_interrupted_publication_never_overwrites(tmp_path: Path, monkeypatch: p
     assert failure.value.code == "output-path-conflict"
     assert (directory / "sample.pdf").read_bytes() == b"other writer"
     assert not list(directory.glob(".transfer-*"))
+
+
+_IN_CREATE = 0x100
+_IN_CLOSE_WRITE = 0x8
+_IN_ATTRIB = 0x4
+
+
+def _inotify_events(directory: Path, action, wanted: str) -> tuple[list[tuple[int, str]], object]:
+    """Run action under a ctypes inotify watch; poll (bounded) until wanted closes for write."""
+    import ctypes
+    import select
+    import struct
+    import time
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    fd = libc.inotify_init1(os.O_NONBLOCK | os.O_CLOEXEC)
+    if fd < 0:
+        pytest.skip("inotify unavailable")
+    try:
+        mask = _IN_CREATE | _IN_CLOSE_WRITE | _IN_ATTRIB
+        if libc.inotify_add_watch(fd, os.fsencode(directory), mask) < 0:
+            pytest.skip("inotify watch unavailable")
+        result = action()
+        events: list[tuple[int, str]] = []
+        poller = select.poll()
+        poller.register(fd, select.POLLIN)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if any(name == wanted and event & _IN_CLOSE_WRITE for event, name in events):
+                break
+            if not poller.poll(100):
+                continue
+            buffer = os.read(fd, 65536)
+            offset = 0
+            while offset < len(buffer):
+                _wd, event, _cookie, length = struct.unpack_from("iIII", buffer, offset)
+                raw = buffer[offset + 16 : offset + 16 + length].rstrip(b"\0")
+                events.append((event, os.fsdecode(raw)))
+                offset += 16 + length
+        return [(event, name) for event, name in events if name == wanted], result
+    finally:
+        os.close(fd)
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux inotify")
+def test_linux_publication_emits_close_write_on_final_name(tmp_path: Path) -> None:
+    directory = prepare_output_dir(tmp_path, "cnu_lms_material:synthetic:inotify")
+    content = b"%PDF- synthetic notified"
+    temp = _temp(directory, content)
+    events, published = _inotify_events(
+        directory,
+        lambda: publish_attachment(temp, directory, "sample.pdf", hashlib.sha256(content).hexdigest(), len(content)),
+        "sample.pdf",
+    )
+    assert published.outcome == "saved" and published.path == directory / "sample.pdf"
+    assert any(event & _IN_CREATE for event, _ in events)
+    assert any(event & _IN_CLOSE_WRITE for event, _ in events)
+    assert published.path.read_bytes() == content
+    assert sorted(entry.name for entry in directory.iterdir()) == ["sample.pdf"]
+
+
+def _replace_before_notify(monkeypatch: pytest.MonkeyPatch, replace) -> list[int]:
+    from campusctl import material_files
+
+    original_open = os.open
+    notify_flags: list[int] = []
+
+    def wrapped(path, flags, *args, **kwargs):
+        if path == "sample.pdf" and flags & os.O_WRONLY and not flags & os.O_CREAT:
+            notify_flags.append(flags)
+            replace(kwargs["dir_fd"])
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(material_files.os, "open", wrapped)
+    return notify_flags
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux notification open")
+@pytest.mark.parametrize("replacement", ["fifo", "file"])
+def test_linux_notification_never_blocks_or_writes_replacement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, replacement: str
+) -> None:
+    directory = prepare_output_dir(tmp_path, "cnu_lms_material:synthetic:notify-swap")
+
+    def replace(dir_fd: int) -> None:
+        os.unlink("sample.pdf", dir_fd=dir_fd)
+        if replacement == "fifo":
+            os.mkfifo("sample.pdf", dir_fd=dir_fd)
+        else:
+            fd = os.open("sample.pdf", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=dir_fd)
+            with os.fdopen(fd, "wb") as other:
+                other.write(b"other writer")
+
+    flags = _replace_before_notify(monkeypatch, replace)
+    published = _publish(directory, "sample.pdf", b"verified")
+    assert published.outcome == "saved"
+    assert len(flags) == 1
+    assert flags[0] & os.O_NOFOLLOW and flags[0] & os.O_NONBLOCK and not flags[0] & os.O_TRUNC
+    target = directory / "sample.pdf"
+    if replacement == "fifo":
+        assert target.is_fifo()
+    else:
+        assert target.read_bytes() == b"other writer"
+    assert not list(directory.glob(".material-*.tmp")) and not list(directory.glob(".transfer-*"))
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux notification open")
+def test_linux_notification_failure_keeps_saved_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from campusctl import material_files
+
+    directory = prepare_output_dir(tmp_path, "cnu_lms_material:synthetic:notify-fail")
+    original_open = os.open
+
+    def failing(path, flags, *args, **kwargs):
+        if path == "sample.pdf" and flags & os.O_WRONLY and not flags & os.O_CREAT:
+            raise PermissionError(13, "denied")
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(material_files.os, "open", failing)
+    published = _publish(directory, "sample.pdf", b"verified bytes")
+    assert published.outcome == "saved"
+    assert published.path.read_bytes() == b"verified bytes"
+    assert not list(directory.glob(".material-*.tmp")) and not list(directory.glob(".transfer-*"))
+
+
+def test_non_linux_publication_skips_notification(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from campusctl import material_files
+
+    directory = prepare_output_dir(tmp_path, "cnu_lms_material:synthetic:notify-other-os")
+    calls: list[str] = []
+    monkeypatch.setattr(material_files, "_notify_published", lambda _fd, name, _identity: calls.append(name))
+    monkeypatch.setattr(material_files, "sys", SimpleNamespace(platform="darwin"))
+    published = _publish(directory, "sample.pdf", b"verified")
+    assert published.outcome == "saved" and published.path.read_bytes() == b"verified"
+    assert calls == []
+    if os.name != "nt":
+        monkeypatch.setattr(material_files, "sys", SimpleNamespace(platform="linux"))
+        assert _publish(directory, "other.pdf", b"verified").outcome == "saved"
+        assert calls == ["other.pdf"]
 
 
 def test_receipt_update_failure_does_not_claim_success(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
