@@ -28,6 +28,8 @@ Records stay in their workflow/schema owner until a second real module consumes 
 # before (cli.py): output state smuggled through argparse.Namespace
 args._status = status
 args._status_errors = errors
+
+
 # after (command_types.py, P3/P4): one plain record, converted at the envelope
 @dataclass(frozen=True, slots=True)
 class CommandResult:
@@ -43,14 +45,22 @@ Use `StrEnum` when a closed set is compared or iterated at two or more sites: le
 
 ```python
 # before (player.py)
-if lecture.get("media") not in {"video", "youtube"}: ...
-if media == "youtube" and not math.isclose(speed, 1.0): ...
+if lecture.get("media") not in {"video", "youtube"}:
+    ...
+if media == "youtube" and not math.isclose(speed, 1.0):
+    ...
+
+
 # after (providers/cnu/media/__init__.py)
 class Media(StrEnum):
     VIDEO = "video"  # catalog label of the Panopto path
     YOUTUBE = "youtube"
-if lecture.get("media") not in MEDIA_HANDLERS: ...
-if media == Media.YOUTUBE and not math.isclose(speed, 1.0): ...
+
+
+if lecture.get("media") not in MEDIA_HANDLERS:
+    ...
+if media == Media.YOUTUBE and not math.isclose(speed, 1.0):
+    ...
 ```
 
 ## 3. Branching
@@ -81,8 +91,10 @@ with browser.profile_labels(domain=domain, course=ordinal, page_kind=section.pag
 # before (status.py): one loop with if/elif per domain, complexity 15
 for domain in ("assignments", "notices", "lectures"):
     for row in catalogs[domain][domain]:
-        if domain == "assignments": ...
-        elif domain == "notices": ...
+        if domain == "assignments":
+            ...
+        elif domain == "notices":
+            ...
 # after: one function per projection; _summarize builds the same keys in the same order
 return {
     "assignments": _due_assignments(rows["assignments"], start, end),
