@@ -2,7 +2,11 @@
 
 [Package structure plan](spec.md) · [Constitution](../constitution.md) · [Contribution policy](../../../CONTRIBUTING.md)
 
-Applies to every implementation PR of the [structure plan](spec.md) and to later feature code; reviewers check PRs against it. The plan decides ownership and behavior equivalence; this document decides how code inside an owner is written. It governs new code and functions a PR must change anyway. Untouched code is not rewritten to conform. In a structural move, bodies move verbatim first; idiom changes to moved code are a separate commit limited to what the PR's outcome requires.
+Applies to every implementation PR of the [structure plan](spec.md) and later feature code; reviewers check PRs against it. The plan decides ownership and behavior equivalence; this document decides how code inside an owner is written. It governs new code and functions a PR must change anyway. Untouched code is not rewritten to conform.
+
+## 0. Move and cleanup boundaries
+
+In a structural move, bodies move verbatim first; idiom and logic cleanup belongs in a separate PR, not merely a separate commit. At each P-PR review record whether an L-PR is “needed” or “not needed”, with a code-quality/complexity reason. Do not create cosmetic or no-op L-PRs; required complexity coverage remains binding. Intentional behavior changes require their own PR and acceptance, not a neutral move/cleanup claim.
 
 Baseline facts (`331a51e`, `src/`): ruff C901 above 10 in 50 functions, above 15 in 29, above 25 in 15; `dict[str, Any]` on 299 lines; dataclasses in 9 files; one `NamedTuple`; one `Protocol` (`wait_clock.Clock`); no `Enum`, `TypedDict`, `match` statement, `typing.cast` or bare `except`. No type checker runs in CI, so annotations are review-checked documentation; prefer constructs that also fail at runtime.
 
@@ -17,6 +21,8 @@ Baseline facts (`331a51e`, `src/`): ruff C901 above 10 in 50 functions, above 15
 | Small result that callers unpack positionally | `NamedTuple` | `PublishedAttachment(path, outcome)` |
 
 Reason: records catch misspelled fields at construction; dicts stay where bytes are the contract. Conversion happens only at the owner edge: load, validate, then build the record; to write, one `to_json()` lists keys literally in today's order with today's omission conditions. Never `dataclasses.asdict` or `vars()`: they emit `None` keys and follow declaration order. Envelopes and catalogs are dumped without `sort_keys` (only selection-snapshot hashes and package digests sort), so insertion order is output.
+
+Records stay in their workflow/schema owner until a second real module consumes them. `DomainOutcome` belongs in `sync.py`; resource/snapshot records in `source_resources.py`; transfer boundary records in `attachment_policy.py`. Do not pre-create `*_types.py`. Retain a separate types module only for actual shared consumers where owner placement would cause an import cycle: `command_types.py` avoids command-to-composition imports, and `player_types.py` avoids handler-to-preview imports. Name the otherwise-required cycle in review.
 
 ```python
 # before (cli.py): output state smuggled through argparse.Namespace
@@ -132,15 +138,16 @@ courses: Sequence[CourseRow]
 ## 7. Errors and async
 
 - A user-visible failure is `CampusError(code, message, remediation, status)` using a code from the contracts; a new code is a contract change. Workflows keep returning `(result, error)`; only the command boundary builds the envelope.
-- `except Exception` only to convert into `CampusError`, to record a diagnostic and re-raise, or at an existing per-item or per-domain isolation boundary. A best-effort cleanup in new code is `with contextlib.suppress(SpecificError):` plus a one-line reason, never a silent `pass`.
-- `except BaseException` only to remember the primary error and re-raise; never swallow `asyncio.CancelledError` or `KeyboardInterrupt`.
-- Resources use `async with`/`asynccontextmanager`. Existing `try`/`finally` blocks with cleanup-error precedence are behavior: do not rewrite them into `ExitStack` in a structural PR. Every browser or protocol await stays bounded (`browser.bounded`).
+- `except Exception` only to convert into `CampusError`, record a diagnostic and re-raise, or at an existing per-item/per-domain isolation boundary. New best-effort cleanup uses `with contextlib.suppress(SpecificError):` plus a reason, never silent `pass`.
+- In touched functions, convert existing silent `except ...: pass` to `contextlib.suppress(<specific exception>)` only after demonstrating the same caught exception set, action order and primary/cleanup precedence. Narrowing an existing broad catch is not automatically equivalent: if proof fails, preserve it for the neutral PR and separate any behavior change. Untouched catches are not churn targets.
+- `except BaseException` only to remember the primary error and re-raise; never swallow `asyncio.CancelledError` or `KeyboardInterrupt`. Named temporary exception: baseline `providers/cnu/player.py:1150-1154` `_emit` swallows `BaseException` from callbacks. Preserve that behavior through neutral P5/P6 and needed L5/L6; B1 separately makes cancellation/interruption propagate before YouTube speed, with dedicated callback/cleanup tests and acceptance. Remove this exception in B1, not during extraction.
+- Resources use `async with`/`asynccontextmanager`. Existing `try`/`finally` cleanup-error precedence is behavior: do not replace it with `ExitStack` in a structural PR. Every browser/protocol await stays bounded (`browser.bounded`).
 
 ```python
-# before (browser.py settle_sso_popups; existing best-effort code, not a churn target)
-except Exception:
+# Only after proving this specific catch and suppression are equivalent:
+except PlaywrightError:  # popup may already be closed
     pass
-# new code: name what is expected and why ignoring it is safe
+# equivalent cleanup in a separate logic PR:
 with contextlib.suppress(PlaywrightError):  # popup may already be closed
     await popup.wait_for_event("close")
 ```
@@ -159,13 +166,13 @@ Keep the current density: an optional one-line module docstring, a one-line docs
 
 ## 10. Reviewer checklist
 
-1. Behavior: the plan's offline equivalence gate passed; no public name or JSON byte changed.
-2. Scope: only lines the outcome needs; moves are verbatim, with idiom changes in a separate commit.
-3. Data: dicts only at JSON edges; records convert in one `to_json`/load function with explicit key order and omission; no `asdict`.
+1. Behavior: neutral PRs pass offline equivalence with no public name or JSON byte change; B1 and feature PRs use explicit behavior acceptance and compare unaffected paths.
+2. Scope: only lines the outcome needs; moves are verbatim, with idiom changes in a separate PR and a reasoned needed/not-needed L decision.
+3. Data: dicts stay at JSON edges; records convert in one owner-edge function with explicit key order/omission, never `asdict`; no speculative types modules.
 4. Values: compared closed sets use their `StrEnum`; error codes stay literals.
 5. Branching: guard clauses; tables for data branches; kept step sequences are marked with a reason.
 6. Functions: one job, name matches; `ruff check` is clean, with no new `# noqa: C901` and no baseline score increase.
 7. Classes: each owns state or lifetime; no single-implementation base or protocol.
 8. Types: no new `Any` for a known shape; no `cast` or `type: ignore`.
-9. Errors: `CampusError` contract codes; no silent `except`; cancellation propagates; cleanup order kept.
+9. Errors: contract codes, no new silent `except`, suppression equivalence proved, cancellation propagates except the named pre-B1 `_emit` exception; cleanup order kept.
 10. Comments explain why; nothing dead is left behind.
