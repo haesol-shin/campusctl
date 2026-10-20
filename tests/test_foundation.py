@@ -250,6 +250,28 @@ def test_config_missing_and_invalid_are_safe_user_actions(tmp_path: Path) -> Non
     assert SENTINEL not in str(error.value)
 
 
+@pytest.mark.parametrize("speed", ["1", "1.0", "1.25", "1.5"])
+def test_config_accepts_supported_playback_speeds(tmp_path: Path, speed: str) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(f"[playback]\ndefault_speed = {speed}\n", encoding="utf-8")
+    assert load_config(path)["playback"]["default_speed"] == float(speed)
+
+
+@pytest.mark.parametrize("speed", ["1.1", "2.0", "true", "false", '"1.25"'])
+def test_config_rejects_invalid_playback_speeds(tmp_path: Path, speed: str) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(f"[playback]\ndefault_speed = {speed}\n", encoding="utf-8")
+    with pytest.raises(ConfigError) as error:
+        load_config(path)
+    assert error.value.code == "config-invalid"
+    assert "playback.default_speed" in error.value.message
+
+
+def test_play_help_preserves_speed_choice_order(capsys: pytest.CaptureFixture[str]) -> None:
+    assert cli.main(["lectures", "play", "--help"]) == 0
+    assert "--speed {1.0,1.25,1.5}" in capsys.readouterr().out
+
+
 def test_materials_doctor_reports_settings_without_creating_destination(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

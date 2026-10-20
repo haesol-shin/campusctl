@@ -27,7 +27,7 @@ from campusctl.catalog_view import (
     read_course_snapshot,
 )
 from campusctl.commands import discover_domain_modules
-from campusctl.config import load_config
+from campusctl.config import SUPPORTED_SPEEDS, load_config
 from campusctl.config_init import run_config_init
 from campusctl.course_selection import CourseAmbiguous, resolve_course
 from campusctl.credentials import helper_status, keyring_status, prompt_and_store
@@ -45,7 +45,6 @@ from campusctl.presentation import render_human, render_progress
 from campusctl.profiling import SpanRecorder
 from campusctl.sync import parse_domains, run_sync
 
-SUPPORTED_SPEEDS = [1.0, 1.25, 1.5]
 _DOMAIN_MODULES: dict[str, ModuleType] = discover_domain_modules()
 CAPABILITIES = {
     "sync": list(DOMAINS),
@@ -340,7 +339,7 @@ def doctor_result(override: bool | None = None) -> tuple[dict[str, Any], CampusE
         "display_available": display_available,
         "playback": {
             "default_speed": config.get("playback", {}).get("default_speed", 1.0) if config else 1.0,
-            "supported_speeds": SUPPORTED_SPEEDS,
+            "supported_speeds": list(SUPPORTED_SPEEDS),
         },
         "materials": {
             "download_dir": config.get("materials", {}).get("download_dir") if config else None,

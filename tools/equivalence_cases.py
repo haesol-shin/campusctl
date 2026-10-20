@@ -60,8 +60,12 @@ def cases() -> list[Case]:
         ("busy", ["sync"], "busy", 75),
     ]
     definitions += [
-        (f"doctor-{speed}", ["doctor"], speed, 2 if speed in {"1.1", "true"} else 0)
-        for speed in ("1.0", "1.25", "1.5", "1.1", "true")
+        (f"doctor-{speed}", ["doctor"], speed, 0 if speed in {"1", "1.0", "1.25", "1.5"} else 2)
+        for speed in ("1", "1.0", "1.25", "1.5", "1.1", "2.0", "true", "false", '"1.25"')
+    ]
+    definitions += [
+        (f"play-speed-{speed}", ["lectures", "play", "synthetic-lecture", "--speed", speed], "empty", 2)
+        for speed in ("1.0", "1.25", "1.5", "1.1", "2.0", "true")
     ]
     result: list[Case] = []
     for name, argv, fixture, expected in definitions:
@@ -106,7 +110,7 @@ def prepare(root: Path, case: Case, actions: list):
 
     # A command provider avoids touching a real keyring even when reporting doctor status.
     fixture = case["fixture"]
-    speed = fixture if fixture in {"1.0", "1.25", "1.5", "1.1", "true"} else "1.0"
+    speed = fixture if fixture in {"1", "1.0", "1.25", "1.5", "1.1", "2.0", "true", "false", '"1.25"'} else "1.0"
     executable = root / "browser"
     executable.write_bytes(b"synthetic browser marker")
     (root / "config" / "config.toml").write_text(
