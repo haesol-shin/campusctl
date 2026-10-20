@@ -1,6 +1,6 @@
 # Package responsibility structure
 
-[Constitution](../constitution.md) · [Specification index](../README.md) · [CLI contract](../../contracts/cli.md) · [Assignments](../../contracts/assignments.md) · [Notices](../../contracts/notices.md) · [Materials](../../contracts/materials.md) · [Contribution policy](../../../CONTRIBUTING.md)
+[Constitution](../constitution.md) · [Specification index](../README.md) · [Code standard](code-standard.md) · [CLI contract](../../contracts/cli.md) · [Assignments](../../contracts/assignments.md) · [Notices](../../contracts/notices.md) · [Materials](../../contracts/materials.md) · [Contribution policy](../../../CONTRIBUTING.md)
 
 ## Status, intent and limits
 
