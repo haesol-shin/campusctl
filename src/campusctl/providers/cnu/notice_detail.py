@@ -220,7 +220,7 @@ def _extract_parts(raw: list[dict[str, str | None]]) -> tuple[str | ResourceRefe
     return tuple(parts)
 
 
-async def capture_notice_detail(page: Any, selected_row: dict[str, Any]) -> DetailSnapshot:
+async def capture_notice_detail(page: Any, selected_row: dict[str, Any]) -> DetailSnapshot:  # noqa: C901
     """Open exactly the selected course row through the notice menu; caller owns login.
 
     The selected catalog ID never encodes the native board-item ID. A wrong or

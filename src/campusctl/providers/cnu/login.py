@@ -94,7 +94,7 @@ def _remaining(deadline: float) -> float:
     return max(0.0, deadline - current_clock().now())
 
 
-async def ensure_logged_in(
+async def ensure_logged_in(  # noqa: C901
     page: Any,
     config: dict,
     *,

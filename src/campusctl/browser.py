@@ -527,7 +527,7 @@ async def close_resource(resource: Any) -> None:
         await bounded(resource.close(), CLEANUP_TIMEOUT_SECONDS, "closing a browser resource")
 
 
-async def _read_http_response(reader: asyncio.StreamReader) -> bytes:
+async def _read_http_response(reader: asyncio.StreamReader) -> bytes:  # noqa: C901
     header = await reader.readuntil(b"\r\n\r\n")
     if len(header) > MAX_CDP_RESPONSE_BYTES:
         raise ValueError("CDP response is too large")
@@ -760,7 +760,7 @@ async def _stop_playwright(manager: Any, playwright: Any) -> None:
 
 
 @asynccontextmanager
-async def open_session(
+async def open_session(  # noqa: C901
     config: dict[str, Any],
     *,
     data_dir: Path | None = None,

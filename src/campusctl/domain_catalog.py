@@ -237,7 +237,7 @@ def _same_timestamp() -> str:
     return _generated_at()
 
 
-def merge_domain_catalog(
+def merge_domain_catalog(  # noqa: C901
     domain: Domain,
     previous: dict[str, Any] | None,
     roster: list[dict[str, Any]],

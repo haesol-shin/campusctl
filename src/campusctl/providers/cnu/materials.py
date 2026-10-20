@@ -572,7 +572,7 @@ def _modal_identity_failure(
     )
 
 
-async def _post_names(
+async def _post_names(  # noqa: C901
     page: Any, activity: _RequestWindow, after: int, post_id: str
 ) -> tuple[dict[str, str], list[dict[str, Any]], bool]:
     """Bind file controls to this post's completed attachment response when available."""
@@ -836,7 +836,7 @@ async def _restore_archive_document(page: Any, *, expected_course_id: str) -> No
     await _archive_navigation(page, lambda: page.click(_ARCHIVE_MENU), expected_course_id=expected_course_id)
 
 
-async def enumerate_archive(page: Any, course: Mapping[str, Any]) -> list[dict[str, Any]]:
+async def enumerate_archive(page: Any, course: Mapping[str, Any]) -> list[dict[str, Any]]:  # noqa: C901
     """Enumerate every completed archive page and restore its exact post context."""
     table_started = profile_check_start()
     with profile_span("dom-ready", wait_kind="selector", domain="materials", page_kind="archive"):

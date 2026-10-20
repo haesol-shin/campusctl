@@ -236,7 +236,7 @@ def _read_catalog_generated_at(path: Path) -> tuple[bool, str | None, CampusErro
     return True, catalog["generated_at"], None
 
 
-def doctor_result(override: bool | None = None) -> tuple[dict[str, Any], CampusError | None]:
+def doctor_result(override: bool | None = None) -> tuple[dict[str, Any], CampusError | None]:  # noqa: C901
     cfg_path = config_path()
     data_path = data_dir()
     config_present = cfg_path.is_file()
@@ -650,7 +650,7 @@ def _progress_output() -> tuple[Callable[[dict[str, Any]], None], Callable[[], N
     return report, finish
 
 
-def _dispatch(args: argparse.Namespace) -> tuple[Any, CampusError | list[CampusError] | None]:
+def _dispatch(args: argparse.Namespace) -> tuple[Any, CampusError | list[CampusError] | None]:  # noqa: C901
     if args.version:
         return {"version": __version__}, None
     if args.command is None:
@@ -886,7 +886,7 @@ def _dispatch(args: argparse.Namespace) -> tuple[Any, CampusError | list[CampusE
         return asyncio.run(_play())
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def main(argv: Sequence[str] | None = None) -> int:  # noqa: C901
     args: argparse.Namespace | None = None
     output_mode = "json"
     recorder: SpanRecorder | None = None

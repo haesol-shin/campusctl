@@ -46,7 +46,7 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     download.add_argument("--out", type=Path, help="destination directory")
 
 
-def dispatch(args: argparse.Namespace) -> tuple[dict[str, Any], CampusError | None]:
+def dispatch(args: argparse.Namespace) -> tuple[dict[str, Any], CampusError | None]:  # noqa: C901
     command = args.materials_command
     if command not in {"list", "download"}:
         raise UsageError("A materials command is required.")

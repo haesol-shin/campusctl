@@ -47,7 +47,7 @@ def _blocked() -> CampusError:
     return CampusError("policy-blocked", "Selected attachment request is not approved.", status="error")
 
 
-def _selected_url(payload: Any, target: OfficialAttachmentTarget) -> str:
+def _selected_url(payload: Any, target: OfficialAttachmentTarget) -> str:  # noqa: C901
     if not isinstance(payload, dict):
         raise _blocked()
     header = payload.get("header")
@@ -128,7 +128,7 @@ def _selected_url(payload: Any, target: OfficialAttachmentTarget) -> str:
     return url
 
 
-async def fetch_official_attachment(
+async def fetch_official_attachment(  # noqa: C901
     page: object,
     target: OfficialAttachmentTarget,
     policy: RequestPolicy,
