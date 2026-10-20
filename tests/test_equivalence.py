@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-# tools/equivalence.py compares raw bytes and is Linux/macOS-only (see its docstring);
+# tools/equivalence.py compares raw bytes and is documented for Linux (see its docstring);
 # Windows text-mode stdout adds \r and is out of scope.
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="equivalence tool is not supported on Windows")
 
