@@ -111,6 +111,8 @@ class FakeLocator:
 
     async def count(self) -> int:
         if self.frame is not None:
+            if self.selector == ".ytmCuedOverlayPlayButton":
+                return int(self.page.youtube_overlay != "missing")
             if "data-speed" in self.selector:
                 return int(self.page.speed_option_present)
             if "play" in self.selector.lower():
@@ -137,6 +139,10 @@ class FakeLocator:
 
     async def is_visible(self) -> bool:
         if self.frame is not None:
+            if self.selector == ".ytmCuedOverlayPlayButton":
+                if self.page.youtube_starts_during_visibility:
+                    self.page.play_started = True
+                return self.page.youtube_overlay == "visible"
             return not (
                 (self.page.hide_first_control and "play" in self.selector.lower() and self.index == 0)
                 or (self.page.hide_speed_option and "data-speed" in self.selector)
@@ -165,6 +171,12 @@ class FakeLocator:
     async def click(self, **kwargs: Any) -> None:
         if self.frame is not None:
             self.frame.clicks.append(self.selector)
+            if self.selector == ".ytmCuedOverlayPlayButton":
+                if self.page.youtube_click == "hang":
+                    await asyncio.Future()
+                if self.page.youtube_click == "start":
+                    self.page.play_started = True
+                return
             speed = re.search(r'data-speed="([0-9.]+)"', self.selector)
             if speed:
                 self.page.calls.append(("speed", float(speed.group(1))))
@@ -268,7 +280,7 @@ class FakeFrame:
         if "campusctl-classify-player-page" in script:
             return {"page_state": "ready" if self.video_ready else "splash", "video_count": int(self.video_ready)}
         if "campusctl-read-youtube-video-state" in script:
-            if self.page.youtube_mode == "blocked":
+            if self.page.youtube_mode == "blocked" or (self.page.youtube_mode == "cued" and not self.page.play_started):
                 return {
                     "exists": True,
                     "currentTime": 0.0,
@@ -276,6 +288,7 @@ class FakeFrame:
                     "paused": True,
                     "ended": False,
                     "playbackRate": self.page.initial_playback_rate,
+                    **self.page.youtube_start_state,
                 }
             if self.page.youtube_mode in {"stalled", "interrupt"}:
                 self.youtube_reads += 1
@@ -385,6 +398,10 @@ class FakePage:
         panopto_authenticated: bool = True,
         youtube_rows: set[str] | None = None,
         youtube_mode: str = "natural",
+        youtube_overlay: str = "visible",
+        youtube_click: str = "start",
+        youtube_start_state: dict[str, Any] | None = None,
+        youtube_starts_during_visibility: bool = False,
         progress_by_row: dict[str, str] | None = None,
         progress_after_play: dict[str, str] | None = None,
         not_counted_rows: set[str] | None = None,
@@ -401,6 +418,10 @@ class FakePage:
         }
         self.youtube_rows = youtube_rows or set()
         self.youtube_mode = youtube_mode
+        self.youtube_overlay = youtube_overlay
+        self.youtube_click = youtube_click
+        self.youtube_start_state = youtube_start_state or {}
+        self.youtube_starts_during_visibility = youtube_starts_during_visibility
         self.progress_after_play = progress_after_play or {}
         progress_by_row = progress_by_row or {}
         not_counted_rows = not_counted_rows or set()
@@ -1003,30 +1024,120 @@ def test_youtube_only_playback_does_not_require_a_panopto_session(
     assert not page.player_open
 
 
-def test_youtube_autoplay_blocked_fails_without_player_control_click(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize(
+    "mode, position, starts_during_visibility, expected_clicks",
+    [("cued", 0.0, False, 1), ("cued", 0.05, False, 1), ("natural", 0.0, False, 0), ("cued", 0.0, True, 0)],
+)
+def test_youtube_start_completes_with_at_most_one_official_click(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    mode: str,
+    position: float,
+    starts_during_visibility: bool,
+    expected_clicks: int,
 ) -> None:
-    page = FakePage(youtube_rows={"row-1"}, youtube_mode="blocked")
-    _prepare(
-        tmp_path,
-        monkeypatch,
-        page,
-        lectures=[_lecture(FIRST_ID, media="youtube")],
-        default_speed=1.0,
+    page = FakePage(
+        youtube_rows={"row-1"},
+        youtube_mode=mode,
+        complete_after_play={"row-1": True},
+        youtube_start_state={"currentTime": position},
+        youtube_starts_during_visibility=starts_during_visibility,
     )
+    _prepare(tmp_path, monkeypatch, page, lectures=[_lecture(FIRST_ID, media="youtube")], default_speed=1.0)
     _fast_player_sleeps(monkeypatch, page)
-    monkeypatch.setattr(player, "YOUTUBE_AUTOPLAY_WAIT_SECONDS", 0.01)
-    monkeypatch.setattr(player, "PLAYER_POLL_INTERVAL_SECONDS", 0.001)
 
     exit_code, response = _invoke(capsys, [FIRST_ID])
 
-    assert exit_code == 1
-    assert response["errors"][0]["code"] == "youtube-autoplay-blocked"
-    assert response["result"]["items"][0]["outcome"] == "failed"
+    assert exit_code == 0
+    assert response["result"]["items"][0]["outcome"] == "completed"
+    assert page.frame.clicks == [".ytmCuedOverlayPlayButton"] * expected_clicks
     assert ("close", "row-1") in page.calls
-    assert ("play-for", "row-1") not in page.calls
-    assert not page.frame.clicks
     assert not page.player_control_clicks
+
+
+@pytest.mark.parametrize(
+    "overlay, click, expected_clicks, diagnostic",
+    [
+        ("missing", "start", 0, "overlay is not visible"),
+        ("hidden", "start", 0, "overlay is not visible"),
+        ("visible", "blocked", 1, "clicked once"),
+        ("visible", "hang", 1, "check or click failed"),
+    ],
+)
+def test_youtube_start_failure_is_bounded_without_click_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    overlay: str,
+    click: str,
+    expected_clicks: int,
+    diagnostic: str,
+) -> None:
+    page = FakePage(youtube_rows={"row-1"}, youtube_mode="cued", youtube_overlay=overlay, youtube_click=click)
+    _prepare(tmp_path, monkeypatch, page, lectures=[_lecture(FIRST_ID, media="youtube")], default_speed=1.0)
+    clock = VirtualClock()
+
+    async def invoke() -> tuple[dict[str, Any], Any]:
+        return await player.play_lectures(page, {}, [_lecture(FIRST_ID, media="youtube")])
+
+    result, errors = asyncio.run(drive(invoke(), clock))
+
+    assert errors[0].code == "youtube-autoplay-blocked"
+    assert diagnostic in errors[0].message
+    assert result["items"][0]["outcome"] == "failed"
+    assert page.frame.clicks == [".ytmCuedOverlayPlayButton"] * expected_clicks
+    assert clock.now() <= player.YOUTUBE_AUTOPLAY_WAIT_SECONDS
+    assert ("close", "row-1") in page.calls
+    assert not page.player_control_clicks
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        {"exists": False},
+        {"paused": False},
+        {"ended": True},
+        {"currentTime": 0.051},
+        {"currentTime": None},
+        {"currentTime": float("nan")},
+    ],
+)
+def test_youtube_does_not_click_outside_start_state(state: dict[str, Any]) -> None:
+    page = FakePage(youtube_mode="cued", youtube_start_state=state)
+    clock = VirtualClock()
+
+    with pytest.raises(player._PlaybackFailure) as caught:
+        asyncio.run(drive(player._wait_for_youtube_start(page.frame), clock))
+
+    assert caught.value.code == "youtube-autoplay-blocked"
+    assert not page.frame.clicks
+    assert clock.now() == player.YOUTUBE_AUTOPLAY_WAIT_SECONDS
+
+
+def test_youtube_hanging_click_uses_only_remaining_start_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
+    page = FakePage(youtube_mode="cued", youtube_click="hang")
+    clock = VirtualClock()
+    evaluate = page.frame.evaluate
+    reads = 0
+
+    async def delayed_state(script: str, *args: Any) -> dict[str, Any]:
+        nonlocal reads
+        reads += 1
+        if reads <= 3:
+            return {"exists": False}
+        return await evaluate(script, *args)
+
+    monkeypatch.setattr(page.frame, "evaluate", delayed_state)
+    monkeypatch.setattr(player, "YOUTUBE_AUTOPLAY_WAIT_SECONDS", 7.0)
+
+    with pytest.raises(player._PlaybackFailure) as caught:
+        asyncio.run(drive(player._wait_for_youtube_start(page.frame), clock))
+
+    assert caught.value.code == "youtube-autoplay-blocked"
+    assert "check or click failed" in caught.value.message
+    assert page.frame.clicks == [".ytmCuedOverlayPlayButton"]
+    assert clock.now() == 7.0
 
 
 def test_youtube_stall_after_two_minutes_fails_and_closes_modal(

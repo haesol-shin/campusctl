@@ -52,7 +52,7 @@ To refresh: campusctl sync
 Catalog generated 1 second ago.
 ```
 
-Play only a lecture you chose by its full ID with `campusctl lectures play ID`. Playback uses the official player in a visible browser, one lecture at a time; campusctl checks the LMS row afterward and sends no separate progress or attendance request. It does not seek ahead, fake progress, force unsupported speeds or play in the background. YouTube uses native autoplay at 1x only; other supported media use only rates their player supports.
+Play only a lecture you chose by its full ID with `campusctl lectures play ID`. Playback uses the official player in a visible browser, one lecture at a time; campusctl checks the LMS row afterward and sends no separate progress or attendance request. It does not seek ahead, fake progress, force unsupported speeds or play in the background. YouTube stays at 1x and allows at most one bounded click on its visible official start overlay, only when the video exists, is paused, is not ended and has `currentTime <= 0.05`, within the existing autoplay wait deadline; no retry or rate change is allowed. If playback does not start, it retains `youtube-autoplay-blocked`. Other supported media use only rates their player supports.
 
 A row flagged as not counted for attendance is labeled `watched (not counted)` only when its displayed watched progress reaches the required duration; that progress may predate the current play command. This is not a promise of attendance credit. CNU has been observed to allow one LMS login session per account, so do not run campusctl alongside another logged-in automation on that account. See [configuration](configuration.md) for browser sessions.
 
@@ -62,7 +62,7 @@ If playback fails with `player-frame-unavailable`, another session for the same 
 
 `assignments list` and `notices list` show metadata. To read details, choose one or more full IDs and run `campusctl assignments fetch ID1 ID2` or `campusctl notices fetch ID1 ID2`; one ID works too. Selected details are fetched in one browser session. Fetch writes `content.md` and `package.json` under the local data directory's `sources/` tree. With one distinct ID, `--out DIR` must name a new, nonexistent package directory. JSON then reports `result.source_package` with its path, completeness and omitted resources.
 
-With multiple distinct IDs, omit `--out`. JSON returns ordered `result.items`: each item has an `outcome`, partial or failed items have a `reason_code`, and completed or partial items have a `source_package`. Fetch supports local headed and headless Chromium and never submits assignments. Opening a notice detail may add one view and change its read state, even though fetch does not click mark-read; notice attachments are omitted, not downloaded.
+With multiple distinct IDs, omit `--out`. JSON returns ordered `result.items`: each item has an `outcome`, partial or failed items have a `reason_code`, and completed or partial items have a `source_package`. Fetch supports local headed and headless Chromium and never submits assignments. Opening a notice detail may add one view and change its read state through ordinary reading; notice attachments are omitted, not downloaded.
 
 Notices come from each course board. Read state is unknown when no matching to-do row exists. If a board has additional pages, `notice-board-paginated` keeps that course's previous rows; check its board in the LMS. See the [assignment](contracts/assignments.md#selected-detail-fetch) and [notice](contracts/notices.md#selected-detail-fetch) contracts.
 
