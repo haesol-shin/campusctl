@@ -5,10 +5,23 @@ import subprocess
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
+from typing import NotRequired, TypedDict
 from unittest.mock import patch
 
 
-def cases() -> list[dict]:
+class Case(TypedDict):
+    name: str
+    argv: list[str]
+    width: int
+    expected: int
+    fixture: NotRequired[str]
+    env: NotRequired[dict[str, str]]
+    input: NotRequired[str]
+    stdin_tty: NotRequired[bool]
+    stdout_tty: NotRequired[bool]
+
+
+def cases() -> list[Case]:
     help_paths = [[], ["config"], ["config", "init"], ["doctor"], ["setup"], ["auth"],
                   ["auth", "set"], ["auth", "status"], ["sync"], ["status"], ["courses"],
                   ["courses", "list"], ["lectures"], ["lectures", "list"], ["lectures", "play"],
@@ -28,7 +41,7 @@ def cases() -> list[dict]:
     ]
     definitions += [(f"doctor-{speed}", ["doctor"], speed, 2 if speed in {"1.1", "true"} else 0)
                     for speed in ("1.0", "1.25", "1.5", "1.1", "true")]
-    result = []
+    result: list[Case] = []
     for name, argv, fixture, expected in definitions:
         for width in (48, 100):
             for mode in ("json", "human"):
@@ -45,7 +58,7 @@ def cases() -> list[dict]:
 
 
 @contextmanager
-def prepare(root: Path, case: dict, actions: list):
+def prepare(root: Path, case: Case, actions: list):
     from playwright.sync_api._context_manager import PlaywrightContextManager
 
     # A command provider avoids touching a real keyring even when reporting doctor status.

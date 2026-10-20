@@ -32,6 +32,10 @@ import uuid
 from collections import Counter
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from equivalence_cases import Case
 
 FROZEN_EPOCH = 1767323045.0
 
@@ -84,7 +88,7 @@ def child_environment(root: Path) -> dict[str, str]:
     }
 
 
-def capture(tree: Path, root: Path, scenario: Path, case: dict) -> Capture:
+def capture(tree: Path, root: Path, scenario: Path, case: "Case") -> Capture:
     if root.exists():
         shutil.rmtree(root)
     root.mkdir()
@@ -164,7 +168,7 @@ def deny_external(event: str, args: tuple, violations: list[str]) -> None:
 
 
 def run_child(tree: Path, root: Path, scenario: Path) -> int:
-    case = json.load(sys.stdin)
+    case: Case = json.load(sys.stdin)
     sys.path.insert(0, str(tree / "src"))
     sys.dont_write_bytecode = True
     deterministic = Determinism()
@@ -202,7 +206,7 @@ def compare_revisions(repo: Path, workspace: Path, *, parent: str, candidate: st
     locks = [(tree / "uv.lock").read_bytes() for tree in trees]
     if locks[0] != locks[1] or locks[0] != (repo / "uv.lock").read_bytes():
         raise ValueError("Parent, candidate and active environment must share uv.lock")
-    cases = load_scenarios(scenario).cases()
+    cases: list[Case] = load_scenarios(scenario).cases()
     if not cases:
         raise ValueError("At least one scenario is required")
     mismatches = 0

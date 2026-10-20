@@ -55,7 +55,7 @@ def prepare(root, case, actions):
     actions.extend([["session", "open"], ["session", "close"]])
     yield
 ''')
-    case = {"argv": [], "width": 48}
+    case = {"name": "synthetic", "argv": [], "width": 48, "expected": 0}
     sandbox = tmp_path / "sandbox"
     first = module.capture(tree, sandbox, scenario, case)
     second = module.capture(tree, sandbox, scenario, case)
@@ -75,7 +75,7 @@ def test_child_crash_cannot_pass_as_matching_output(tmp_path):
     scenario = tmp_path / "broken.py"
     scenario.write_text("raise RuntimeError('scenario failed')")
     with pytest.raises(RuntimeError, match="failed before capture"):
-        module.capture(tree, tmp_path / "sandbox", scenario, {"argv": [], "width": 100})
+        module.capture(tree, tmp_path / "sandbox", scenario, {"name": "crash", "argv": [], "width": 100, "expected": 0})
 
 
 def test_forbidden_external_attempt_cannot_be_hidden_by_cli_error_handling(tmp_path):
@@ -99,7 +99,7 @@ def prepare(root, case, actions):
     yield {}
 ''')
     with pytest.raises(RuntimeError, match="failed before capture"):
-        module.capture(tree, tmp_path / "sandbox", scenario, {"argv": [], "width": 100})
+        module.capture(tree, tmp_path / "sandbox", scenario, {"name": "offline", "argv": [], "width": 100, "expected": 0})
 
 
 def test_lock_mismatch_rejects_comparison_before_cases(tmp_path):
