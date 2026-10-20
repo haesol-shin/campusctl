@@ -15,7 +15,7 @@ These rules govern every campusctl change and take precedence over domain specs.
 
 ## Limits
 
-- **No coursework actions.** campusctl never clicks submission, attendance, grading, enrollment or mark-read controls. Opening a notice detail may add one view and flip its read state; that is ordinary reading.
+- **No coursework actions.** campusctl never clicks submission, attendance, grading or enrollment controls. Opening a notice detail may add one view and flip its read state; that is ordinary reading.
 - **No saved media.** Lecture video and audio are never saved to disk; playback happens only in the official player. Material downloads save only the selected official attachment, checked for type, signature and size.
 - **No private data in the public repository.** Real course names, IDs, board or file IDs, personal names, raw traffic and the LMS behavior notes stay with the owner; fixtures use synthetic IDs and `.invalid` hosts.
 
@@ -25,3 +25,4 @@ These rules govern every campusctl change and take precedence over domain specs.
 - **Notice reading** (2026-09-25): one view per opened notice detail is accepted; a read-state flip is accepted and recorded.
 - **Notice attachments** (2026-09-27): until a notice with an attachment is observed, notice fetch records attachments as omissions and transfers nothing.
 - **No request guard for sync and fetch** (2026-09-27): pages run their own requests unfiltered, as they do for a person; the per-course selection-epoch layer is removed.
+- **YouTube start (2026-10-14)**: at most one bounded click on the visible official `.ytmCuedOverlayPlayButton` is allowed within the existing autoplay wait deadline, only while a video exists, is paused, is not ended and has `currentTime <= 0.05`. Never click an already-playing video, retry, seek or change its rate; keep playback at 1x. The subsequent start/stall/verify loop is unchanged. Failure retains a clear diagnostic and `youtube-autoplay-blocked`. Evidence: owner-held sanitized evidence (2026-10-14).

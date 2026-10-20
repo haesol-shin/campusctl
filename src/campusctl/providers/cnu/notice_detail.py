@@ -1,4 +1,4 @@
-"""Selected per-course notice detail reader (no mark-read action)."""
+"""Selected per-course notice detail reader."""
 
 from __future__ import annotations
 

@@ -52,7 +52,7 @@ To refresh: campusctl sync
 Catalog generated 1 second ago.
 ```
 
-선택한 강의의 전체 ID로 `campusctl lectures play ID`를 실행하세요. 화면에 보이는 공식 플레이어에서 한 번에 하나씩 재생하고, 끝난 뒤 LMS 행의 상태를 확인합니다. 진도나 출석을 별도로 요청하지 않습니다. 앞으로 건너뛰거나 진도를 위조하거나 지원되지 않는 속도를 강제하거나 백그라운드에서 재생하지 않습니다. YouTube는 기본 자동 재생으로 1배속만 사용하고, 다른 미디어는 해당 플레이어가 지원하는 속도만 사용합니다.
+선택한 강의의 전체 ID로 `campusctl lectures play ID`를 실행하세요. 화면에 보이는 공식 플레이어에서 한 번에 하나씩 재생하고, 끝난 뒤 LMS 행의 상태를 확인합니다. 진도나 출석을 별도로 요청하지 않습니다. 앞으로 건너뛰거나 진도를 위조하거나 지원되지 않는 속도를 강제하거나 백그라운드에서 재생하지 않습니다. YouTube는 1배속을 유지하며, 영상이 존재하고 일시 정지 상태이며 종료되지 않았고 `currentTime <= 0.05`일 때만 기존 자동 재생 대기 기한 안에서 화면에 보이는 공식 시작 오버레이를 최대 한 번, 제한된 시간 안에 클릭할 수 있습니다. 재시도나 재생 속도 변경은 허용하지 않습니다. 재생이 시작되지 않으면 `youtube-autoplay-blocked`를 유지합니다. 다른 미디어는 해당 플레이어가 지원하는 속도만 사용합니다.
 
 출석 미반영으로 표시된 행은 화면의 시청 진도가 필요한 전체 시간에 도달했을 때만 `watched (not counted)`로 표시됩니다. 그 진도는 이번 재생 전에 기록된 것일 수도 있으며, 출석 인정 보장은 아닙니다. CNU는 계정당 LMS 로그인 세션 하나만 허용하는 것으로 관찰되어, 같은 계정으로 로그인한 다른 자동화와 campusctl을 함께 실행하지 않는 편이 안전합니다. 브라우저 세션은 [설정 안내](configuration.ko.md)를 보세요.
 
@@ -62,7 +62,7 @@ Catalog generated 1 second ago.
 
 `assignments list`와 `notices list`는 목록 정보를 보여줍니다. 자세한 내용을 읽으려면 전체 ID 하나 이상을 고른 뒤 `campusctl assignments fetch ID1 ID2` 또는 `campusctl notices fetch ID1 ID2`를 실행하세요. ID 하나도 가능합니다. 선택한 상세 항목은 한 브라우저 세션에서 가져옵니다. 가져온 내용은 로컬 데이터 폴더의 `sources/` 아래에 `content.md`와 `package.json`으로 저장됩니다. 서로 다른 ID 하나만 가져올 때 `--out DIR`은 아직 존재하지 않는 새 패키지 폴더를 가리켜야 합니다. JSON의 `result.source_package`에서 경로, 완전성, 생략된 리소스를 볼 수 있습니다.
 
-서로 다른 ID 여러 개를 가져올 때는 `--out`을 빼세요. JSON의 `result.items`는 요청 순서대로 나오며, 각 항목에 `outcome`이 있습니다. 일부만 완료되거나 실패한 항목에는 `reason_code`가, 완료되거나 일부만 완료된 항목에는 `source_package`가 있습니다. fetch는 로컬 Chromium의 화면 표시·headless 모드를 지원하며 과제를 제출하지 않습니다. 공지 상세를 열면 조회수가 늘거나 읽음 상태가 바뀔 수 있지만, fetch가 읽음 처리 버튼을 누르지는 않습니다. 공지 첨부파일은 다운로드하지 않고 생략합니다.
+서로 다른 ID 여러 개를 가져올 때는 `--out`을 빼세요. JSON의 `result.items`는 요청 순서대로 나오며, 각 항목에 `outcome`이 있습니다. 일부만 완료되거나 실패한 항목에는 `reason_code`가, 완료되거나 일부만 완료된 항목에는 `source_package`가 있습니다. fetch는 로컬 Chromium의 화면 표시·headless 모드를 지원하며 과제를 제출하지 않습니다. 공지 상세를 열면 일반적인 읽기 동작으로 조회수가 한 번 늘거나 읽음 상태가 바뀔 수 있습니다. 공지 첨부파일은 다운로드하지 않고 생략합니다.
 
 공지는 과목별 게시판에서 가져옵니다. 할 일 목록에 일치하는 행이 없으면 읽음 여부는 알 수 없습니다. 게시판에 다음 페이지가 있으면 `notice-board-paginated`가 표시되고 그 과목의 이전 목록은 유지됩니다. 해당 과목 게시판을 LMS에서 확인하세요. 자세한 계약은 [과제](contracts/assignments.md#selected-detail-fetch)와 [공지](contracts/notices.md#selected-detail-fetch)를 보세요.
 

@@ -720,25 +720,46 @@ def _youtube_plays_at_one(status: dict[str, Any]) -> bool:
     return isinstance(rate, int | float) and not isinstance(rate, bool) and float(rate) == 1.0
 
 
-async def _play_youtube_video(
-    frame: Any,
-    *,
-    replay: bool = False,
-    on_started: Callable[[], None] | None = None,
-    on_position: Callable[[float, float], None] | None = None,
-) -> tuple[float, str]:
+def _youtube_in_start_state(status: dict[str, Any]) -> bool:
+    position = status.get("currentTime")
+    return (
+        status.get("exists") is True
+        and status.get("paused") is True
+        and status.get("ended") is False
+        and isinstance(position, int | float)
+        and not isinstance(position, bool)
+        and math.isfinite(position)
+        and 0 <= position <= 0.05
+    )
+
+
+async def _click_youtube_start(frame: Any, timeout: float) -> tuple[bool, str]:
+    button = await _visible_locator(frame, ".ytmCuedOverlayPlayButton", "finding the official YouTube start overlay")
+    if button is None:
+        return False, "official start overlay is not visible"
+    # Visibility checks can outlive native autoplay; never toggle a player that has started.
+    status = await _read_youtube_state(frame)
+    if not _youtube_in_start_state(status) or not _youtube_plays_at_one(status):
+        return False, "player is no longer in its start state"
+    await button.click(timeout=timeout * 1000)
+    return True, "official start button clicked once"
+
+
+async def _wait_for_youtube_start(frame: Any) -> float:
     clock = current_clock()
     deadline = clock.monotonic() + YOUTUBE_AUTOPLAY_WAIT_SECONDS
-    try:
-        first = await _read_youtube_state(
-            frame,
-            min(PROTOCOL_TIMEOUT_SECONDS, YOUTUBE_AUTOPLAY_WAIT_SECONDS),
-        )
-    except Exception:
-        raise _PlaybackFailure(
+    diagnostic = "playback state could not be read"
+
+    def failure() -> _PlaybackFailure:
+        return _PlaybackFailure(
             code="youtube-autoplay-blocked",
-            message="YouTube playback did not start through native autoplay.",
-        ) from None
+            message=f"YouTube playback did not start: {diagnostic}.",
+        )
+
+    try:
+        first = await _read_youtube_state(frame, min(PROTOCOL_TIMEOUT_SECONDS, YOUTUBE_AUTOPLAY_WAIT_SECONDS))
+    except Exception:
+        raise failure() from None
     if first.get("exists") is True and not _youtube_plays_at_one(first):
         raise _PlaybackFailure(
             code="playback-speed-unavailable",
@@ -747,27 +768,33 @@ async def _play_youtube_video(
     initial_time = _video_number(first, "currentTime")
     status = first
     current_time = initial_time
+    clicked = False
+    diagnostic = "player is not in its start state"
     while not (status.get("exists") is True and status.get("paused") is False and current_time > initial_time + 0.05):
         remaining = deadline - clock.monotonic()
         if remaining <= 0:
-            raise _PlaybackFailure(
-                code="youtube-autoplay-blocked",
-                message="YouTube playback did not start through native autoplay.",
-            )
+            raise failure()
+        if not clicked and _youtube_in_start_state(status):
+            try:
+                clicked, diagnostic = await bounded(
+                    _click_youtube_start(frame, min(PROTOCOL_TIMEOUT_SECONDS, remaining)),
+                    min(PROTOCOL_TIMEOUT_SECONDS, remaining),
+                    "checking or clicking the official YouTube start button",
+                )
+            except Exception:
+                diagnostic = "official start button check or click failed"
+                raise failure() from None
+        remaining = deadline - clock.monotonic()
+        if remaining <= 0:
+            raise failure()
         await clock.sleep(min(PLAYER_POLL_INTERVAL_SECONDS, remaining))
         remaining = deadline - clock.monotonic()
         if remaining <= 0:
-            raise _PlaybackFailure(
-                code="youtube-autoplay-blocked",
-                message="YouTube playback did not start through native autoplay.",
-            )
+            raise failure()
         try:
             status = await _read_youtube_state(frame, min(PROTOCOL_TIMEOUT_SECONDS, remaining))
         except Exception:
-            raise _PlaybackFailure(
-                code="youtube-autoplay-blocked",
-                message="YouTube playback did not start through native autoplay.",
-            ) from None
+            raise failure() from None
         if status.get("exists") is True and not _youtube_plays_at_one(status):
             raise _PlaybackFailure(
                 code="playback-speed-unavailable",
@@ -775,6 +802,18 @@ async def _play_youtube_video(
             )
         current_time = _video_number(status, "currentTime")
 
+    return current_time
+
+
+async def _play_youtube_video(
+    frame: Any,
+    *,
+    replay: bool = False,
+    on_started: Callable[[], None] | None = None,
+    on_position: Callable[[float, float], None] | None = None,
+) -> tuple[float, str]:
+    current_time = await _wait_for_youtube_start(frame)
+    clock = current_clock()
     started_at = clock.monotonic()
     if on_started is not None:
         on_started()
@@ -1399,8 +1438,8 @@ async def play_lectures(
                 message = error.message or "The requested playback speed is unavailable in the player."
                 remediation = "Use 1.0 speed for YouTube or retry at a speed supported by the selected player."
             elif code == "youtube-autoplay-blocked":
-                message = error.message or "YouTube did not start through native autoplay."
-                remediation = "Check whether the visible YouTube player can autoplay, then retry."
+                message = error.message or "YouTube did not start automatically or through its official start button."
+                remediation = "Check whether the visible YouTube player can start playback, then retry."
             return {"items": results}, [_partial_error(code, message, remediation)]
         except Exception:
             result = {
