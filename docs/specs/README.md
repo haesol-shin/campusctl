@@ -16,6 +16,7 @@ Start with the [constitution](constitution.md) and [live run protocol](live-run.
 | [90-test-strategy](90-test-strategy/spec.md) | Deterministic waits, parallel isolation, required Chromium CI and coverage signals |
 | [100-download-layout](100-download-layout/spec.md) | Configurable material download paths and opt-in course-folder adoption |
 | [110-ux-docs-cli](110-ux-docs-cli/spec.md) | Bilingual README and user guides, parity CI, contribution policy, grouped CLI help and first-run messaging |
+| [130-package-structure](130-package-structure/spec.md) | Whole-package responsibility boundaries, command/media ownership and behavior-neutral migration |
 
 ## v0.4.0 scope
 
