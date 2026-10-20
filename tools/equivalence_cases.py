@@ -22,12 +22,32 @@ class Case(TypedDict):
 
 
 def cases() -> list[Case]:
-    help_paths = [[], ["config"], ["config", "init"], ["doctor"], ["setup"], ["auth"],
-                  ["auth", "set"], ["auth", "status"], ["sync"], ["status"], ["courses"],
-                  ["courses", "list"], ["lectures"], ["lectures", "list"], ["lectures", "play"],
-                  ["assignments"], ["assignments", "list"], ["assignments", "fetch"],
-                  ["notices"], ["notices", "list"], ["notices", "fetch"],
-                  ["materials"], ["materials", "list"], ["materials", "download"]]
+    help_paths = [
+        [],
+        ["config"],
+        ["config", "init"],
+        ["doctor"],
+        ["setup"],
+        ["auth"],
+        ["auth", "set"],
+        ["auth", "status"],
+        ["sync"],
+        ["status"],
+        ["courses"],
+        ["courses", "list"],
+        ["lectures"],
+        ["lectures", "list"],
+        ["lectures", "play"],
+        ["assignments"],
+        ["assignments", "list"],
+        ["assignments", "fetch"],
+        ["notices"],
+        ["notices", "list"],
+        ["notices", "fetch"],
+        ["materials"],
+        ["materials", "list"],
+        ["materials", "download"],
+    ]
     definitions = [("help-" + "-".join(path), [*path, "--help"], "empty", 0) for path in help_paths]
     definitions += [
         ("version", ["--version"], "empty", 0),
@@ -39,19 +59,42 @@ def cases() -> list[Case]:
         ("helper-failed", ["auth", "status", "--check"], "helper-failed", 1),
         ("busy", ["sync"], "busy", 75),
     ]
-    definitions += [(f"doctor-{speed}", ["doctor"], speed, 2 if speed in {"1.1", "true"} else 0)
-                    for speed in ("1.0", "1.25", "1.5", "1.1", "true")]
+    definitions += [
+        (f"doctor-{speed}", ["doctor"], speed, 2 if speed in {"1.1", "true"} else 0)
+        for speed in ("1.0", "1.25", "1.5", "1.1", "true")
+    ]
     result: list[Case] = []
     for name, argv, fixture, expected in definitions:
         for width in (48, 100):
             for mode in ("json", "human"):
-                result.append({"name": f"{name}-{width}-{mode}", "argv": argv, "fixture": fixture,
-                               "width": width, "env": {"CAMPUSCTL_OUTPUT": mode}, "expected": expected})
+                result.append(
+                    {
+                        "name": f"{name}-{width}-{mode}",
+                        "argv": argv,
+                        "fixture": fixture,
+                        "width": width,
+                        "env": {"CAMPUSCTL_OUTPUT": mode},
+                        "expected": expected,
+                    }
+                )
     result += [
-        {"name": "json-overrides-human-tty", "argv": ["--version", "--json"], "fixture": "empty",
-         "width": 100, "env": {"CAMPUSCTL_OUTPUT": "human"}, "stdout_tty": True, "expected": 0},
-        {"name": "auto-human-tty", "argv": ["--version"], "fixture": "empty",
-         "width": 100, "stdout_tty": True, "expected": 0},
+        {
+            "name": "json-overrides-human-tty",
+            "argv": ["--version", "--json"],
+            "fixture": "empty",
+            "width": 100,
+            "env": {"CAMPUSCTL_OUTPUT": "human"},
+            "stdout_tty": True,
+            "expected": 0,
+        },
+        {
+            "name": "auto-human-tty",
+            "argv": ["--version"],
+            "fixture": "empty",
+            "width": 100,
+            "stdout_tty": True,
+            "expected": 0,
+        },
         {"name": "auto-json-pipe", "argv": ["--version"], "fixture": "empty", "width": 100, "expected": 0},
     ]
     return result
@@ -68,16 +111,26 @@ def prepare(root: Path, case: Case, actions: list):
     executable.write_bytes(b"synthetic browser marker")
     (root / "config" / "config.toml").write_text(
         'provider = "cnu"\n[credentials]\nprovider = "command"\n'
-        f'command = [{json.dumps(str(root / "synthetic-helper"))}]\n'
-        f'[browser]\nheadless = true\nexecutable_path = {json.dumps(str(executable))}\n'
-        f'[playback]\ndefault_speed = {speed}\n', encoding="utf-8",
+        f"command = [{json.dumps(str(root / 'synthetic-helper'))}]\n"
+        f"[browser]\nheadless = true\nexecutable_path = {json.dumps(str(executable))}\n"
+        f"[playback]\ndefault_speed = {speed}\n",
+        encoding="utf-8",
     )
     catalog = root / "data" / "catalog" / "lectures.json"
     catalog.parent.mkdir()
     courses = [{"course_id": "course.invalid", "label": "Synthetic course with a long display label", "class_no": None}]
-    catalog.write_text(json.dumps({"schema_version": 1, "generated_at": "2026-01-02T03:04:05Z",
-                                   "generation_id": "synthetic-generation", "courses": courses if fixture == "filled" else [],
-                                   "lectures": []}), encoding="utf-8")
+    catalog.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "generated_at": "2026-01-02T03:04:05Z",
+                "generation_id": "synthetic-generation",
+                "courses": courses if fixture == "filled" else [],
+                "lectures": [],
+            }
+        ),
+        encoding="utf-8",
+    )
     state = {"helper_attempts": 0, "lock_attempts": 0, "browser_probe_open": False}
 
     def fail_helper(*args, **kwargs):

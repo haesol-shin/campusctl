@@ -98,7 +98,11 @@ def capture(tree: Path, root: Path, scenario: Path, case: "Case") -> Capture:
     state_path.unlink(missing_ok=True)
     result = subprocess.run(
         [sys.executable, "-B", str(Path(__file__).resolve()), "--child", str(tree), str(root), str(scenario)],
-        input=json.dumps(case).encode(), capture_output=True, cwd=root, env=child_environment(root), timeout=60,
+        input=json.dumps(case).encode(),
+        capture_output=True,
+        cwd=root,
+        env=child_environment(root),
+        timeout=60,
     )
     if not state_path.is_file():
         raise RuntimeError(f"Comparison child failed before capture (exit {result.returncode})")
@@ -190,16 +194,27 @@ def run_child(tree: Path, root: Path, scenario: Path) -> int:
     if violations:
         raise RuntimeError("Scenario attempted forbidden external I/O")
     for name, imported in tuple(sys.modules.items()):
-        if (name == "campusctl" or name.startswith("campusctl.")) and not Path(imported.__file__).resolve().is_relative_to(tree / "src"):
+        if (name == "campusctl" or name.startswith("campusctl.")) and not Path(
+            imported.__file__
+        ).resolve().is_relative_to(tree / "src"):
             raise RuntimeError("Product import escaped the selected revision")
-    (root.parent / "state.json").write_text(json.dumps({
-        "actions": actions, "fake_state": fake_state,
-        "entropy": dict(deterministic.counts), "elapsed": deterministic.elapsed,
-    }), encoding="utf-8")
+    (root.parent / "state.json").write_text(
+        json.dumps(
+            {
+                "actions": actions,
+                "fake_state": fake_state,
+                "entropy": dict(deterministic.counts),
+                "elapsed": deterministic.elapsed,
+            }
+        ),
+        encoding="utf-8",
+    )
     return code
 
 
-def compare_revisions(repo: Path, workspace: Path, *, parent: str, candidate: str, scenario: Path, self_test: bool) -> int:
+def compare_revisions(
+    repo: Path, workspace: Path, *, parent: str, candidate: str, scenario: Path, self_test: bool
+) -> int:
     trees = [workspace / "parent", workspace / "candidate"]
     for revision, tree in zip((parent, candidate), trees, strict=True):
         export_revision(repo, revision, tree)
@@ -240,10 +255,20 @@ def main() -> int:
     parser.add_argument("--scenarios", type=Path, default=Path(__file__).with_name("equivalence_cases.py"))
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
-    repo = Path(subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=True).stdout.strip())
+    repo = Path(
+        subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=True
+        ).stdout.strip()
+    )
     with tempfile.TemporaryDirectory(prefix="equivalence-", dir=args.scratch.resolve()) as temporary:
-        return compare_revisions(repo, Path(temporary), parent=args.parent, candidate=args.candidate,
-                                 scenario=args.scenarios.resolve(), self_test=args.self_test)
+        return compare_revisions(
+            repo,
+            Path(temporary),
+            parent=args.parent,
+            candidate=args.candidate,
+            scenario=args.scenarios.resolve(),
+            self_test=args.self_test,
+        )
 
 
 if __name__ == "__main__":
