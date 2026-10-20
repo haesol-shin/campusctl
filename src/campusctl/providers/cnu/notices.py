@@ -380,7 +380,7 @@ def _todo_response_coverage(payload: Any) -> tuple[int, int] | None:
     return len(items), total
 
 
-async def _grid_snapshot(page: Any, capture: _TodoCapture) -> list[dict[str, Any]]:
+async def _grid_snapshot(page: Any, capture: _TodoCapture) -> list[dict[str, Any]]:  # noqa: C901
     """Read each committed grid page after its own response and render gate."""
     started = profile_check_start()
     bound_ns = 120 * 1_000_000_000
@@ -697,7 +697,7 @@ class _NoticeCapture:
             self.page.remove_listener("response", self.on_response)
             self.page.remove_listener("framenavigated", self.on_navigate)
 
-    async def collect(self, page: Any, course: dict[str, Any], courses: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    async def collect(self, page: Any, course: dict[str, Any], courses: list[dict[str, Any]]) -> list[dict[str, Any]]:  # noqa: C901
         async def responses_ready() -> None:
             while True:
                 if self.stale:

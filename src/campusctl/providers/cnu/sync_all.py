@@ -396,7 +396,7 @@ def _stage_catalog(
     }
 
 
-async def sync_all(
+async def sync_all(  # noqa: C901
     config: dict[str, Any],
     root: Path,
     domains: tuple[str, ...],

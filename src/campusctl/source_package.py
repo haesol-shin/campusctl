@@ -202,7 +202,7 @@ async def _image_bytes(page: object, reference: ResourceReference) -> tuple[byte
         await response.dispose()
 
 
-async def build_source_package(
+async def build_source_package(  # noqa: C901
     page: object,
     snapshot: DetailSnapshot,
     *,

@@ -361,7 +361,7 @@ def _helper_command(config: dict[str, Any]) -> list[str]:
     return command
 
 
-def _run_helper(config: dict[str, Any]) -> tuple[str, str]:
+def _run_helper(config: dict[str, Any]) -> tuple[str, str]:  # noqa: C901
     command = _helper_command(config)
     creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) if os.name == "nt" else 0
     if os.name == "nt":

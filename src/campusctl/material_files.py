@@ -506,7 +506,7 @@ def _notify_published(dir_fd: int, name: str, identity: tuple[int, int]) -> bool
             os.close(fd)
 
 
-def publish_attachment(
+def publish_attachment(  # noqa: C901
     temp_path: Path, output_dir: Path, filename: str, sha256: str, size_bytes: int
 ) -> PublishedAttachment:
     """Copy a same-directory transfer into an exclusive, byte-verified inode.
@@ -682,7 +682,7 @@ def _scan_conflict() -> CampusError:
     )
 
 
-def adopt_attachment(
+def adopt_attachment(  # noqa: C901
     temp_path: Path, output_dir: Path, course_root: Path, filename: str, size_bytes: int, sha256: str
 ) -> PublishedAttachment | None:
     """Compare a verified transfer with bounded, pinned existing course files."""

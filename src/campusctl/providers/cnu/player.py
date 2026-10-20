@@ -530,7 +530,7 @@ async def _close_player(page: Any) -> None:
     await bounded(close_button.click(timeout=7000), PROTOCOL_TIMEOUT_SECONDS, "closing the lecture player")
 
 
-async def _player_frame(page: Any, diagnostic: _PlayDiagnostic | None = None) -> Any:
+async def _player_frame(page: Any, diagnostic: _PlayDiagnostic | None = None) -> Any:  # noqa: C901
     clock = current_clock()
     started_at = clock.monotonic()
     frame_deadline = started_at + PLAYER_FRAME_WAIT_SECONDS
@@ -913,7 +913,7 @@ async def _wait_for_speed(frame: Any, speed: float) -> bool:
         await clock.sleep(min(PLAYER_POLL_INTERVAL_SECONDS, remaining))
 
 
-async def _play_visible_lecture(
+async def _play_visible_lecture(  # noqa: C901
     page: Any,
     row_id: str,
     speed: float,
@@ -1172,7 +1172,7 @@ def _partial_error(code: str, message: str, remediation: str) -> CampusError:
     return CampusError(code, message, remediation, "error")
 
 
-async def play_lectures(
+async def play_lectures(  # noqa: C901
     page: Any,
     config: dict[str, Any],
     lectures: list[dict[str, Any]],

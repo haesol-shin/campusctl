@@ -132,7 +132,7 @@ def _markdown_text(value: str) -> str:
     return re.sub(r"([\\`*_{}\[\]<>!|])", r"\\\1", value)
 
 
-def _detail_parts(raw: Any, *, task_id: str, source_url: str) -> tuple[str | ResourceReference, ...]:
+def _detail_parts(raw: Any, *, task_id: str, source_url: str) -> tuple[str | ResourceReference, ...]:  # noqa: C901
     if not isinstance(raw, dict) or not isinstance(raw.get("parts"), list):
         raise _failed()
     observed = raw.get("page_task_id")

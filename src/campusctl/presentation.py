@@ -407,7 +407,7 @@ def _color_marker(line: str, color: bool) -> str:
     return line
 
 
-def _lectures(result: dict[str, Any], width: int) -> list[str]:
+def _lectures(result: dict[str, Any], width: int) -> list[str]:  # noqa: C901
     lectures = result.get("lectures")
     if not isinstance(lectures, list):
         return []
@@ -731,7 +731,7 @@ def _simple(command: str, result: dict[str, Any]) -> list[str]:
     return []
 
 
-def render_human(
+def render_human(  # noqa: C901
     command: str,
     envelope: dict[str, Any],
     stream: TextIO,

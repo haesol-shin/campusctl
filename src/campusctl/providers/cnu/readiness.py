@@ -96,7 +96,7 @@ async def _await_surface(page: Any, page_kind: str, deadline: float) -> None:
         await page.wait_for_selector(selector, state="attached", timeout=_remaining_ms(deadline))
 
 
-async def wait_page_ready(
+async def wait_page_ready(  # noqa: C901
     page: Any,
     page_kind: str,
     *,

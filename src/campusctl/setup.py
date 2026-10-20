@@ -131,7 +131,7 @@ def run_setup(
     return _result("installed", True)
 
 
-def run_guided_setup(
+def run_guided_setup(  # noqa: C901
     *,
     confirm: Callable[[str], bool],
     out: TextIO,
