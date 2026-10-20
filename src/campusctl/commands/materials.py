@@ -18,15 +18,16 @@ from campusctl.catalog_view import (
     publish_material_snapshot,
     resolve_material_number,
 )
+from campusctl.cli_args import _OUTPUT_NOTE, EnvelopeArgumentParser
 from campusctl.envelope import CampusError, UsageError
 from campusctl.paths import data_dir
+from campusctl.text_layout import _cells
+from campusctl.text_layout import _wrap as wrap_cells
 
 CAPABILITY: dict[str, Any] = {"commands": ["list", "download"]}
 
 
 def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    from campusctl.cli import _OUTPUT_NOTE, EnvelopeArgumentParser
-
     domain = subparsers.add_parser("materials", help="list or download official files")
     domain.add_argument(
         "--json", action="store_true", default=argparse.SUPPRESS, help="emit the JSON response envelope"
@@ -323,9 +324,6 @@ async def _download(
 
 
 def _wrap(message: str, width: int, *, indent: str = "") -> list[str]:
-    from campusctl.presentation import _cells
-    from campusctl.presentation import _wrap as wrap_cells
-
     return [f"{indent}{line}" for line in wrap_cells(message, max(1, width - _cells(indent)))]
 
 

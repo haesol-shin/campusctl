@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import re
 import shutil
-import unicodedata
 from collections.abc import Callable
 from typing import Any, TextIO
 
@@ -10,6 +9,7 @@ from campusctl.catalog import catalog_path
 from campusctl.commands import discover_domain_modules
 from campusctl.domain_catalog import domain_catalog_path
 from campusctl.paths import data_dir
+from campusctl.text_layout import _cells, _pad, _text, _truncate, _wrap
 
 _DOMAIN_RENDERERS: dict[str, Callable[[str, dict[str, Any], int], list[str]]] = {
     name: module.render for name, module in discover_domain_modules().items()
@@ -17,141 +17,6 @@ _DOMAIN_RENDERERS: dict[str, Callable[[str, dict[str, Any], int], list[str]]] = 
 
 _STATUS_WIDTH = 11
 _QUOTED_COMMAND = re.compile(r"""(?P<quote>['"`])(?P<command>campusctl(?: [^'"`]+)+)(?P=quote)""")
-
-
-def _text(value: object, fallback: str = "") -> str:
-    if not isinstance(value, str):
-        return fallback
-    return " ".join(value.split()) or fallback
-
-
-def _char_cells(character: str) -> int:
-    if unicodedata.combining(character) or unicodedata.category(character) in {"Mn", "Me", "Cf"}:
-        return 0
-    return 2 if unicodedata.east_asian_width(character) in {"W", "F"} else 1
-
-
-def _cells(value: str) -> int:
-    return sum(_char_cells(character) for character in value)
-
-
-def _truncate(value: str, width: int) -> str:
-    value = _text(value)
-    if width <= 0:
-        return ""
-    if _cells(value) <= width:
-        return value
-    if width == 1:
-        return "…"
-    result: list[str] = []
-    used = 0
-    for character in value:
-        size = _char_cells(character)
-        if used + size > width - 1:
-            break
-        result.append(character)
-        used += size
-    return "".join(result) + "…"
-
-
-def _ascii_truncate(value: str, width: int) -> str:
-    value = value.encode("ascii", errors="replace").decode("ascii")
-    if width <= 0:
-        return ""
-    if len(value) <= width:
-        return value
-    leading = min(len(value) - len(value.lstrip(" ")), width)
-    prefix = " " * leading
-    content_width = width - leading
-    if content_width <= 3:
-        return prefix + "." * content_width
-    return prefix + _truncate(value[leading:], content_width - 2).replace("…", "...")
-
-
-def _progress_time(value: object) -> str:
-    try:
-        seconds = max(0, int(value))  # type: ignore[arg-type]
-    except (TypeError, ValueError, OverflowError):
-        seconds = 0
-    minutes, seconds = divmod(seconds, 60)
-    if minutes < 60:
-        return f"{minutes:02d}:{seconds:02d}"
-    hours, minutes = divmod(minutes, 60)
-    return f"{hours}:{minutes:02d}:{seconds:02d}"
-
-
-def render_progress(event: dict[str, Any], stream: TextIO, width: int) -> str:
-    """Write one ASCII playback-progress line without a newline and return it."""
-    width = max(1, width)
-    event_type = event.get("type")
-    if event_type == "started":
-        index = _text(str(event.get("index", "?")))
-        total = _text(str(event.get("total", "?")))
-        prefix = f"[{index}/{total}] Playing: "
-        title = _text(event.get("title"), "Untitled lecture").encode("ascii", errors="replace").decode("ascii")
-        title_width = width - _cells(prefix)
-        line = (
-            prefix + _ascii_truncate(title, title_width) if title_width > 0 else _ascii_truncate(prefix + title, width)
-        )
-    elif event_type == "position":
-        line = f"  {_progress_time(event.get('position_seconds'))} / {_progress_time(event.get('duration_seconds'))}"
-        line = _ascii_truncate(line, width)
-    elif event_type == "verifying":
-        line = _ascii_truncate("  Checking completion in the LMS...", width)
-    elif event_type == "finished":
-        outcome = _text(event.get("outcome"), "finished")
-        line = _ascii_truncate(f"  Done: {outcome}", width)
-    else:
-        line = ""
-    stream.write(line)
-    return line
-
-
-def _chunks(value: str, width: int) -> list[str]:
-    chunks: list[str] = []
-    line = ""
-    used = 0
-    for character in value:
-        size = _char_cells(character)
-        if size > width:
-            character, size = "?", 1
-        if used + size > width and line:
-            chunks.append(line)
-            line = ""
-            used = 0
-        line += character
-        used += size
-    if line or not chunks:
-        chunks.append(line)
-    return chunks
-
-
-def _wrap(value: str, width: int) -> list[str]:
-    value = _text(value)
-    width = max(1, width)
-    if not value:
-        return [""]
-    lines: list[str] = []
-    line = ""
-    for word in value.split(" "):
-        if _cells(word) > width:
-            if line:
-                lines.append(line)
-                line = ""
-            pieces = _chunks(word, width)
-            lines.extend(pieces[:-1])
-            line = pieces[-1]
-            continue
-        candidate = f"{line} {word}" if line else word
-        if _cells(candidate) <= width:
-            line = candidate
-        else:
-            if line:
-                lines.append(line)
-            line = word
-    if line or not lines:
-        lines.append(line)
-    return lines
 
 
 def _command_hint(label: str, command: str, width: int) -> list[str]:
@@ -182,10 +47,6 @@ def _course_heading(label: str, width: int) -> list[str]:
     if _cells(prefix) >= width:
         return _wrap(f"Course: {label}", width)
     return [prefix + _truncate(label, width - _cells(prefix))]
-
-
-def _pad(value: str, width: int) -> str:
-    return value + " " * max(0, width - _cells(value))
 
 
 def _lecture_status(lecture: dict[str, Any]) -> str:

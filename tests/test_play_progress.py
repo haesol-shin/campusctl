@@ -11,7 +11,7 @@ import pytest
 from test_play import FIRST_ID, SECOND_ID, FakePage, _lecture, _prepare
 
 from campusctl import cli
-from campusctl.presentation import render_progress
+from campusctl.progress import render_progress
 from campusctl.providers.cnu import player
 
 

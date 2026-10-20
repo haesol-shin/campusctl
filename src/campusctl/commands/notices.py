@@ -8,9 +8,12 @@ from pathlib import Path
 from typing import Any
 
 from campusctl.catalog_view import cache_metadata
+from campusctl.cli_args import EnvelopeArgumentParser
 from campusctl.domain_catalog import domain_catalog_path, read_domain_catalog
 from campusctl.envelope import CampusError, UsageError
 from campusctl.paths import data_dir
+from campusctl.text_layout import _cells
+from campusctl.text_layout import _wrap as wrap_cells
 
 _PUBLIC_ROW_KEYS = frozenset(
     {
@@ -109,8 +112,6 @@ def _matching_rows(catalog: dict[str, Any], entity_ids: list[str]) -> list[dict[
 
 def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     """Install notice listing and selected-detail fetch parsers."""
-    from campusctl.cli import EnvelopeArgumentParser
-
     domain = subparsers.add_parser("notices", help="list or fetch notice details")
     domain.add_argument(
         "--json", action="store_true", default=argparse.SUPPRESS, help="emit the JSON response envelope"
@@ -288,11 +289,6 @@ async def sync(
 
 
 def _wrap(message: str, width: int, *, indent: str = "") -> list[str]:
-    # Presentation imports command modules during discovery, so import its
-    # cell-aware helpers only when a command is actually rendered.
-    from campusctl.presentation import _cells
-    from campusctl.presentation import _wrap as wrap_cells
-
     available = max(1, width - _cells(indent))
     return [f"{indent}{line}" for line in wrap_cells(message, available)]
 

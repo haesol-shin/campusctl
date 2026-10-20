@@ -187,7 +187,7 @@ def test_notice_human_full_ids_and_staleness(
 
 
 def test_notice_human_wraps_wide_and_unbroken_titles_by_terminal_cells() -> None:
-    from campusctl.presentation import _cells
+    from campusctl.text_layout import _cells
 
     rows = [
         {**ROWS[0], "title": "가" * 25, "entity_id": FULL_ID},
