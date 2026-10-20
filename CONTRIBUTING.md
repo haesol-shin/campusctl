@@ -6,7 +6,7 @@ Open one pull request per user-visible outcome. Keep its specification, implemen
 
 If a live run finds a problem, add the follow-up fix as another commit on the same issue PR. Include sanitized evidence when LMS interactions change; otherwise mark the live-run status not applicable. Follow the [live-run protocol](docs/specs/live-run.md), and never paste unsanitized LMS output into a PR.
 
-Keep each outcome small enough to review. Stage only intended paths with `git add <path>`. Commit and PR titles use `type(scope): summary` in English; commit bodies have one blank line followed by at most four adjacent imperative `- ` bullets without trailing periods or trailers. Verify the final message with `git log -1 --format=%B | cat -A`. The [constitution](docs/specs/constitution.md) governs these review rules and public-data limits.
+Keep each outcome small enough to review. Stage only intended paths with `git add <path>`. Commit and PR titles use `type(scope): summary` in English; commit bodies have one blank line followed by at most four adjacent imperative `- ` bullets without trailing periods or trailers. Verify the final message with `git log -1 --format=%B | cat -A`. Squash merges follow the same rule: write the squash body by hand from the final result instead of keeping the default commit list. The [constitution](docs/specs/constitution.md) governs these review rules and public-data limits.
 
 Ordinary PRs add fragments but do not edit `CHANGELOG.md` or versions. Release integration serializes the changelog and version changes in its own PR; see the [fragment policy](changelog.d/README.md) and [release process](RELEASE.md).
 
