@@ -16,7 +16,7 @@ from .courses import COURSE_LINK_SELECTOR
 from .lectures import LEARNING_ROW_SELECTOR, progress_is_full
 from .login import MY_LECTURE_URL, ensure_logged_in
 from .media import MEDIA_HANDLERS
-from .player_types import _css_string, _PlaybackFailure, _PlayDiagnostic, _watch_time
+from .player_types import MediaKind, _css_string, _PlaybackFailure, _PlayDiagnostic, _watch_time
 
 COURSE_ROOM_SELECTOR = 'a[href="/std/course"]'
 COMPLETION_POLL_SECONDS = 600.0
@@ -178,7 +178,7 @@ async def _prepare_media(page: Any, config: dict[str, Any], lectures: list[dict[
     Those inputs still get the one Panopto SSO; this is not a new playability check.
     """
     prepared: set[str] = set()
-    panopto = MEDIA_HANDLERS["video"]
+    panopto = MEDIA_HANDLERS[MediaKind.VIDEO]
     for lecture in lectures:
         media = lecture.get("media")
         handler = MEDIA_HANDLERS.get(media) if isinstance(media, str) else None
@@ -395,7 +395,7 @@ async def play_lectures(  # noqa: C901
                 page,
                 row_id,
                 selected_speed,
-                media=lecture.get("media", "video"),
+                media=lecture.get("media", MediaKind.VIDEO),
                 replay=replay,
                 diagnostic=diagnostic,
                 on_opened=mark_opened,

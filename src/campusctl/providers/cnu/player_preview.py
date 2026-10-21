@@ -17,7 +17,7 @@ from campusctl.browser import PROTOCOL_TIMEOUT_SECONDS, bounded
 from campusctl.envelope import CampusError
 from campusctl.wait_clock import current_clock
 
-from .media import MEDIA_HANDLERS
+from .media import MEDIA_HANDLERS, MediaHandler
 from .player_types import (
     PLAY_BUTTON_SELECTOR,
     PLAYER_FRAME_WAIT_SECONDS,
@@ -26,11 +26,12 @@ from .player_types import (
     PLAYER_POLL_INTERVAL_SECONDS,
     PLAYER_STALL_SECONDS,
     PLAYER_WATCH_SLACK_SECONDS,
-    POSITION_PROGRESS_INTERVAL_SECONDS,
+    MediaKind,
     _css_string,
     _frame_kind,
     _PlaybackFailure,
     _PlayDiagnostic,
+    _position_event_due,
     _video_number,
     _visible_locator,
     _watch_time,
@@ -350,12 +351,10 @@ async def _wait_for_speed(frame: Any, speed: float) -> bool:
             )
         except Exception:
             return False
-        rate = status.get("playbackRate") if isinstance(status, dict) else None
         if (
             isinstance(status, dict)
             and status.get("exists")
-            and isinstance(rate, int | float)
-            and math.isclose(float(rate), speed)
+            and _panopto_rate_matches(status.get("playbackRate"), speed)
         ):
             return True
         remaining = deadline - clock.monotonic()
@@ -364,12 +363,41 @@ async def _wait_for_speed(frame: Any, speed: float) -> bool:
         await clock.sleep(min(PLAYER_POLL_INTERVAL_SECONDS, remaining))
 
 
-async def _play_visible_lecture(  # noqa: C901
+def _reject_item_speed(handler: MediaHandler | None, speed: float) -> None:
+    if handler is None or handler.item_speed_rejected is None:
+        return
+    rejected = handler.item_speed_rejected(speed)
+    if rejected is not None:
+        raise rejected
+
+
+def _panopto_rate_matches(rate: object, speed: float) -> bool:
+    """Panopto reads any number, a Boolean included, and accepts a rate near the request."""
+    return isinstance(rate, int | float) and math.isclose(float(rate), speed)
+
+
+def _panopto_finished(status: dict[str, Any], current_time: float, duration: float, replay: bool) -> bool:
+    if status.get("ended"):
+        return True
+    if duration <= 0:
+        return False
+    if replay:
+        return _video_number(status, "playedCoverage") >= max(0.0, duration - REPLAY_COVERAGE_TOLERANCE_SECONDS)
+    return max(current_time, _video_number(status, "playedUntil")) >= duration
+
+
+def _panopto_watch_limit(duration: float, speed: float) -> float:
+    if duration > 0:
+        return min(PLAYER_MAX_SECONDS, duration / speed + PLAYER_WATCH_SLACK_SECONDS)
+    return PLAYER_MAX_SECONDS
+
+
+async def _play_visible_lecture(  # noqa: C901 - ordered LMS step sequence
     page: Any,
     row_id: str,
     speed: float,
     *,
-    media: str = "video",
+    media: str = MediaKind.VIDEO,
     replay: bool = False,
     on_opened: Callable[[], None] | None = None,
     on_started: Callable[[], None] | None = None,
@@ -382,10 +410,7 @@ async def _play_visible_lecture(  # noqa: C901
     primary_error: BaseException | None = None
     try:
         handler = MEDIA_HANDLERS.get(media)
-        if handler is not None and handler.item_speed_rejected is not None:
-            rejected = handler.item_speed_rejected(speed)
-            if rejected is not None:
-                raise rejected
+        _reject_item_speed(handler, speed)
         diagnostic.stage = "row"
         await _expand_row_through_ui(page, row_id)
         diagnostic.stage = "preview"
@@ -426,8 +451,7 @@ async def _play_visible_lecture(  # noqa: C901
             on_opened()
         status = await _read_video_state(frame)
 
-        current_rate = status.get("playbackRate")
-        if not isinstance(current_rate, int | float) or not math.isclose(float(current_rate), speed):
+        if not _panopto_rate_matches(status.get("playbackRate"), speed):
             speed_selector = f'div.item[data-speed="{speed:g}"], [data-speed="{speed:g}"]'
             speed_option = frame.locator(speed_selector).first
             count = await bounded(speed_option.count(), PROTOCOL_TIMEOUT_SECONDS, "finding the Panopto speed option")
@@ -446,7 +470,7 @@ async def _play_visible_lecture(  # noqa: C901
             status = await _read_video_state(frame)
         already_ended = replay and bool(status.get("ended"))
 
-        if status.get("paused") or (replay and status.get("ended")):
+        if status.get("paused") or already_ended:
             play_button = await _visible_locator(frame, PLAY_BUTTON_SELECTOR, "finding a visible Panopto play button")
             if play_button is None:
                 raise _PlaybackFailure()
@@ -463,35 +487,13 @@ async def _play_visible_lecture(  # noqa: C901
         while True:
             status = await _read_video_state(frame)
             now = current_clock().monotonic()
-            current = status.get("currentTime")
-            duration_value = status.get("duration")
-            current_time = float(current) if isinstance(current, int | float) and math.isfinite(float(current)) else 0.0
-            duration = (
-                float(duration_value)
-                if isinstance(duration_value, int | float) and math.isfinite(float(duration_value))
-                else 0.0
-            )
-            played_until_value = status.get("playedUntil")
-            played_until = (
-                float(played_until_value)
-                if isinstance(played_until_value, int | float) and math.isfinite(float(played_until_value))
-                else 0.0
-            )
-            played_coverage = _video_number(status, "playedCoverage")
+            current_time = _video_number(status, "currentTime")
+            duration = _video_number(status, "duration")
             elapsed = now - started_at
-            if on_position is not None and (
-                last_position_event_at is None or now - last_position_event_at >= POSITION_PROGRESS_INTERVAL_SECONDS
-            ):
+            if on_position is not None and _position_event_due(last_position_event_at, now):
                 on_position(current_time, duration)
                 last_position_event_at = now
-            if status.get("ended") or (
-                duration > 0
-                and (
-                    played_coverage >= max(0.0, duration - REPLAY_COVERAGE_TOLERANCE_SECONDS)
-                    if replay
-                    else max(current_time, played_until) >= duration
-                )
-            ):
+            if _panopto_finished(status, current_time, duration, replay):
                 return elapsed, _watch_time(elapsed)
             if status.get("paused"):
                 play_button = await _visible_locator(
@@ -510,12 +512,7 @@ async def _play_visible_lecture(  # noqa: C901
                 last_progress_at = now
             elif now - last_progress_at >= PLAYER_STALL_SECONDS:
                 raise _PlaybackFailure(elapsed, code="playback-stalled")
-            watch_limit = (
-                min(PLAYER_MAX_SECONDS, duration / speed + PLAYER_WATCH_SLACK_SECONDS)
-                if duration > 0
-                else PLAYER_MAX_SECONDS
-            )
-            if elapsed >= watch_limit:
+            if elapsed >= _panopto_watch_limit(duration, speed):
                 raise _PlaybackFailure(elapsed, code="playback-timeout")
             await current_clock().sleep(PLAYER_POLL_INTERVAL_SECONDS)
     except _PlaybackFailure as error:

@@ -11,7 +11,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
-from ..player_types import _PlaybackFailure
+from ..player_types import MediaKind, _PlaybackFailure
 from . import panopto, youtube
 
 
@@ -24,17 +24,17 @@ class MediaHandler:
     play: Callable[..., Awaitable[tuple[float, str]]] | None
 
 
-# Existing catalog strings. The media value set itself belongs to L5/L6.
+# Keys are the catalog strings; MediaKind members compare and hash as those strings.
 # Panopto play stays None so preview keeps running the existing video body.
 MEDIA_HANDLERS = {
-    "video": MediaHandler(
+    MediaKind.VIDEO: MediaHandler(
         "panopto",
         queue_speed_rejected=None,
         item_speed_rejected=None,
         prepare=panopto.prepare,
         play=None,
     ),
-    "youtube": MediaHandler(
+    MediaKind.YOUTUBE: MediaHandler(
         "youtube",
         queue_speed_rejected=youtube.queue_speed_rejection,
         item_speed_rejected=youtube.item_speed_rejection,

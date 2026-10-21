@@ -1400,6 +1400,32 @@ def test_cancelled_playback_is_not_replaced_by_player_close_failure(monkeypatch:
     assert ("close-attempt", "row-1") in page.calls
 
 
+@pytest.mark.parametrize("playback_fails", [False, True])
+def test_cancelled_player_close_propagates_only_without_a_playback_error(
+    monkeypatch: pytest.MonkeyPatch, playback_fails: bool
+) -> None:
+    page = FakePage()
+    page.last_read_row_id = "row-1"
+
+    async def read_state(_frame: Any) -> dict[str, Any]:
+        if playback_fails:
+            raise player_types._PlaybackFailure(code="playback-stalled")
+        return {"exists": True, "ended": True, "currentTime": 1.0, "duration": 1.0, "playbackRate": 1.0}
+
+    async def cancelled_close(_page: Any) -> None:
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(player_preview, "_read_video_state", read_state)
+    monkeypatch.setattr(player_preview, "_close_player", cancelled_close)
+
+    expected = player_types._PlaybackFailure if playback_fails else asyncio.CancelledError
+    with pytest.raises(expected) as raised:
+        asyncio.run(player_preview._play_visible_lecture(page, "row-1", 1.0))
+
+    if playback_fails:
+        assert raised.value.code == "playback-stalled"
+
+
 def test_panopto_login_failure_reports_all_not_started_before_player(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
