@@ -404,14 +404,29 @@ def _fetch_error(spec: dict) -> Exception:
 
 
 def _install_fetch_fakes(stack: ExitStack, actions: list, plan: dict) -> None:
-    """Fake only the browser session, login, detail readers and package writer, recording every call."""
+    """Fake only the browser session, login, detail readers and the download network; the real packager runs."""
     from contextlib import asynccontextmanager
 
     import campusctl.browser as browser_module
-    import campusctl.source_package as package_module
     from campusctl.providers.cnu import assignment_detail, login, notice_detail
+    from campusctl.source_package import DetailSnapshot, ResourceReference
+
+    class Response:
+        status = 200
+        url = "https://lms.invalid/big.png"
+        headers = {"Content-Type": "image/png", "Content-Length": str(10**12)}
+
+        async def dispose(self) -> None:
+            actions.append(["network", "dispose"])
+
+    class Request:
+        async def get(self, url: str, **kwargs: object) -> Response:
+            actions.append(["network", "get", url])
+            return Response()
 
     class Page:
+        context = SimpleNamespace(request=Request())
+
         def is_closed(self) -> bool:
             actions.append(["page", "is-closed"])
             return False
@@ -442,12 +457,19 @@ def _install_fetch_fakes(stack: ExitStack, actions: list, plan: dict) -> None:
     async def fake_settle(session, *, domain=None, timeout=8.0):
         actions.append(["sso", "settle", domain])
 
-    async def capture(domain: str, row: dict) -> SimpleNamespace:
+    async def capture(domain: str, row: dict) -> DetailSnapshot:
         entity_id = row["entity_id"]
         actions.append(["capture", domain, entity_id])
         if entity_id in plan.get("capture", {}):
             raise _fetch_error(plan["capture"][entity_id])
-        return SimpleNamespace(entity_id=entity_id)
+        parts: list = ["Synthetic body\n"]
+        if entity_id in plan.get("partial", []):
+            # A resource kind the packager does not support is recorded as omitted, making the package partial.
+            parts.append(ResourceReference("video", "https://lms.invalid/video", "clip.bin", None, "Clip", None, None))
+        if entity_id in plan.get("package", {}):
+            # The image download (network boundary) answers with an oversized length, which the real packager rejects.
+            parts.append(ResourceReference("image", "https://lms.invalid/big.png", "big.png", None, "Big", None, None))
+        return DetailSnapshot(f"https://lms.invalid/{entity_id}", entity_id, tuple(parts))
 
     async def fake_assignment_detail(page, config, row):
         return await capture("assignments", row)
@@ -455,27 +477,11 @@ def _install_fetch_fakes(stack: ExitStack, actions: list, plan: dict) -> None:
     async def fake_notice_detail(page, row):
         return await capture("notices", row)
 
-    async def fake_package(page, snapshot, *, entity_id, kind, course_id, course_label, root, out=None):
-        actions.append(["package", kind, entity_id, course_id, course_label, None if out is None else str(out)])
-        if entity_id in plan.get("package", {}):
-            raise _fetch_error(plan["package"][entity_id])
-        partial = entity_id in plan.get("partial", [])
-        package = {
-            "entity_id": entity_id,
-            "path": f"sources/{kind}/{entity_id}",
-            "content_path": f"sources/{kind}/{entity_id}/content.md",
-            "completeness": "partial" if partial else "complete",
-        }
-        if partial:
-            package["omitted_resources"] = [{"reason": "unsupported-media-type", "original_name": "synthetic.bin"}]
-        return package
-
     stack.enter_context(patch.object(browser_module, "open_session", fake_open_session))
     stack.enter_context(patch.object(browser_module, "settle_sso_popups", fake_settle))
     stack.enter_context(patch.object(login, "ensure_logged_in", fake_login))
     stack.enter_context(patch.object(assignment_detail, "capture_assignment_detail", fake_assignment_detail))
     stack.enter_context(patch.object(notice_detail, "capture_notice_detail", fake_notice_detail))
-    stack.enter_context(patch.object(package_module, "build_source_package", fake_package))
 
 
 def _fetch_cases() -> list[Case]:
@@ -489,7 +495,7 @@ def _fetch_cases() -> list[Case]:
     session = spec("browser-session-failed", "Synthetic session failure.")
     launch = spec("browser-launch-failed", "Synthetic launch failure.")
     login = spec("login-action-required", "Synthetic login action.", "user-action")
-    too_large = spec("file-too-large", "Synthetic oversized resource.", "user-action")
+    oversized = True  # the download answers with an oversized length; the real packager raises file-too-large
     domains = {
         "notices": ("cnu_notice:course.invalid:n", "Timed out while opening notice board."),
         "assignments": ("cnu_assignment:course.invalid:TB_L_REPORT", "Timed out while opening a CNU course."),
@@ -525,8 +531,8 @@ def _fetch_cases() -> list[Case]:
             fetch("batch-item-unknown", [first, second, third], 1, {"capture": {second: unknown}})
             fetch("single-item-plain", [first], 1, {"capture": {first: plain}})
             fetch("batch-item-plain", [first, second, third], 1, {"capture": {second: plain}})
-            fetch("single-package-failure", [first], 2, {"package": {first: too_large}})
-            fetch("batch-package-failure", [first, second, third], 1, {"package": {second: too_large}})
+            fetch("single-package-failure", [first], 2, {"package": {first: oversized}})
+            fetch("batch-package-failure", [first, second, third], 1, {"package": {second: oversized}})
             fetch("single-partial", [first], 1, {"partial": [first]})
             fetch("batch-partial", [first, second], 1, {"partial": [second]})
             fetch("single-timeout", [first], 1, {"capture": {first: timeout}})

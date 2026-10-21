@@ -220,6 +220,46 @@ async def _authenticate(session: Any, config: dict[str, Any], domain: FetchDomai
     return page
 
 
+async def _fetch_item(
+    page: Any,
+    row: dict[str, Any],
+    *,
+    root: Path,
+    out: Path | None,
+    domain: FetchDomain,
+    capture: Capture,
+    step_error: ErrorFactory | None,
+) -> dict[str, Any]:
+    """Capture one detail and build its package; the single and batch paths share this body.
+
+    step_error wraps a failing step in the domain error (single fetch); None re-raises
+    the original exception so the batch caller can classify it.
+    """
+    from campusctl.source_package import build_source_package
+
+    try:
+        snapshot = await capture(page, row)
+    except Exception as exc:
+        if step_error is None:
+            raise
+        raise step_error("detail capture", exc) from exc
+    try:
+        return await build_source_package(
+            page,
+            snapshot,
+            entity_id=row["entity_id"],
+            kind=domain.kind,
+            course_id=row["course"]["id"],
+            course_label=row["course"]["label"],
+            root=root,
+            out=out,
+        )
+    except Exception as exc:
+        if step_error is None:
+            raise
+        raise step_error("package creation", exc) from exc
+
+
 async def fetch_single(
     config: dict[str, Any],
     root: Path,
@@ -232,28 +272,13 @@ async def fetch_single(
 ) -> dict[str, Any]:
     """Fetch one selected detail; each failing step raises the domain's error for that step."""
     from campusctl.browser import open_session
-    from campusctl.source_package import build_source_package
 
     try:
         async with open_session(config, data_dir=root, headless=headless, operation=f"{domain.name}.fetch") as session:
             page = await _authenticate(session, config, domain)
-            try:
-                snapshot = await capture(page, row)
-            except Exception as exc:
-                raise domain.fetch_error("detail capture", exc) from exc
-            try:
-                return await build_source_package(
-                    page,
-                    snapshot,
-                    entity_id=row["entity_id"],
-                    kind=domain.kind,
-                    course_id=row["course"]["id"],
-                    course_label=row["course"]["label"],
-                    root=root,
-                    out=out,
-                )
-            except Exception as exc:
-                raise domain.fetch_error("package creation", exc) from exc
+            return await _fetch_item(
+                page, row, root=root, out=out, domain=domain, capture=capture, step_error=domain.fetch_error
+            )
     except Exception as exc:
         # Step errors above already carry the domain wording; only a session-level failure is adapted here.
         if isinstance(exc, CampusError) and exc.message.startswith(f"{domain.label} fetch:"):
@@ -272,7 +297,6 @@ async def run_fetch_queue(
 ) -> tuple[list[dict[str, Any]], list[CampusError] | None]:
     """Authenticate once, then capture and publish each selected detail in order."""
     from campusctl.browser import open_session
-    from campusctl.source_package import build_source_package
 
     items: list[dict[str, Any]] = []
     errors: list[CampusError] = []
@@ -283,15 +307,8 @@ async def run_fetch_queue(
             entity_id = row["entity_id"]
             try:
                 try:
-                    snapshot = await capture(page, row)
-                    package = await build_source_package(
-                        page,
-                        snapshot,
-                        entity_id=entity_id,
-                        kind=domain.kind,
-                        course_id=row["course"]["id"],
-                        course_label=row["course"]["label"],
-                        root=root,
+                    package = await _fetch_item(
+                        page, row, root=root, out=None, domain=domain, capture=capture, step_error=None
                     )
                 except Exception as exc:
                     classified, session_level = await classify_item_failure(
@@ -320,7 +337,7 @@ async def run_fetch_queue(
     return items, errors or None
 
 
-def selected_ids(args: argparse.Namespace, domain: FetchDomain) -> list[str]:
+def _selected_ids(args: argparse.Namespace, domain: FetchDomain) -> list[str]:
     """Return the requested IDs in first-seen order; IDs are not trimmed or otherwise normalized."""
     raw = getattr(args, "entity_ids", None)
     if raw is None:
@@ -410,7 +427,7 @@ def dispatch_fetch(
     from campusctl.browser_options import preflight_browser_mode
     from campusctl.config import load_config
 
-    entity_ids = selected_ids(args, domain)
+    entity_ids = _selected_ids(args, domain)
     root = data_dir()
     rows = _selected_rows(domain, root, entity_ids)
     out_path = getattr(args, "out", None)
