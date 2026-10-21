@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from config_patch import patch_load_config
 
 from campusctl import cli
 
@@ -45,7 +46,7 @@ def test_complete_requires_replay_and_json_never_prompts(
 ) -> None:
     _catalog(tmp_path)
     monkeypatch.setenv("CAMPUSCTL_DATA_DIR", str(tmp_path))
-    monkeypatch.setattr(cli, "load_config", lambda: {})
+    patch_load_config(monkeypatch, lambda: {})
     events: list[str] = []
 
     @asynccontextmanager
@@ -76,6 +77,6 @@ def test_human_replay_without_tty_refuses_before_browser(
     _catalog(tmp_path)
     monkeypatch.setenv("CAMPUSCTL_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("CAMPUSCTL_OUTPUT", "human")
-    monkeypatch.setattr(cli, "load_config", lambda: {})
+    patch_load_config(monkeypatch, lambda: {})
     assert cli.main(["lectures", "play", ENTITY, "--replay"]) == 2
     assert "replay-confirmation-required" in capsys.readouterr().out

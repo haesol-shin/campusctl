@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from config_patch import patch_load_config
 
 from campusctl.catalog import catalog_path, read_catalog, write_catalog
 from campusctl.domain_catalog import domain_catalog_path, read_domain_catalog, write_domain_catalog
@@ -699,7 +700,7 @@ def test_cli_profile_stderr_carries_failed_check_without_identifiers(
         server.wrong_topbar = True
         config = _install_fixture(monkeypatch, server)
         monkeypatch.setenv("CAMPUSCTL_DATA_DIR", str(tmp_path))
-        monkeypatch.setattr(cli, "load_config", lambda: config)
+        patch_load_config(monkeypatch, lambda: config)
         code = cli.main(["--headless", "--profile", "sync", "--only", "lectures", "--course", IDS[0], "--json"])
     output = capsys.readouterr()
     assert code == 1
@@ -1019,7 +1020,7 @@ def test_partial_cli_exit_reflects_paginated_notice_and_committed_material(
         server.board_paginated = True
         config = _install_fixture(monkeypatch, server)
         monkeypatch.setenv("CAMPUSCTL_DATA_DIR", str(tmp_path))
-        monkeypatch.setattr(cli, "load_config", lambda: config)
+        patch_load_config(monkeypatch, lambda: config)
         code = cli.main(["--headless", "sync", "--only", "notices,materials", "--course", IDS[3], "--json"])
         output = capsys.readouterr()
         assert output.err == ""

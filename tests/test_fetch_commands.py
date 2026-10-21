@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from campusctl import cli
+from campusctl import cli, composition
 from campusctl.commands import assignments, notices
 from campusctl.envelope import CampusError, make_envelope
 from campusctl.presentation import render_human
@@ -247,14 +247,14 @@ def test_fetch_released_surface(
     import io
 
     stream_a = io.StringIO()
-    render_human("assignments.fetch", envelope_a, stream_a, width=80)
+    render_human("assignments.fetch", envelope_a, stream_a, renderers=composition.RENDERERS, width=80)
     lines_a = stream_a.getvalue().splitlines()
     assert any("Assignment source: cnu_assignment:course-xyz:task-999" in line for line in lines_a)
     assert any("Package: /data/sources/assignment/hash/digest" in line for line in lines_a)
     assert any("Completeness: complete" in line for line in lines_a)
 
     stream_n = io.StringIO()
-    render_human("notices.fetch", envelope_n, stream_n, width=80)
+    render_human("notices.fetch", envelope_n, stream_n, renderers=composition.RENDERERS, width=80)
     lines_n = stream_n.getvalue().splitlines()
     assert any("Notice source: cnu_notice:course-xyz:2026-09-25:10" in line for line in lines_n)
     assert any("Package: /data/sources/notice/hash/digest" in line for line in lines_n)

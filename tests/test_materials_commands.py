@@ -9,9 +9,10 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from config_patch import patch_load_config
 
 from campusctl import cli
-from campusctl.commands import discover_domain_modules, materials
+from campusctl.commands import materials
 from campusctl.domain_catalog import write_domain_catalog
 from campusctl.providers.cnu import attachment_transfer
 from campusctl.providers.cnu import materials as provider
@@ -62,7 +63,7 @@ def test_sync_list_human_json_and_staleness(
     _catalog(tmp_path, stale=True)
     monkeypatch.setenv("CAMPUSCTL_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("CAMPUSCTL_OUTPUT", "human")
-    monkeypatch.setattr(cli, "load_config", lambda: pytest.fail("list must not load configuration"))
+    patch_load_config(monkeypatch, lambda: pytest.fail("list must not load configuration"))
     code, human = _cli(["materials", "list", "--course", "course-a"], capsys)
     assert code == 0 and ID in human and "Warning:" in human and "Course archive" in human
     code, raw = _cli(["materials", "list", "--json"], capsys)
@@ -75,12 +76,6 @@ def test_sync_list_human_json_and_staleness(
         {"courses": 1, "materials": 2, "failed_courses": [], "catalog": {"enrollment_state": "known"}},
         50,
     ) == ["Synced 1 course, 2 materials."]
-
-
-def test_discovery_exposes_materials_without_ui_request_policy() -> None:
-    assert discover_domain_modules()["materials"] is materials
-    assert cli.CAPABILITIES["materials"] == ["list", "download"]
-    assert materials.CAPABILITY == {"commands": ["list", "download"]}
 
 
 def _fake_network(
@@ -320,7 +315,7 @@ def test_end_to_end_fixture_cli_scenario(
 ) -> None:
     monkeypatch.setenv("CAMPUSCTL_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("CAMPUSCTL_OUTPUT", "human")
-    monkeypatch.setattr(cli, "load_config", lambda: {})
+    patch_load_config(monkeypatch, lambda: {})
     monkeypatch.setattr("campusctl.config.load_config", lambda: {})
     calls = _fake_network(monkeypatch, tmp_path)
 
@@ -384,8 +379,8 @@ def test_material_list_refuses_catalog_rewrite_before_snapshot_publication(
     monkeypatch.setenv("CAMPUSCTL_OUTPUT", "human")
     original = cli.render_human
 
-    def rewrite(command: str, envelope: dict, stream: Any) -> None:
-        original(command, envelope, stream)
+    def rewrite(command: str, envelope: dict, stream: Any, **kwargs: Any) -> None:
+        original(command, envelope, stream, **kwargs)
         if command == "materials.list":
             _catalog(tmp_path)
 

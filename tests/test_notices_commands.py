@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from config_patch import patch_load_config
 
 from campusctl import cli
 from campusctl.commands import notices
@@ -118,7 +119,7 @@ def test_cached_notice_list_envelope(
         failed=[{"course_id": "course-b", "label": "Other Course", "reason": "course-sync-failed"}],
     )
     monkeypatch.setenv("CAMPUSCTL_DATA_DIR", str(tmp_path))
-    monkeypatch.setattr(cli, "load_config", lambda: pytest.fail("cached list must not load config"))
+    patch_load_config(monkeypatch, lambda: pytest.fail("cached list must not load config"))
 
     code, payload = _invoke(["notices", "list", "--course", "course-a", "--json"], capsys)
     assert code == 0

@@ -223,6 +223,334 @@ def _install_progress_fakes(stack: ExitStack, actions: list, fixture: str) -> No
     stack.enter_context(patch.object(player_module, "play_lectures", fake_play))
 
 
+# Bare commands that run without a subcommand; courses and lectures fall through to an internal error.
+_BARE_EXIT = {"doctor": 0, "setup": 0, "sync": 0, "status": 0, "courses": 1, "lectures": 1}
+
+
+# Command-owner fixtures: name -> (config kind, keyring state, catalogs). Synthetic and offline.
+_P3_FIXTURES = {
+    "p3-healthy": ("keyring", "ready", "all"),
+    "p3-no-config": ("none", "ready", "none"),
+    "p3-invalid-config": ("invalid", "ready", "none"),
+    "p3-no-credentials": ("keyring", "empty", "all"),
+    "p3-backend-down": ("keyring", "down", "all"),
+    "p3-no-browser": ("no-browser", "ready", "all"),
+    "p3-headed": ("headed", "ready", "all"),
+    "p3-partial": ("keyring", "ready", "partial"),
+    "p3-no-catalogs": ("keyring", "ready", "none"),
+    "p3-helper": ("helper", "ready", "all"),
+    "p3-sync": ("keyring", "ready", "all"),
+    "p3-sync-failure": ("keyring", "ready", "all"),
+    "p3-sync-uncached": ("keyring", "ready", "none"),
+}
+_P3_HELPER_FIXTURES = {"p3-helper"}
+_P3_COURSE = {"course_id": "course.invalid", "label": "Synthetic course", "class_no": None}
+
+
+def _p3_config_text(kind: str, root: Path, executable: Path) -> str | None:
+    if kind == "none":
+        return None
+    if kind == "invalid":
+        return "provider = [unterminated\n"
+    browser = str(root / "missing-browser") if kind == "no-browser" else str(executable)
+    headless = "false" if kind == "headed" else "true"
+    credentials = (
+        f'provider = "command"\ncommand = [{json.dumps(str(root / "synthetic-helper"))}]\n'
+        if kind == "helper"
+        else 'provider = "keyring"\n'
+    )
+    return (
+        'provider = "cnu"\n[account]\nusername = "synthetic-user"\n'
+        f"[credentials]\n{credentials}"
+        f"[browser]\nheadless = {headless}\nexecutable_path = {json.dumps(browser)}\n"
+    )
+
+
+def _write_p3_files(root: Path, fixture: str, executable: Path) -> None:
+    from campusctl.domain_catalog import write_domain_catalog
+    from campusctl.providers.cnu.assignments import parse_assignment_rows
+
+    config_kind, _keyring, catalogs = _P3_FIXTURES[fixture]
+    text = _p3_config_text(config_kind, root, executable)
+    if text is not None:
+        (root / "config" / "config.toml").write_text(text, encoding="utf-8")
+    if catalogs == "none":
+        return
+    data = root / "data"
+    _write_catalogs(root, "progress-catalog")
+    course = {"id": _P3_COURSE["course_id"], "label": _P3_COURSE["label"]}
+    notice = {
+        "entity_id": "cnu_notice:course.invalid:n1",
+        "course": course,
+        "title": "Synthetic notice",
+        "date": "2026-01-02",
+        "author": "Synthetic author",
+        "view_count": 1,
+        "has_attachments": False,
+        "is_unread": True,
+    }
+    write_domain_catalog(
+        "notices",
+        {"generated_at": "2026-01-02T03:04:05Z", "courses": [_P3_COURSE], "notices": [notice]},
+        data / "catalog" / "notices.json",
+    )
+    if catalogs == "partial":
+        return
+    rows = parse_assignment_rows(
+        [{"task_id": "TB_L_REPORT1", "title": "Synthetic assignment"}],
+        {"course_id": _P3_COURSE["course_id"], "label": _P3_COURSE["label"]},
+    )
+    write_domain_catalog(
+        "assignments",
+        {"generated_at": "2026-01-02T03:04:05Z", "courses": [_P3_COURSE], "assignments": rows},
+        data / "catalog" / "assignments.json",
+    )
+    material = {
+        "entity_id": "cnu_lms_material:course.invalid:file-1",
+        "course": course,
+        "archive_entry": {"board_item_id": "board-1", "title": "Synthetic archive"},
+        "file_id": "file-1",
+        "display_name": "example.pdf",
+        "filename": "example.pdf",
+        "media_type": None,
+        "size_bytes": None,
+        "downloadable": True,
+        "unavailable_reason": None,
+    }
+    write_domain_catalog(
+        "materials",
+        {"generated_at": "2026-01-02T03:04:05Z", "courses": [_P3_COURSE], "materials": [material]},
+        data / "catalog" / "materials.json",
+    )
+
+
+def _install_p3_fakes(stack: ExitStack, actions: list, fixture: str, state: dict) -> None:
+    import getpass
+    import sys
+    from contextlib import asynccontextmanager
+
+    import campusctl.browser as browser_module
+    import campusctl.sync as sync_module
+    from campusctl.envelope import CampusError
+    from campusctl.providers.cnu import courses as courses_module
+
+    keyring_state = _P3_FIXTURES[fixture][1]
+    stored = {"present": keyring_state == "ready"}
+
+    class SyntheticBackend:
+        priority = 5
+
+    class SyntheticKeyring:
+        @staticmethod
+        def get_keyring():
+            return SyntheticBackend()
+
+        @staticmethod
+        def get_password(service, username):
+            actions.append(["keyring", "get", keyring_state])
+            if keyring_state == "down":
+                raise RuntimeError("synthetic backend failure")
+            return "synthetic-secret" if stored["present"] else None
+
+        @staticmethod
+        def set_password(service, username, password):
+            actions.append(["keyring", "set", bool(password)])
+            if keyring_state == "down":
+                raise RuntimeError("synthetic backend failure")
+            stored["present"] = True
+
+    def read_password(prompt=""):
+        actions.append(["prompt", "password"])
+        return sys.stdin.readline().rstrip("\n")
+
+    @asynccontextmanager
+    async def fake_open_session(*args, **kwargs):
+        actions.append(["session", "open", "replaced"])
+        try:
+            yield SimpleNamespace(page=SimpleNamespace(name="synthetic-page"))
+        finally:
+            actions.append(["session", "close", "replaced"])
+
+    async def fake_discover(page, config):
+        actions.append(["roster", "discover"])
+        return [_P3_COURSE]
+
+    async def fake_sync_all(config, root, domains, course_id, *, headless, course_snapshot=None):
+        actions.append(["sync", "collect", list(domains), course_id, headless, course_snapshot is not None])
+        if fixture == "p3-sync-failure":
+            raise CampusError("session-busy", "Synthetic busy session.", "Retry later.", "busy")
+        counts = {"courses": 1, domains[0]: 1}
+        return {domain: sync_module.DomainOutcome(result=dict(counts)) for domain in domains}
+
+    stack.enter_context(patch.dict(sys.modules, {"keyring": SyntheticKeyring}))
+    stack.enter_context(patch.object(getpass, "getpass", read_password))
+    stack.enter_context(patch.object(browser_module, "open_session", fake_open_session))
+    stack.enter_context(patch.object(courses_module, "discover_courses", fake_discover))
+    stack.enter_context(patch.object(sync_module, "sync_all", fake_sync_all))
+    state["keyring"] = keyring_state
+
+
+def _command_owner_cases() -> list[Case]:
+    """Precedence, doctor/status, registration and error-envelope cases for the command owners."""
+    families = ("config", "doctor", "auth", "setup", "sync", "status", "courses", "lectures", "assignments")
+    families += ("notices", "materials")
+    definitions: list[tuple[str, list[str], str, int, dict]] = []
+
+    def add(name: str, argv: list[str], fixture: str, expected: int, **extra) -> None:
+        definitions.append((name, argv, fixture, expected, extra))
+
+    # Precedence: flag over config over default, prompt only on interactive terminals, missing values.
+    tty = {"tty": True}
+    add("auth-status", ["auth", "status"], "p3-healthy", 0)
+    add("auth-status-check", ["auth", "status", "--check"], "p3-healthy", 0)
+    add("auth-status-empty", ["auth", "status"], "p3-no-credentials", 0)
+    add("auth-status-empty-check", ["auth", "status", "--check"], "p3-no-credentials", 2)
+    add("auth-status-backend-down", ["auth", "status", "--check"], "p3-backend-down", 2)
+    add("auth-status-no-config", ["auth", "status"], "p3-no-config", 2)
+    add("auth-status-helper", ["auth", "status"], "p3-helper", 0)
+    add("auth-status-helper-check", ["auth", "status", "--check"], "p3-helper", 1)
+    add("auth-set-no-tty", ["auth", "set"], "p3-healthy", 2)
+    add("auth-set-helper-refused", ["auth", "set"], "p3-helper", 2, **tty)
+    add("auth-set-prompt", ["auth", "set"], "p3-no-credentials", 0, input="synthetic-secret\n", **tty)
+    add("auth-set-empty-prompt", ["auth", "set"], "p3-no-credentials", 2, input="\n", **tty)
+    add("auth-set-backend-down", ["auth", "set"], "p3-backend-down", 2, input="synthetic-secret\n", **tty)
+    add("config-init-flag-no-tty", ["config", "init", "--username", "synthetic-user"], "p3-no-config", 0)
+    add("config-init-existing", ["config", "init", "--username", "synthetic-user"], "p3-healthy", 2)
+    add("config-init-missing-username", ["config", "init"], "p3-no-config", 2)
+    add("config-init-empty-flag", ["config", "init", "--username", ""], "p3-no-config", 2)
+    add("config-init-flag-value-missing", ["config", "init", "--username"], "p3-no-config", 2)
+    add("config-init-prompt-login", ["config", "init"], "p3-no-config", 0, input="synthetic-user\nn\n", **tty)
+    add(
+        "config-init-flag-skips-login-prompt",
+        ["config", "init", "--username", "flag-user"],
+        "p3-no-config",
+        0,
+        input="n\n",
+        **tty,
+    )
+    add(
+        "config-init-prompt-password",
+        ["config", "init", "--username", "flag-user"],
+        "p3-no-config",
+        0,
+        input="y\nsynthetic-secret\n",
+        **tty,
+    )
+    add("config-init-existing-save", ["config", "init"], "p3-no-credentials", 0, input="y\nsynthetic-secret\n", **tty)
+    add("config-init-existing-decline", ["config", "init"], "p3-no-credentials", 2, input="n\n", **tty)
+    add("config-init-existing-ready", ["config", "init"], "p3-healthy", 2, **tty)
+    add("config-init-invalid-existing", ["config", "init"], "p3-invalid-config", 2, **tty)
+    add("doctor-flag-headless-over-config", ["--headless", "doctor"], "p3-headed", 0)
+    add("doctor-flag-headed-over-config", ["--headed", "doctor"], "p3-healthy", 2)
+    add("doctor-config-headless", ["doctor"], "p3-healthy", 0)
+    add("doctor-config-headed-no-display", ["doctor"], "p3-headed", 2)
+    add("doctor-display-env", ["doctor"], "p3-headed", 0, env={"DISPLAY": ":synthetic"})
+    add("setup-no-tty-config", ["setup"], "p3-healthy", 0)
+    add("setup-no-config", ["setup"], "p3-no-config", 0)
+    add("setup-invalid-config", ["setup"], "p3-invalid-config", 2)
+    add("sync-headed-flag-over-config", ["--headed", "sync", "--only", "lectures"], "p3-sync", 0)
+    add("sync-config-headless", ["sync", "--only", "assignments"], "p3-sync", 0)
+    add("sync-subset", ["sync", "--only", "notices,materials"], "p3-sync", 0)
+    add("sync-unknown-domain", ["sync", "--only", "bogus"], "p3-sync", 2)
+    add("sync-only-value-missing", ["sync", "--only"], "p3-sync", 2)
+    add("sync-no-config", ["sync"], "p3-no-config", 2)
+    add("sync-failure", ["sync", "--only", "lectures"], "p3-sync-failure", 75)
+    add("sync-cached-course", ["sync", "--only", "lectures", "--course", "course.invalid"], "p3-sync", 0)
+    add("sync-course-discovery", ["sync", "--only", "lectures", "--course", "course.invalid"], "p3-sync-uncached", 0)
+    add("profile-sync", ["--profile", "sync", "--only", "lectures"], "p3-sync", 0)
+    add("profile-status-refused", ["--profile", "status"], "p3-healthy", 2)
+    add("profile-courses-refresh", ["--profile", "courses", "list", "--refresh"], "p3-sync", 0)
+    add("profile-list-without-refresh", ["--profile", "lectures", "list"], "p3-sync", 2)
+    add("profile-domain-refresh", ["--profile", "notices", "list", "--refresh"], "p3-sync", 0)
+    # Doctor and status: healthy, missing config, missing credentials and failing checks.
+    for fixture in (
+        "p3-healthy",
+        "p3-no-config",
+        "p3-invalid-config",
+        "p3-no-credentials",
+        "p3-backend-down",
+        "p3-no-browser",
+        "p3-headed",
+        "p3-helper",
+        "p3-no-catalogs",
+    ):
+        add(f"doctor-{fixture}", ["doctor"], fixture, 0 if fixture in {"p3-healthy", "p3-helper"} else 2)
+    status_exit = {"p3-healthy": 0, "p3-partial": 1, "p3-no-catalogs": 2, "p3-no-config": 2}
+    for fixture, expected in status_exit.items():
+        add(f"status-{fixture}", ["status"], fixture, expected)
+        add(f"status-course-{fixture}", ["status", "--course", "course.invalid"], fixture, expected)
+    add("status-unknown-course", ["status", "--course", "missing-course"], "p3-healthy", 2)
+    add("status-course-index", ["status", "--course", "1"], "p3-healthy", 2)
+    add("status-course-value-missing", ["status", "--course"], "p3-healthy", 2)
+    # Registration without scanning: every command family lists, dispatches and renders.
+    listing = ("lectures", "courses", "assignments", "notices", "materials")
+    for command in listing:
+        add(f"{command}-list", [command, "list"], "p3-healthy", 0)
+        # The courses command has no --course option, so it reports a usage error.
+        course_exit = 2 if command == "courses" else 0
+        add(f"{command}-list-course", [command, "list", "--course", "course.invalid"], "p3-healthy", course_exit)
+        add(f"{command}-list-no-catalogs", [command, "list"], "p3-no-catalogs", 2)
+        add(f"{command}-refresh", [command, "list", "--refresh"], "p3-sync", 0)
+        add(f"{command}-refresh-failure", [command, "list", "--refresh"], "p3-sync-failure", 75)
+        add(
+            f"{command}-refresh-course",
+            [command, "list", "--refresh", "--course", "course.invalid"],
+            "p3-sync",
+            course_exit,
+        )
+    add("lectures-list-all", ["lectures", "list", "--all"], "p3-healthy", 0)
+    add(
+        "assignments-refresh-discovery",
+        ["assignments", "list", "--refresh", "--course", "course.invalid"],
+        "p3-sync-uncached",
+        2,  # discovery and refresh succeed, then the unwritten catalog is missing
+    )
+    row = "cnu_lecture:course.invalid:row-1"
+    add("lectures-play-headless-refused", ["lectures", "play", row], "p3-healthy", 2)
+    add("lectures-play-unknown-id", ["lectures", "play", "cnu_lecture:course.invalid:missing"], "p3-healthy", 2)
+    add("lectures-play-replay-no-tty", ["lectures", "play", row, "--replay"], "p3-healthy", 2)
+    add(
+        "assignments-fetch-unknown-id",
+        ["assignments", "fetch", "cnu_assignment:course.invalid:missing"],
+        "p3-healthy",
+        2,
+    )
+    add("notices-fetch-unknown-id", ["notices", "fetch", "cnu_notice:course.invalid:missing"], "p3-healthy", 2)
+    add("materials-download-selection-required", ["materials", "download"], "p3-healthy", 2)
+    add(
+        "materials-download-unknown-id", ["materials", "download", "cnu_lms_material:course.invalid:x"], "p3-healthy", 2
+    )
+    add("materials-download-number", ["materials", "download", "1"], "p3-healthy", 2)
+    # Error envelope: unknown subcommands, missing subcommands and usage errors per family.
+    for family in families:
+        add(f"usage-{family}-bare", [family], "p3-healthy", _BARE_EXIT.get(family, 2))
+        add(f"usage-{family}-unknown-option", [family, "--bogus"], "p3-healthy", 2)
+        add(f"usage-{family}-unknown-subcommand", [family, "bogus"], "p3-healthy", 2)
+    add("usage-no-command", [], "p3-healthy", 2)
+    add("usage-unknown-command", ["bogus"], "p3-healthy", 2)
+    add("usage-abbreviated-subcommand", ["lectures", "li"], "p3-healthy", 2)
+    add("usage-global-option-after-command", ["doctor", "--headless"], "p3-healthy", 2)
+    add("usage-play-without-ids", ["lectures", "play", "--speed", "1.0"], "p3-healthy", 2)
+    result: list[Case] = []
+    for name, argv, fixture, expected, extra in definitions:
+        # Prompts exist only on interactive terminals, which always use human output.
+        for mode in ("human",) if extra.get("tty") else ("json", "human"):
+            case: Case = {
+                "name": f"owner-{name}-{mode}",
+                "argv": argv,
+                "fixture": fixture,
+                "width": 80,
+                "env": {"CAMPUSCTL_OUTPUT": mode, **extra.get("env", {})},
+                "expected": expected,
+            }
+            if extra.get("tty"):
+                case["stdin_tty"] = case["stdout_tty"] = True
+            if "input" in extra:
+                case["input"] = extra["input"]
+            result.append(case)
+    return result
+
+
 def cases() -> list[Case]:
     help_paths = [
         [],
@@ -344,7 +672,7 @@ def cases() -> list[Case]:
             if tty:
                 case["stdout_tty"] = True
             result.append(case)
-    return result
+    return [*result, *_command_owner_cases()]
 
 
 @contextmanager
@@ -357,14 +685,17 @@ def prepare(root: Path, case: Case, actions: list):
     executable = root / "browser"
     executable.write_bytes(b"synthetic browser marker")
     headed = fixture.startswith("progress-")
-    (root / "config" / "config.toml").write_text(
-        'provider = "cnu"\n[credentials]\nprovider = "command"\n'
-        f"command = [{json.dumps(str(root / 'synthetic-helper'))}]\n"
-        f"[browser]\nheadless = {'false' if headed else 'true'}\nexecutable_path = {json.dumps(str(executable))}\n"
-        f"[playback]\ndefault_speed = {speed}\n",
-        encoding="utf-8",
-    )
-    _write_catalogs(root, fixture)
+    if fixture.startswith("p3-"):
+        _write_p3_files(root, fixture, executable)
+    else:
+        (root / "config" / "config.toml").write_text(
+            'provider = "cnu"\n[credentials]\nprovider = "command"\n'
+            f"command = [{json.dumps(str(root / 'synthetic-helper'))}]\n"
+            f"[browser]\nheadless = {'false' if headed else 'true'}\nexecutable_path = {json.dumps(str(executable))}\n"
+            f"[playback]\ndefault_speed = {speed}\n",
+            encoding="utf-8",
+        )
+        _write_catalogs(root, fixture)
     state = {"helper_attempts": 0, "lock_attempts": 0, "browser_probe_open": False}
 
     def fail_helper(*args, **kwargs):
@@ -395,6 +726,10 @@ def prepare(root: Path, case: Case, actions: list):
             import fcntl
 
             stack.enter_context(patch.object(fcntl, "flock", busy_lock))
+        elif fixture.startswith("p3-"):
+            _install_p3_fakes(stack, actions, fixture, state)
+            if fixture in _P3_HELPER_FIXTURES:
+                stack.enter_context(patch.object(subprocess, "Popen", fail_helper))
         elif fixture.startswith("progress-"):
             _install_progress_fakes(stack, actions, fixture)
         yield state

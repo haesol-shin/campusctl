@@ -13,7 +13,9 @@ from types import ModuleType
 
 import pytest
 
-from campusctl import __version__, catalog, cli, credentials, lock, paths
+from campusctl import __version__, catalog, cli, composition, credentials, doctor, lock, paths
+from campusctl.commands import auth
+from campusctl.commands import doctor as doctor_command
 from campusctl.config import ConfigError, load_config
 from campusctl.envelope import CampusError, emit, make_envelope
 from campusctl.paths import config_dir, config_path, data_dir
@@ -110,7 +112,7 @@ def test_usage_error_is_enveloped_without_echoing_invalid_argument(capsys: pytes
 def test_unknown_exception_reports_only_class_name(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setattr(cli, "doctor_result", lambda override=None: (_ for _ in ()).throw(RuntimeError(SENTINEL)))
+    monkeypatch.setattr(doctor_command, "doctor_result", lambda *args: (_ for _ in ()).throw(RuntimeError(SENTINEL)))
     assert cli.main(["doctor", "--json"]) == 1
     output = capsys.readouterr()
     envelope = json.loads(output.out)
@@ -225,9 +227,9 @@ def test_doctor_reports_unknown_display_availability_on_windows(
     monkeypatch.setattr(cli.sys, "platform", "win32")
     monkeypatch.setenv("CAMPUSCTL_CONFIG_DIR", str(tmp_path / "config"))
     monkeypatch.setenv("CAMPUSCTL_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setattr(cli, "_playwright_diagnostics", lambda _path: (True, True))
+    monkeypatch.setattr(doctor, "_playwright_diagnostics", lambda _path: (True, True))
 
-    result, error = cli.doctor_result()
+    result, error = doctor.doctor_result(None, composition.CAPABILITIES)
 
     assert result["display_available"] is None
     assert error is not None
@@ -284,7 +286,7 @@ def test_materials_doctor_reports_settings_without_creating_destination(
     config.parent.mkdir(parents=True)
     monkeypatch.setenv("CAMPUSCTL_TEST_DEST", str(tmp_path / "destination"))
     config.write_text('[materials]\ndownload_dir = "$CAMPUSCTL_TEST_DEST/{course}/materials"\nadopt_existing = true\n')
-    result, _ = cli.doctor_result()
+    result, _ = doctor.doctor_result(None, composition.CAPABILITIES)
     assert result["materials"] == {
         "download_dir": "$CAMPUSCTL_TEST_DEST/{course}/materials",
         "adopt_existing": True,
@@ -294,7 +296,7 @@ def test_materials_doctor_reports_settings_without_creating_destination(
     lines, _ = _doctor(result, 100, [])
     assert "[ok] Materials downloads: configured (adoption on)" in lines
     monkeypatch.delenv("CAMPUSCTL_TEST_DEST")
-    invalid, error = cli.doctor_result()
+    invalid, error = doctor.doctor_result(None, composition.CAPABILITIES)
     assert error is not None and error.code == "config-invalid"
     assert invalid["materials"] == {"download_dir": None, "adopt_existing": None, "semester": None}
     assert not (tmp_path / "destination").exists()
@@ -764,7 +766,7 @@ def test_auth_status_keyring_failure_preserves_result(
             "Check the operating-system credential backend.",
         )
 
-    monkeypatch.setattr(cli, "keyring_status", unavailable)
+    monkeypatch.setattr(auth, "keyring_status", unavailable)
     assert cli.main(["auth", "status", "--check", "--json"]) == 2
     output = capsys.readouterr()
     envelope = json.loads(output.out)
@@ -781,7 +783,7 @@ def test_auth_status_missing_keyring_password_only_fails_with_check(
     conf.mkdir()
     (conf / "config.toml").write_text(_config_text(), encoding="utf-8")
     monkeypatch.setenv("CAMPUSCTL_CONFIG_DIR", str(conf))
-    monkeypatch.setattr(cli, "keyring_status", lambda _config: ("SecureBackend", False))
+    monkeypatch.setattr(auth, "keyring_status", lambda _config: ("SecureBackend", False))
 
     assert cli.main(["auth", "status", "--check", "--json"]) == 2
     checked = json.loads(capsys.readouterr().out)
@@ -813,14 +815,14 @@ def test_doctor_missing_config_is_read_only_and_reports_contract_fields(
     data = tmp_path / "data"
     monkeypatch.setenv("CAMPUSCTL_CONFIG_DIR", str(conf))
     monkeypatch.setenv("CAMPUSCTL_DATA_DIR", str(data))
-    monkeypatch.setattr(cli, "_playwright_diagnostics", lambda path: (True, False))
-    result, error = cli.doctor_result()
+    monkeypatch.setattr(doctor, "_playwright_diagnostics", lambda path: (True, False))
+    result, error = doctor.doctor_result(None, composition.CAPABILITIES)
     assert error is not None and error.code == "config-missing"
     assert result["config"] == {"path": str(conf / "config.toml"), "present": False}
     assert result["data_dir"] == str(data)
     assert result["browser"]["playwright_importable"] is True
     assert result["playback"]["supported_speeds"] == [1.0, 1.25, 1.5]
-    assert result["capabilities"] == cli.CAPABILITIES
+    assert result["capabilities"] == composition.CAPABILITIES
     assert result["capabilities"]["sync"][0] == "lectures"
     assert result["capabilities"]["lectures"] == ["list", "play"]
     assert not conf.exists()
@@ -846,13 +848,9 @@ def test_doctor_uses_one_code_for_missing_playwright_or_chromium(
     monkeypatch.setenv("CAMPUSCTL_CONFIG_DIR", str(conf))
     monkeypatch.setenv("CAMPUSCTL_DATA_DIR", str(data))
     monkeypatch.setenv("DISPLAY", ":test")
-    monkeypatch.setattr(
-        cli,
-        "_playwright_diagnostics",
-        lambda _path: (playwright_importable, chromium_installed),
-    )
+    monkeypatch.setattr(doctor, "_playwright_diagnostics", lambda _path: (playwright_importable, chromium_installed))
 
-    result, error = cli.doctor_result()
+    result, error = doctor.doctor_result(None, composition.CAPABILITIES)
 
     assert result["browser"]["playwright_importable"] is playwright_importable
     assert result["browser"]["chromium_installed"] is chromium_installed
@@ -879,8 +877,8 @@ def test_doctor_does_not_run_command_helper(tmp_path: Path, monkeypatch: pytest.
     monkeypatch.setenv("CAMPUSCTL_CONFIG_DIR", str(conf))
     monkeypatch.setenv("CAMPUSCTL_DATA_DIR", str(data))
     monkeypatch.setenv("DISPLAY", ":test")
-    monkeypatch.setattr(cli, "_playwright_diagnostics", lambda path: (True, True))
-    result, error = cli.doctor_result()
+    monkeypatch.setattr(doctor, "_playwright_diagnostics", lambda path: (True, True))
+    result, error = doctor.doctor_result(None, composition.CAPABILITIES)
     assert error is None
     assert result["credentials"] == {"provider": "command", "configured": True}
     assert not helper_marker.exists()
@@ -904,7 +902,7 @@ def test_doctor_headless_override_reports_support_without_display_error(
     monkeypatch.setenv("CAMPUSCTL_DATA_DIR", str(data))
     monkeypatch.delenv("DISPLAY", raising=False)
     monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
-    monkeypatch.setattr(cli, "_playwright_diagnostics", lambda path: (True, True))
+    monkeypatch.setattr(doctor, "_playwright_diagnostics", lambda path: (True, True))
     assert cli.main(["--headless", "doctor", "--json"]) == 0
     response = json.loads(capsys.readouterr().out)
     assert response["result"]["browser"]["headless"] is True
@@ -926,8 +924,8 @@ def test_doctor_reports_missing_catalog_as_actionable(tmp_path: Path, monkeypatc
     monkeypatch.setenv("CAMPUSCTL_CONFIG_DIR", str(conf))
     monkeypatch.setenv("CAMPUSCTL_DATA_DIR", str(data))
     monkeypatch.setenv("DISPLAY", ":test")
-    monkeypatch.setattr(cli, "_playwright_diagnostics", lambda path: (True, True))
-    result, error = cli.doctor_result()
+    monkeypatch.setattr(doctor, "_playwright_diagnostics", lambda path: (True, True))
+    result, error = doctor.doctor_result(None, composition.CAPABILITIES)
     assert error is not None and error.code == "catalog-missing"
     assert error.remediation == "Run 'campusctl sync --only lectures' to create it."
     assert result["catalog"] == {"present": False, "generated_at": None}

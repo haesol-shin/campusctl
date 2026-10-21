@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from config_patch import patch_load_config
 from test_assignments_provider import old_catalog
 from test_sync_all import IDS, _install_fixture, fixture_server
 
@@ -26,7 +27,7 @@ def _call(argv: list[str], capsys: pytest.CaptureFixture[str]) -> tuple[int, dic
 def _install(monkeypatch: pytest.MonkeyPatch, root: Path, server: Any) -> dict[str, Any]:
     monkeypatch.setenv("CAMPUSCTL_DATA_DIR", str(root))
     config = _install_fixture(monkeypatch, server)
-    monkeypatch.setattr(cli, "load_config", lambda: config)
+    patch_load_config(monkeypatch, lambda: config)
     return config
 
 
@@ -57,8 +58,8 @@ def test_human_assignment_renderer_has_full_ids(
     output = capsys.readouterr().out
     assert "Old A — Not submitted — Due: —" in output
     assert "cnu_assignment:course-a:TB_L_REPORT1\n" in output
-    monkeypatch.setattr(
-        cli, "load_config", lambda: {"provider": "cnu", "browser": {"cdp_endpoint": "http://browser.invalid:9222"}}
+    patch_load_config(
+        monkeypatch, lambda: {"provider": "cnu", "browser": {"cdp_endpoint": "http://browser.invalid:9222"}}
     )
     assert cli.main(["--headless", "sync", "--only", "assignments"]) == 2
     assert "Headless" in capsys.readouterr().out
@@ -88,8 +89,8 @@ def test_browser_cli_sync_list_and_lock(
                 code, response = _call(["--headless", "sync", "--only", "assignments", "--course", IDS[0]], capsys)
             assert code == 75 and response["status"] == "busy"
             assert response["errors"][0]["code"] == "session-busy"
-        monkeypatch.setattr(
-            cli, "load_config", lambda: {"provider": "cnu", "browser": {"cdp_endpoint": "http://browser.invalid:9222"}}
+        patch_load_config(
+            monkeypatch, lambda: {"provider": "cnu", "browser": {"cdp_endpoint": "http://browser.invalid:9222"}}
         )
         code, response = _call(["--headless", "sync", "--only", "assignments"], capsys)
         assert code == 2 and response["errors"][0]["code"] == "headless-unavailable"
