@@ -488,7 +488,7 @@ def _install_p3_fakes(
                 outcomes[domain] = sync_module.DomainOutcome(
                     result=result,
                     errors=[
-                        CampusError("course-sync-failed", "Synthetic course failed.", "Retry the course.", "partial")
+                        CampusError("course-sync-failed", "Synthetic course failed.", "Retry the course.", "error")
                     ],
                     status="partial",
                 )
@@ -498,7 +498,7 @@ def _install_p3_fakes(
                 outcomes[domain] = sync_module.DomainOutcome(
                     result=result,
                     errors=[
-                        CampusError("course-sync-failed", "Synthetic course failed.", "Retry the course.", "partial")
+                        CampusError("course-sync-failed", "Synthetic course failed.", "Retry the course.", "error")
                     ],
                     status="partial",
                 )

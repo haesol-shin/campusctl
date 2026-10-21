@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, NamedTuple, NoReturn
+from typing import Any, NamedTuple, NoReturn, TextIO
 
 from campusctl.envelope import CampusError, error_item
 from campusctl.profiling import SpanRecorder
@@ -53,6 +53,7 @@ class CommandContext:
     output_mode: str
     interactive: bool
     profile: SpanRecorder | None = None
+    output: Callable[[str, dict[str, Any], TextIO], None] | None = None
 
 
 @dataclass(frozen=True, slots=True)

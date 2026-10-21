@@ -126,7 +126,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 raise UsageError("--profile is valid only for sync or list --refresh.")
             mode = resolve_headless(load_config(), args.headless_override)
             recorder = SpanRecorder(enabled=True, mode="headless" if mode else "headed", scope=scope)
-        context = CommandContext(output_mode, interactive, recorder)
+        context = CommandContext(output_mode, interactive, recorder, composition.write_human)
         dispatched = _dispatch(args, context)
         command_key = _command_key(args)
         code = _emit_command(command_key, output_mode, dispatched)

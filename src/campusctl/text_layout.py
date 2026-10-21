@@ -119,15 +119,6 @@ def _wrap_simple(line: str, width: int) -> list[str]:
     return _wrap(line, width)
 
 
-def _wrap_field(label: str, value: str, width: int) -> list[str]:
-    indent = "  "
-    prefix = f"{indent}{label}: "
-    if _cells(prefix) >= width:
-        return _wrap(f"{label}: {value}", width)
-    value_lines = _wrap(value, width - _cells(prefix))
-    return [prefix + value_lines[0], *(indent + line for line in value_lines[1:])]
-
-
 def _course_heading(label: str, width: int) -> list[str]:
     prefix = "Course: "
     if _cells(prefix) >= width:

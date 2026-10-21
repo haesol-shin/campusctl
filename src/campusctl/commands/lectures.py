@@ -32,7 +32,7 @@ from campusctl.config import SUPPORTED_SPEEDS, load_config
 from campusctl.envelope import CampusError
 from campusctl.paths import data_dir
 from campusctl.progress import _progress_output
-from campusctl.text_layout import _cells, _command_hint, _course_heading, _pad, _text, _truncate, _wrap, _wrap_field
+from campusctl.text_layout import _cells, _command_hint, _course_heading, _pad, _text, _truncate, _wrap
 
 CAPABILITY = {"commands": ["list", "play"]}
 _STATUS_WIDTH = 11
@@ -252,6 +252,15 @@ def _available_date(value: object) -> str | None:
         return None
     match = re.match(r"^(\d{4}-\d{2}-\d{2})(?:$|T)", value)
     return match.group(1) if match else None
+
+
+def _wrap_field(label: str, value: str, width: int) -> list[str]:
+    indent = "  "
+    prefix = f"{indent}{label}: "
+    if _cells(prefix) >= width:
+        return _wrap(f"{label}: {value}", width)
+    value_lines = _wrap(value, width - _cells(prefix))
+    return [prefix + value_lines[0], *(indent + line for line in value_lines[1:])]
 
 
 def _render_list(result: dict[str, Any], width: int) -> list[str]:  # noqa: C901
