@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import json
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,8 @@ from campusctl.catalog_view import (
     resolve_material_number,
 )
 from campusctl.cli_args import _OUTPUT_NOTE, EnvelopeArgumentParser
+from campusctl.command_types import CommandBindings, CommandContext, CommandResult, command_result
+from campusctl.commands.course_inputs import list_refresh_scope, list_with_refresh
 from campusctl.envelope import CampusError, UsageError
 from campusctl.paths import data_dir
 from campusctl.text_layout import _cells
@@ -47,10 +50,108 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     download.add_argument("--out", type=Path, help="destination directory")
 
 
-def dispatch(args: argparse.Namespace) -> tuple[dict[str, Any], CampusError | None]:  # noqa: C901
-    command = args.materials_command
-    if command not in {"list", "download"}:
-        raise UsageError("A materials command is required.")
+def profile_scope(args: argparse.Namespace) -> tuple[str, ...] | None:
+    return list_refresh_scope(args, ("materials",))
+
+
+def dispatch(args: argparse.Namespace, bindings: CommandBindings, context: CommandContext) -> CommandResult:
+    if args.materials_command == "list":
+        return list_with_refresh("materials", args, bindings, context, _list)
+    if args.materials_command == "download":
+        return _download_selected(args, context)
+    raise UsageError("A materials command is required.")
+
+
+def _list(course_id: str | None) -> CommandResult:
+    root = data_dir()
+    snapshot = catalog_snapshot("materials", root)
+    if snapshot is None:
+        raise CampusError(
+            "catalog-missing",
+            "Materials catalog is missing.",
+            "Run 'campusctl sync --only materials' to create it.",
+            "user-action",
+        )
+    catalog, generation = snapshot
+    rows = catalog["materials"]
+    if course_id is not None:
+        rows = [row for row in rows if row["course"]["id"] == course_id]
+    result = {
+        "cache": {**cache_metadata(catalog, now=datetime.now(UTC), domain="materials"), "path_present": True},
+        "materials": rows,
+    }
+    # The printed order becomes the number namespace only after the list was written.
+    publish = partial(
+        publish_material_snapshot, root, generation, [row["entity_id"] for row in rows], course_id=course_id
+    )
+    return command_result(result, publish=publish)
+
+
+def _pick_number(root: Path) -> tuple[str, dict[str, Any]]:
+    import sys
+
+    from campusctl.envelope import make_envelope
+    from campusctl.presentation import render_human
+
+    snapshot = catalog_snapshot("materials", root)
+    if snapshot is None:
+        raise CampusError(
+            "catalog-missing",
+            "Materials catalog is missing.",
+            "Run 'campusctl sync --only materials'.",
+            "user-action",
+        )
+    catalog = snapshot[0]
+    render_human(
+        "materials.list",
+        make_envelope(
+            result={
+                "materials": catalog["materials"],
+                "cache": cache_metadata(catalog, now=datetime.now(UTC), domain="materials"),
+            }
+        ),
+        sys.stdout,
+        renderers={"materials": render},
+    )
+    sys.stdout.flush()
+    publish_material_snapshot(root, snapshot[1], [row["entity_id"] for row in catalog["materials"]])
+    try:
+        choice = input("Select one file number (blank cancels): ").strip()
+    except EOFError:
+        choice = ""
+    if not choice:
+        raise CampusError(
+            "selection-cancelled", "No material selected.", "Run 'campusctl materials list'.", "user-action"
+        )
+    return resolve_material_number(root, choice)
+
+
+def _requested_material(
+    args: argparse.Namespace, context: CommandContext, root: Path, catalog: dict[str, Any]
+) -> tuple[str, dict[str, Any] | None]:
+    """Return the full ID to download and the printed-number selection it came from, if any."""
+    if args.entity_id is None:
+        if not context.interactive:
+            raise CampusError(
+                "selection-required",
+                "Select a full material ID without interactive terminals.",
+                "Run 'campusctl materials list --json' and pass one full ID.",
+                "user-action",
+            )
+        return _pick_number(root)
+    if args.entity_id.isdecimal() and not any(row["entity_id"] == args.entity_id for row in catalog["materials"]):
+        if context.output_mode == "json":
+            raise CampusError(
+                "selection-invalid",
+                "JSON download requires a full material ID.",
+                "Use a full ID from 'campusctl materials list --json'.",
+                "user-action",
+            )
+        return resolve_material_number(root, args.entity_id)
+    return args.entity_id, None
+
+
+def _download_selected(args: argparse.Namespace, context: CommandContext) -> CommandResult:
     root = data_dir()
     snapshot = catalog_snapshot("materials", root)
     if snapshot is None:
@@ -61,69 +162,7 @@ def dispatch(args: argparse.Namespace) -> tuple[dict[str, Any], CampusError | No
             "user-action",
         )
     catalog = snapshot[0]
-    if command == "list":
-        args._material_generation = snapshot[1]
-        rows = catalog["materials"]
-        if args.course is not None:
-            rows = [row for row in rows if row["course"]["id"] == args.course]
-        return {
-            "cache": {**cache_metadata(catalog, now=datetime.now(UTC), domain="materials"), "path_present": True},
-            "materials": rows,
-        }, None
-    selection = None
-    if args.entity_id is None:
-        if not args._interactive:
-            raise CampusError(
-                "selection-required",
-                "Select a full material ID without interactive terminals.",
-                "Run 'campusctl materials list --json' and pass one full ID.",
-                "user-action",
-            )
-        import sys
-
-        from campusctl.envelope import make_envelope
-        from campusctl.presentation import render_human
-
-        snapshot = catalog_snapshot("materials", root)
-        if snapshot is None:
-            raise CampusError(
-                "catalog-missing",
-                "Materials catalog is missing.",
-                "Run 'campusctl sync --only materials'.",
-                "user-action",
-            )
-        catalog = snapshot[0]
-        render_human(
-            "materials.list",
-            make_envelope(
-                result={
-                    "materials": catalog["materials"],
-                    "cache": cache_metadata(catalog, now=datetime.now(UTC), domain="materials"),
-                }
-            ),
-            sys.stdout,
-            renderers={"materials": render},
-        )
-        sys.stdout.flush()
-        publish_material_snapshot(root, snapshot[1], [row["entity_id"] for row in catalog["materials"]])
-        try:
-            choice = input("Select one file number (blank cancels): ").strip()
-        except EOFError:
-            choice = ""
-        if not choice:
-            raise CampusError(
-                "selection-cancelled", "No material selected.", "Run 'campusctl materials list'.", "user-action"
-            )
-        args.entity_id, selection = resolve_material_number(root, choice)
-    elif args.entity_id.isdecimal() and not any(row["entity_id"] == args.entity_id for row in catalog["materials"]):
-        if args._output_mode == "json":
-            raise CampusError(
-                "selection-invalid",
-                "JSON download requires a full material ID.",
-                "Use a full ID from 'campusctl materials list --json'.",
-                "user-action",
-            )
-        args.entity_id, selection = resolve_material_number(root, args.entity_id)
+    entity_id, selection = _requested_material(args, context, root, catalog)
     if selection is not None:
         current = catalog_snapshot("materials", root)
         if current is None or current[1] != selection["catalog_generation"]:
@@ -134,7 +173,7 @@ def dispatch(args: argparse.Namespace) -> tuple[dict[str, Any], CampusError | No
                 "user-action",
             )
         catalog = current[0]
-    rows = [row for row in catalog["materials"] if row.get("entity_id") == args.entity_id]
+    rows = [row for row in catalog["materials"] if row.get("entity_id") == entity_id]
     if len(rows) != 1:
         raise CampusError(
             "entity-unknown",
@@ -161,7 +200,7 @@ def dispatch(args: argparse.Namespace) -> tuple[dict[str, Any], CampusError | No
     check = pre_browser_check(lambda: assert_material_snapshot_current(root, selection)) if selection else nullcontext()
     with check:
         material = asyncio.run(_download(config, root, row, args.out, headless=mode))
-    return {"material": material}, None
+    return command_result({"material": material})
 
 
 async def sync(

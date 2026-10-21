@@ -11,8 +11,14 @@ from typing import Any
 
 import pytest
 
-from campusctl.commands import notices
+from campusctl import composition
+from campusctl.command_types import CommandContext, CommandResult
+from campusctl.commands import fetch_queue, notices
 from campusctl.envelope import CampusError
+
+
+def _dispatch(command: Any, args: Any) -> CommandResult:
+    return command.dispatch(args, composition.bind(), CommandContext("json", False))
 
 
 def _setup_catalog(root: Path) -> dict[str, Any]:
@@ -75,7 +81,7 @@ def test_notice_fetch_detail_entity_unknown_names_failing_check(
 
 
 def test_notice_fetch_json_and_human(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(notices, "data_dir", lambda: tmp_path)
+    monkeypatch.setattr(fetch_queue, "data_dir", lambda: tmp_path)
     monkeypatch.setattr("campusctl.config.load_config", lambda: {})
     _setup_catalog(tmp_path)
 
@@ -126,8 +132,9 @@ def test_notice_fetch_json_and_human(tmp_path: Path, monkeypatch: pytest.MonkeyP
         out=None,
         headless_override=None,
     )
-    result, errors = notices.dispatch(args)
-    assert errors is None
+    record = _dispatch(notices, args)
+    result = record.result
+    assert record.errors == ()
     assert result["source_package"]["completeness"] == "complete"
     assert result["source_package"]["entity_id"] == "cnu_notice:course-1:2026-09-25:1"
 
@@ -155,11 +162,11 @@ def test_notice_fetch_json_and_human(tmp_path: Path, monkeypatch: pytest.MonkeyP
         return fake_pkg_partial
 
     monkeypatch.setattr(notices, "_fetch_notice", mock_fetch_partial)
-    result_p, errors_p = notices.dispatch(args)
-    assert errors_p is not None
-    assert len(errors_p) == 1
-    assert errors_p[0].code == "resource-omitted"
-    assert "Notices fetch packaging" in errors_p[0].message
+    record_p = _dispatch(notices, args)
+    result_p = record_p.result
+    assert len(record_p.errors) == 1
+    assert record_p.errors[0]["code"] == "resource-omitted"
+    assert "Notices fetch packaging" in record_p.errors[0]["message"]
     assert result_p["source_package"]["completeness"] == "partial"
 
     # Human render of partial
@@ -168,26 +175,26 @@ def test_notice_fetch_json_and_human(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert any("Omitted: unverified-notice-attachment — unsupported.bin" in line for line in human_lines_p)
 
     # Missing catalog
-    monkeypatch.setattr(notices, "data_dir", lambda: tmp_path / "nonexistent")
+    monkeypatch.setattr(fetch_queue, "data_dir", lambda: tmp_path / "nonexistent")
     with pytest.raises(CampusError) as exc_cat:
-        notices.dispatch(args)
+        _dispatch(notices, args)
     assert exc_cat.value.code == "catalog-missing"
     assert "Notices fetch catalog lookup" in exc_cat.value.message
-    monkeypatch.setattr(notices, "data_dir", lambda: tmp_path)
+    monkeypatch.setattr(fetch_queue, "data_dir", lambda: tmp_path)
 
     # Unknown ID, including numeric material selection
     args_unknown = SimpleNamespace(
         notices_command="fetch", entity_id="cnu_notice:course-1:2026-09-25:999", out=None, headless_override=None
     )
     with pytest.raises(CampusError) as exc_unk:
-        notices.dispatch(args_unknown)
+        _dispatch(notices, args_unknown)
     assert exc_unk.value.code == "entity-unknown"
     assert "Notices fetch selection" in exc_unk.value.message
     assert "2026-09-25:999" not in exc_unk.value.message
 
     args_num = SimpleNamespace(notices_command="fetch", entity_id="1", out=None, headless_override=None)
     with pytest.raises(CampusError) as exc_num:
-        notices.dispatch(args_num)
+        _dispatch(notices, args_num)
     assert exc_num.value.code == "entity-unknown"
 
     # Existing output path
@@ -200,7 +207,7 @@ def test_notice_fetch_json_and_human(tmp_path: Path, monkeypatch: pytest.MonkeyP
         headless_override=None,
     )
     with pytest.raises(CampusError) as exc_conf:
-        notices.dispatch(args_conflict)
+        _dispatch(notices, args_conflict)
     assert exc_conf.value.code == "output-path-conflict"
     assert "Notices fetch output selection" in exc_conf.value.message
     assert str(existing_file) not in exc_conf.value.message
@@ -214,7 +221,7 @@ def test_notice_fetch_json_and_human(tmp_path: Path, monkeypatch: pytest.MonkeyP
         notices_command="fetch", entity_id="cnu_notice:course-1:2026-09-25:1", out=None, headless_override=True
     )
     with pytest.raises(CampusError) as exc_hl:
-        notices.dispatch(args_headless)
+        _dispatch(notices, args_headless)
     assert exc_hl.value.code == "headless-unavailable"
     assert "Notices fetch browser preflight" in exc_hl.value.message
     monkeypatch.setattr("campusctl.config.load_config", lambda: {})
@@ -225,6 +232,6 @@ def test_notice_fetch_json_and_human(tmp_path: Path, monkeypatch: pytest.MonkeyP
 
     monkeypatch.setattr(notices, "_fetch_notice", mock_fetch_busy)
     with pytest.raises(CampusError) as exc_busy:
-        notices.dispatch(args)
+        _dispatch(notices, args)
     assert exc_busy.value.code == "session-busy"
     assert exc_busy.value.status == "busy"

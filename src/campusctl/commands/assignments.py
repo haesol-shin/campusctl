@@ -8,83 +8,38 @@ from pathlib import Path
 from typing import Any
 
 from campusctl.catalog_view import cache_metadata
+from campusctl.command_types import CommandBindings, CommandContext, CommandResult, command_result
+from campusctl.commands.course_inputs import list_refresh_scope, list_with_refresh
+from campusctl.commands.fetch_queue import Capture, FetchDomain, dispatch_fetch, fetch_single, run_fetch_queue
 from campusctl.domain_catalog import domain_catalog_path, read_domain_catalog
 from campusctl.envelope import CampusError, UsageError
 from campusctl.paths import data_dir
 
 CAPABILITY = {"commands": ["list", "fetch"]}
 
-_DETAIL_TIMEOUT_STEPS = frozenset(
-    {
-        "settling CNU course requests",
-        "opening a CNU course",
-        "waiting for the CNU course menu",
-        "opening the CNU course section",
-        "waiting for CNU task rows",
-        "checking the selected CNU task course",
-        "binding the selected task row",
-        "checking the selected task ID",
-        "opening the selected CNU task",
-        "waiting for CNU task detail",
-        "finishing CNU task detail",
-        "verifying CNU task detail identity",
-        "waiting for selected CNU task content",
-        "reading selected CNU task brief",
-    }
+_DOMAIN = FetchDomain(
+    name="assignments",
+    label="Assignments",
+    kind="assignment",
+    timeout_steps=frozenset(
+        {
+            "settling CNU course requests",
+            "opening a CNU course",
+            "waiting for the CNU course menu",
+            "opening the CNU course section",
+            "waiting for CNU task rows",
+            "checking the selected CNU task course",
+            "binding the selected task row",
+            "checking the selected task ID",
+            "opening the selected CNU task",
+            "waiting for CNU task detail",
+            "finishing CNU task detail",
+            "verifying CNU task detail identity",
+            "waiting for selected CNU task content",
+            "reading selected CNU task brief",
+        }
+    ),
 )
-
-
-def _fetch_error(step: str, error: Exception) -> CampusError:
-    code = error.code if isinstance(error, CampusError) else "fetch-failed"
-    status = error.status if isinstance(error, CampusError) else "error"
-    if step == "detail capture" and isinstance(error, CampusError) and code == "browser-timeout":
-        detail_step = error.message.removeprefix("Timed out while ").removesuffix(".")
-        if error.message == f"Timed out while {detail_step}." and detail_step in _DETAIL_TIMEOUT_STEPS:
-            return CampusError(
-                code, f"Assignments fetch: {detail_step} timed out.", "Check the browser and retry.", status
-            )
-    remediation = {
-        "catalog load": "Sync assignments again and retry.",
-        "configuration load": "Check campusctl configuration and retry.",
-        "authentication": "Sign in and retry.",
-        "detail capture": "Sync assignments again and select the current full ID.",
-        "package creation": "Retry the fetch and inspect unsupported resources.",
-    }.get(step, "Check the browser session and retry.")
-    return CampusError(code, f"Assignments fetch: {step} failed.", remediation, status)
-
-
-def _selected_ids(args: argparse.Namespace) -> list[str]:
-    raw = getattr(args, "entity_ids", None)
-    if raw is None:
-        single = getattr(args, "entity_id", None)
-        raw = None if single is None else [single]
-    if isinstance(raw, str):
-        raw = [raw]
-    if not isinstance(raw, list) or not raw or any(not isinstance(item, str) or not item.strip() for item in raw):
-        raise UsageError("Assignments fetch selection: an entity ID is required")
-    ordered: list[str] = []
-    seen: set[str] = set()
-    for item in raw:
-        if item not in seen:
-            seen.add(item)
-            ordered.append(item)
-    return ordered
-
-
-def _matching_rows(catalog: dict[str, Any], entity_ids: list[str]) -> list[dict[str, Any]]:
-    records = catalog.get("assignments", [])
-    rows: list[dict[str, Any]] = []
-    for entity_id in entity_ids:
-        matching = [row for row in records if row.get("entity_id") == entity_id]
-        if len(matching) != 1:
-            raise CampusError(
-                "entity-unknown",
-                "Assignments fetch selection: selected ID is not in the catalog.",
-                "Select one full ID from 'campusctl assignments list'.",
-                "user-action",
-            )
-        rows.append(matching[0])
-    return rows
 
 
 def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -105,82 +60,39 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     fetch.add_argument("--out", type=Path, metavar="DIR", help="new package directory")
 
 
-def dispatch(args: argparse.Namespace) -> tuple[dict[str, Any], CampusError | list[CampusError] | None]:
+def profile_scope(args: argparse.Namespace) -> tuple[str, ...] | None:
+    return list_refresh_scope(args, ("assignments",))
+
+
+def dispatch(args: argparse.Namespace, bindings: CommandBindings, context: CommandContext) -> CommandResult:
     command = getattr(args, "assignments_command", None)
     if command == "list":
-        catalog = read_domain_catalog("assignments", domain_catalog_path("assignments", data_dir()))
-        rows = catalog["assignments"]
-        if args.course is not None:
-            rows = [row for row in rows if row["course"]["id"] == args.course]
-        return {
-            "cache": {**cache_metadata(catalog, now=datetime.now(UTC), domain="assignments"), "path_present": True},
-            "assignments": rows,
-        }, None
+        return list_with_refresh("assignments", args, bindings, context, _list)
     if command == "fetch":
-        return _dispatch_fetch(args)
+        return dispatch_fetch(args, _DOMAIN, fetch_one=_fetch_assignment, fetch_many=_fetch_assignment_queue)
     raise UsageError("an assignments command is required")
 
 
-def _dispatch_fetch(args: argparse.Namespace) -> tuple[dict[str, Any], CampusError | list[CampusError] | None]:
-    entity_ids = _selected_ids(args)
-    root = data_dir()
-    cat_path = domain_catalog_path("assignments", root)
-    if not cat_path.exists():
-        raise CampusError(
-            "catalog-missing",
-            "Assignments fetch catalog lookup: catalog is missing.",
-            "Run 'campusctl sync --only assignments' to create it.",
-            "user-action",
-        )
-    try:
-        catalog = read_domain_catalog("assignments", cat_path)
-    except Exception as exc:
-        raise _fetch_error("catalog load", exc) from exc
-    rows = _matching_rows(catalog, entity_ids)
-    out_path = getattr(args, "out", None)
-    if out_path is not None and len(rows) > 1:
-        raise UsageError("Assignments fetch selection: --out applies to one selected ID.")
-    if out_path is not None:
-        destination = Path(out_path)
-        if destination.exists() or destination.is_symlink():
-            raise CampusError(
-                "output-path-conflict",
-                "Assignments fetch output selection: output path already exists.",
-                "Choose a nonexistent destination path with --out.",
-                "user-action",
-            )
-    import asyncio
+def _list(course_id: str | None) -> CommandResult:
+    catalog = read_domain_catalog("assignments", domain_catalog_path("assignments", data_dir()))
+    rows = catalog["assignments"]
+    if course_id is not None:
+        rows = [row for row in rows if row["course"]["id"] == course_id]
+    return command_result(
+        {
+            "cache": {**cache_metadata(catalog, now=datetime.now(UTC), domain="assignments"), "path_present": True},
+            "assignments": rows,
+        }
+    )
 
-    from campusctl.browser_options import preflight_browser_mode
-    from campusctl.config import load_config
 
-    try:
-        config = load_config()
-    except Exception as exc:
-        raise _fetch_error("configuration load", exc) from exc
-    headless_override = getattr(args, "headless_override", None)
-    try:
-        mode = preflight_browser_mode(config, "assignments.fetch", override=headless_override)
-    except CampusError as exc:
-        raise CampusError(
-            exc.code, f"Assignments fetch browser preflight: {exc.message}", exc.remediation, exc.status
-        ) from exc
-    if len(rows) == 1:
-        package = asyncio.run(_fetch_assignment(config, root, rows[0], out=out_path, headless=mode))
-        errors = (
-            [
-                CampusError(
-                    "resource-omitted",
-                    "Assignments fetch packaging: some resources are unsupported.",
-                    status="user-action",
-                )
-            ]
-            if package.get("completeness") == "partial"
-            else None
-        )
-        return {"source_package": package}, errors
-    items, errors = asyncio.run(_fetch_assignment_queue(config, root, rows, headless=mode))
-    return {"items": items}, errors
+def _capture(config: dict[str, Any]) -> Capture:
+    async def capture(page: Any, row: dict[str, Any]) -> Any:
+        from campusctl.providers.cnu.assignment_detail import capture_assignment_detail
+
+        return await capture_assignment_detail(page, config, row)
+
+    return capture
 
 
 async def _fetch_assignment(
@@ -191,43 +103,7 @@ async def _fetch_assignment(
     out: Path | None = None,
     headless: bool = False,
 ) -> dict[str, Any]:
-    from campusctl.browser import open_session, settle_sso_popups
-    from campusctl.providers.cnu.assignment_detail import capture_assignment_detail
-    from campusctl.providers.cnu.login import ensure_logged_in
-    from campusctl.source_package import build_source_package
-
-    try:
-        async with open_session(config, data_dir=root, headless=headless, operation="assignments.fetch") as session:
-            page = session.page
-            try:
-                await ensure_logged_in(page, config)
-            except Exception as exc:
-                raise _fetch_error("authentication", exc) from exc
-            try:
-                await settle_sso_popups(session, domain="assignments")
-            except Exception as exc:
-                raise _fetch_error("SSO settlement", exc) from exc
-            try:
-                snapshot = await capture_assignment_detail(page, config, row)
-            except Exception as exc:
-                raise _fetch_error("detail capture", exc) from exc
-            try:
-                return await build_source_package(
-                    page,
-                    snapshot,
-                    entity_id=row["entity_id"],
-                    kind="assignment",
-                    course_id=row["course"]["id"],
-                    course_label=row["course"]["label"],
-                    root=root,
-                    out=out,
-                )
-            except Exception as exc:
-                raise _fetch_error("package creation", exc) from exc
-    except Exception as exc:
-        if isinstance(exc, CampusError) and exc.message.startswith("Assignments fetch:"):
-            raise
-        raise _fetch_error("browser session", exc) from exc
+    return await fetch_single(config, root, row, out=out, headless=headless, domain=_DOMAIN, capture=_capture(config))
 
 
 async def _fetch_assignment_queue(
@@ -237,24 +113,7 @@ async def _fetch_assignment_queue(
     *,
     headless: bool,
 ) -> tuple[list[dict[str, Any]], list[CampusError] | None]:
-    from campusctl.commands.fetch_queue import run_fetch_queue
-    from campusctl.providers.cnu.assignment_detail import capture_assignment_detail
-
-    async def capture(page: Any, row: dict[str, Any]) -> Any:
-        return await capture_assignment_detail(page, config, row)
-
-    return await run_fetch_queue(
-        config,
-        root,
-        rows,
-        headless=headless,
-        operation="assignments.fetch",
-        domain="assignments",
-        kind="assignment",
-        label="Assignments",
-        capture=capture,
-        fetch_error=_fetch_error,
-    )
+    return await run_fetch_queue(config, root, rows, headless=headless, domain=_DOMAIN, capture=_capture(config))
 
 
 async def sync(
