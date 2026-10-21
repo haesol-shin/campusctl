@@ -100,7 +100,7 @@ def test_replay_does_not_credit_stale_f_without_native_end(monkeypatch: pytest.M
     page.frame = NoEndFrame(page)
     lecture = _lecture(FIRST_ID, completion="complete")
     next_lecture = _lecture(SECOND_ID)
-    monkeypatch.setattr(player_preview, "PLAYER_STALL_SECONDS", 0.001)
+    monkeypatch.setattr(panopto, "PLAYER_STALL_SECONDS", 0.001)
     items, error = asyncio.run(_run(monkeypatch, tmp_path, page, [lecture, next_lecture]))
     assert error is not None
     assert [item["outcome"] for item in items] == ["failed", "not-started"]
@@ -148,15 +148,15 @@ def test_replay_modal_without_official_embed_is_not_player_opened(
 
     class MissingEmbedPage(ReplayPage):
         async def query_selector(self, selector: str) -> Any:
-            if missing == "frame" and selector == player_preview.PLAYER_FRAME_SELECTOR:
+            if missing == "frame" and selector == panopto.PLAYER_FRAME_SELECTOR:
                 return None
             return await super().query_selector(selector)
 
     page = MissingEmbedPage(states={"row-1": "F"})
     if missing == "video":
         page.frame = MissingVideoFrame(page)
-    monkeypatch.setattr(player_preview, "PLAYER_FRAME_WAIT_SECONDS", 0.01)
-    monkeypatch.setattr(player_preview, "PLAYER_VIDEO_WAIT_SECONDS", 0.02)
+    monkeypatch.setattr(panopto, "PLAYER_FRAME_WAIT_SECONDS", 0.01)
+    monkeypatch.setattr(panopto, "PLAYER_VIDEO_WAIT_SECONDS", 0.02)
     items, error = asyncio.run(_run(monkeypatch, tmp_path, page, [_lecture(FIRST_ID, completion="complete")]))
     assert error is not None and items[0]["outcome"] == "failed"
     assert items[0]["reason_code"] == f"player-{missing}-unavailable"

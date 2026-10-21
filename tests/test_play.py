@@ -1309,9 +1309,9 @@ def test_missing_youtube_frame_reaches_virtual_deadline() -> None:
 def test_panopto_splash_control_creates_video_before_waiting_for_it(monkeypatch: pytest.MonkeyPatch) -> None:
     page = FakePage(video_after_splash_click=True)
     page.player_open = True
-    monkeypatch.setattr(player_preview, "PLAYER_POLL_INTERVAL_SECONDS", 0.0)
+    monkeypatch.setattr(panopto, "PLAYER_POLL_INTERVAL_SECONDS", 0.0)
 
-    frame = asyncio.run(player_preview._player_frame(page))
+    frame = asyncio.run(panopto._player_frame(page))
 
     assert frame is page.frame
     assert page.frame.video_ready
@@ -1331,7 +1331,7 @@ def test_speed_selection_failure_pauses_queue_before_playback(
 ) -> None:
     page = FakePage(speed_option_present=speed_option_present, speed_applies=speed_applies)
     _prepare(tmp_path, monkeypatch, page)
-    monkeypatch.setattr(player_preview, "SPEED_CHANGE_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(panopto, "SPEED_CHANGE_TIMEOUT_SECONDS", 0.01)
 
     exit_code, response = _invoke(capsys, [FIRST_ID, SECOND_ID])
 
@@ -1393,7 +1393,7 @@ def test_cancelled_playback_is_not_replaced_by_player_close_failure(monkeypatch:
         await asyncio.sleep(0)
         return {}
 
-    monkeypatch.setattr(player_preview, "_read_video_state", cancel_read)
+    monkeypatch.setattr(panopto, "_read_video_state", cancel_read)
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(player_preview._play_visible_lecture(page, "row-1", 1.25))
 
@@ -1415,7 +1415,7 @@ def test_cancelled_player_close_propagates_only_without_a_playback_error(
     async def cancelled_close(_page: Any) -> None:
         raise asyncio.CancelledError
 
-    monkeypatch.setattr(player_preview, "_read_video_state", read_state)
+    monkeypatch.setattr(panopto, "_read_video_state", read_state)
     monkeypatch.setattr(player_preview, "_close_player", cancelled_close)
 
     expected = player_types._PlaybackFailure if playback_fails else asyncio.CancelledError
@@ -1424,6 +1424,85 @@ def test_cancelled_player_close_propagates_only_without_a_playback_error(
 
     if playback_fails:
         assert raised.value.code == "playback-stalled"
+
+
+def test_panopto_elapsed_includes_the_gap_after_play_click(monkeypatch: pytest.MonkeyPatch) -> None:
+    clock = SimpleNamespace(timestamp=0.0)
+
+    def monotonic() -> float:
+        return clock.timestamp
+
+    async def sleep(seconds: float) -> None:
+        clock.timestamp += seconds
+
+    _patch_playback_clock(monkeypatch, lambda: SimpleNamespace(monotonic=monotonic, sleep=sleep))
+
+    reads = 0
+
+    class Locator:
+        def __init__(self) -> None:
+            self.first = self
+
+        async def count(self) -> int:
+            return 1
+
+        def nth(self, index: int) -> Locator:
+            return self
+
+        async def is_visible(self) -> bool:
+            return True
+
+        async def click(self, **kwargs: Any) -> None:
+            clock.timestamp += 2.0
+
+    class Frame:
+        def locator(self, selector: str) -> Locator:
+            return Locator()
+
+        async def evaluate(self, script: str) -> dict[str, Any]:
+            nonlocal reads
+            reads += 1
+            if reads == 1:
+                return {
+                    "exists": True,
+                    "currentTime": 0.0,
+                    "duration": 10.0,
+                    "paused": True,
+                    "ended": False,
+                    "playedUntil": 0.0,
+                    "playedCoverage": 0.0,
+                    "playbackRate": 1.0,
+                }
+            clock.timestamp += 3.0
+            return {
+                "exists": True,
+                "currentTime": 10.0,
+                "duration": 10.0,
+                "paused": False,
+                "ended": True,
+                "playedUntil": 10.0,
+                "playedCoverage": 10.0,
+                "playbackRate": 1.0,
+            }
+
+    async def frame(_page: Any, _diagnostic: Any) -> Frame:
+        return Frame()
+
+    monkeypatch.setattr(panopto, "_player_frame", frame)
+    seen: list[float] = []
+
+    def on_started(measured_at: float) -> None:
+        seen.append(clock.timestamp)
+        assert measured_at == clock.timestamp
+        clock.timestamp += 4.0
+
+    elapsed, watch_time = asyncio.run(
+        panopto.play(SimpleNamespace(), player_types._PlayDiagnostic(), speed=1.0, on_started=on_started)
+    )
+
+    assert seen == [2.0]
+    assert elapsed == 7.0
+    assert watch_time == "00:00:07"
 
 
 def test_panopto_login_failure_reports_all_not_started_before_player(
@@ -1454,3 +1533,66 @@ def test_unsupported_speed_is_usage_error_before_browser_open(
     assert response["status"] == "user-action"
     assert response["errors"][0]["code"] == "usage-error"
     assert sessions.opens == 0
+
+
+def test_userstring_youtube_plays_youtube_through_preview(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from collections import UserString
+
+    page = FakePage(youtube_rows={"row-1"}, complete_after_play={"row-1": True})
+    _prepare(tmp_path, monkeypatch, page, lectures=[_lecture(FIRST_ID, media="youtube")], default_speed=1.0)
+    _fast_player_sleeps(monkeypatch, page)
+    lecture = _lecture(FIRST_ID, media="youtube")
+    lecture["media"] = UserString("youtube")
+
+    result, error = asyncio.run(player.play_lectures(page, {"playback": {"default_speed": 1.0}}, [lecture], speed=1.0))
+
+    assert error is None
+    assert result["items"][0]["outcome"] == "completed"
+    assert any("campusctl-read-youtube-video-state" in script for script in page.evaluations)
+    assert not any("campusctl-read-video-state" in script for script in page.evaluations)
+
+
+def test_unhashable_media_fails_in_preview_before_the_modal() -> None:
+    for media in ([], {}):
+        page = FakePage()
+        with pytest.raises(player_types._PlaybackFailure) as caught:
+            asyncio.run(player_preview._play_visible_lecture(page, "row-1", 1.0, media=media))
+        assert caught.value.code == "playback-failed"
+        assert caught.value.elapsed_seconds == 0.0
+        assert page.calls == []
+        assert not page.player_open
+
+
+def test_prepare_keeps_the_string_guard(monkeypatch: pytest.MonkeyPatch) -> None:
+    from collections import UserString
+
+    seen: list[str] = []
+
+    async def has_session(_page: Any) -> bool:
+        seen.append("panopto")
+        return True
+
+    monkeypatch.setattr(panopto, "_has_panopto_session", has_session)
+    page = FakePage()
+    config = {"playback": {"default_speed": 1.0}}
+
+    async def once(media: object, *, missing: bool = False) -> None:
+        seen.clear()
+        lecture = _lecture(FIRST_ID)
+        if missing:
+            lecture.pop("media")
+        else:
+            lecture["media"] = media
+        await player._prepare_media(page, config, [lecture])
+
+    cases = (
+        (None, True, ["panopto"]),
+        (None, False, ["panopto"]),
+        (UserString("youtube"), False, ["panopto"]),
+        ([], False, ["panopto"]),
+        ("offline", False, ["panopto"]),
+        ("youtube", False, []),
+    )
+    for media, missing, expected in cases:
+        asyncio.run(once(media, missing=missing))
+        assert seen == expected

@@ -11,12 +11,13 @@ from playwright.async_api import Error as PlaywrightError
 from test_play import FIRST_ID, SECOND_ID, FakeFrame, FakePage, _lecture, _patch_playback_clock, _prepare
 
 from campusctl.envelope import CampusError
-from campusctl.providers.cnu import player, player_preview, player_types
+from campusctl.providers.cnu import player, player_types
+from campusctl.providers.cnu.media import panopto
 
 
 class MissingFramePage(FakePage):
     async def query_selector(self, selector: str) -> Any:
-        if selector == player_preview.PLAYER_FRAME_SELECTOR:
+        if selector == panopto.PLAYER_FRAME_SELECTOR:
             return None
         return await super().query_selector(selector)
 
@@ -27,8 +28,8 @@ class InterruptedFramePage(FakePage):
         self.error = error
 
     async def query_selector(self, selector: str) -> Any:
-        if selector == player_preview.PLAYER_FRAME_SELECTOR:
-            await player_preview.current_clock().sleep(4.0)
+        if selector == panopto.PLAYER_FRAME_SELECTOR:
+            await panopto.current_clock().sleep(4.0)
             raise self.error
         return await super().query_selector(selector)
 
@@ -39,12 +40,12 @@ class InterruptedContentFramePage(FakePage):
         self.error = error
 
     async def query_selector(self, selector: str) -> Any:
-        if selector == player_preview.PLAYER_FRAME_SELECTOR:
+        if selector == panopto.PLAYER_FRAME_SELECTOR:
             page = self
 
             class BrokenIframe:
                 async def content_frame(self) -> Any:
-                    await player_preview.current_clock().sleep(4.0)
+                    await panopto.current_clock().sleep(4.0)
                     raise page.error
 
             return BrokenIframe()
@@ -89,7 +90,7 @@ class VideoQueryErrorFrame(FakeFrame):
 
     async def query_selector(self, selector: str) -> Any:
         if selector == "video":
-            await player_preview.current_clock().sleep(4.0)
+            await panopto.current_clock().sleep(4.0)
             raise self.error
         return await super().query_selector(selector)
 
@@ -168,12 +169,10 @@ def test_player_wait_deadlines_and_sanitized_diagnostic(
     code = f"player-{missing}-unavailable"
     assert result["items"][0]["reason_code"] == errors[0].code == code
     assert result["items"][0]["player_opened"] is False
-    assert clock[0] == (
-        player_preview.PLAYER_FRAME_WAIT_SECONDS if missing == "frame" else player_preview.PLAYER_VIDEO_WAIT_SECONDS
-    )
+    assert clock[0] == (panopto.PLAYER_FRAME_WAIT_SECONDS if missing == "frame" else panopto.PLAYER_VIDEO_WAIT_SECONDS)
     assert result["items"][0]["watch_time"] is None
     if missing == "frame":
-        assert result["items"][0]["elapsed_seconds"] == player_preview.PLAYER_FRAME_WAIT_SECONDS
+        assert result["items"][0]["elapsed_seconds"] == panopto.PLAYER_FRAME_WAIT_SECONDS
     lines = capsys.readouterr().err.splitlines()
     assert len(lines) == 1
     assert lines[0].startswith(player_types.PLAY_DIAGNOSTIC_PREFIX)
@@ -301,7 +300,7 @@ def test_frame_lookup_programming_error_propagates(monkeypatch: pytest.MonkeyPat
             raise AssertionError("programmer mistake")
 
     with pytest.raises(AssertionError, match="programmer mistake"):
-        asyncio.run(player_preview._player_frame(BrokenPage()))
+        asyncio.run(panopto._player_frame(BrokenPage()))
 
 
 @pytest.mark.parametrize(
@@ -328,7 +327,7 @@ def test_replay_coverage_boundary_and_non_replay_seek_behavior(
         assert clock[0] == 0.0
     else:
         assert result["items"][0]["reason_code"] == errors[0].code == "playback-stalled"
-        assert clock[0] == player_preview.PLAYER_STALL_SECONDS
+        assert clock[0] == panopto.PLAYER_STALL_SECONDS
         assert result["items"][1]["outcome"] == "not-started"
 
 
@@ -336,7 +335,7 @@ def test_watch_limit_is_distinct_from_stall(tmp_path: Path, monkeypatch: pytest.
     page = FakePage()
     page.frame = CoverageFrame(page, 0.5)
     _prepare(tmp_path, monkeypatch, page, default_speed=1.0)
-    monkeypatch.setattr(player_preview, "PLAYER_MAX_SECONDS", 5.0)
+    monkeypatch.setattr(panopto, "PLAYER_MAX_SECONDS", 5.0)
 
     result, errors, clock = _run(monkeypatch, page, replay=True)
 

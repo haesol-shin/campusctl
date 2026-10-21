@@ -395,7 +395,7 @@ async def play_lectures(  # noqa: C901
                 page,
                 row_id,
                 selected_speed,
-                media=lecture.get("media", MediaKind.VIDEO),
+                media=lecture.get("media"),
                 replay=replay,
                 diagnostic=diagnostic,
                 on_opened=mark_opened,

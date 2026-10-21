@@ -1,49 +1,29 @@
 """Course and row preview lifetime, including one modal close and cleanup precedence.
 
-Video playback stays here until P6. YouTube playback is the media-table handler.
+Each media handler owns its own startup and watch loop. Preview opens and closes the modal once.
 """
 
 from __future__ import annotations
 
 import asyncio
-import math
 from collections.abc import Callable
 from contextlib import suppress
 from typing import Any
 
-from playwright.async_api import Error as PlaywrightError
-
 from campusctl.browser import PROTOCOL_TIMEOUT_SECONDS, bounded
-from campusctl.envelope import CampusError
 from campusctl.wait_clock import current_clock
 
 from .media import MEDIA_HANDLERS, MediaHandler
 from .player_types import (
-    PLAY_BUTTON_SELECTOR,
-    PLAYER_FRAME_WAIT_SECONDS,
-    PLAYER_MAX_SECONDS,
-    PLAYER_MAX_SPLASH_CLICKS,
-    PLAYER_POLL_INTERVAL_SECONDS,
-    PLAYER_STALL_SECONDS,
-    PLAYER_WATCH_SLACK_SECONDS,
     MediaKind,
     _css_string,
-    _frame_kind,
     _PlaybackFailure,
     _PlayDiagnostic,
-    _position_event_due,
-    _video_number,
     _visible_locator,
-    _watch_time,
 )
 
 PREVIEW_MODAL_SELECTOR = '#previewModal.show, #previewModal[style*="display: block"]'
-PLAYER_FRAME_SELECTOR = "iframe#previewFrame"
 PLAYER_CLOSE_SELECTOR = "#previewModal #btnPreviewClose, #previewModal .btn_popClose"
-PLAYER_VIDEO_WAIT_SECONDS = 60.0
-PLAYER_SPLASH_RETRY_SECONDS = 10.0
-REPLAY_COVERAGE_TOLERANCE_SECONDS = 2.0
-SPEED_CHANGE_TIMEOUT_SECONDS = 5.0
 
 COLLAPSED_TOGGLES_JS = r"""/* campusctl-read-collapse-toggles */(rowId) => {
     const row = document.getElementById(rowId);
@@ -63,29 +43,6 @@ COLLAPSED_TOGGLES_JS = r"""/* campusctl-read-collapse-toggles */(rowId) => {
         }
     }
     return toggles.reverse();
-}"""
-
-READ_VIDEO_JS = r"""/* campusctl-read-video-state */() => {
-    const video = document.querySelector('video');
-    if (!video) return {exists: false};
-    let playedCoverage = 0;
-    if (video.played && video.played.length) {
-        for (let index = 0; index < video.played.length; index++) {
-            playedCoverage += video.played.end(index) - video.played.start(index);
-        }
-    }
-    return {
-        exists: true,
-        currentTime: video.currentTime,
-        duration: video.duration,
-        paused: video.paused,
-        ended: video.ended,
-        playedUntil: video.played && video.played.length
-            ? video.played.end(video.played.length - 1)
-            : 0,
-        playedCoverage: playedCoverage,
-        playbackRate: video.playbackRate
-    };
 }"""
 
 
@@ -193,176 +150,6 @@ async def _close_player(page: Any) -> None:
     await bounded(close_button.click(timeout=7000), PROTOCOL_TIMEOUT_SECONDS, "closing the lecture player")
 
 
-async def _player_frame(page: Any, diagnostic: _PlayDiagnostic | None = None) -> Any:  # noqa: C901
-    clock = current_clock()
-    started_at = clock.monotonic()
-    frame_deadline = started_at + PLAYER_FRAME_WAIT_SECONDS
-    video_deadline = started_at + PLAYER_VIDEO_WAIT_SECONDS
-    if diagnostic is not None:
-        diagnostic.stage = "frame"
-    frame = None
-    video = None
-    splash_clicks = 0
-    first_click_at: float | None = None
-    while current_clock().monotonic() < video_deadline:
-        now = current_clock().monotonic()
-        if frame is None and now >= frame_deadline:
-            break
-        if frame is None:
-            candidate = None
-            try:
-                iframe = await bounded(
-                    page.query_selector(PLAYER_FRAME_SELECTOR),
-                    PROTOCOL_TIMEOUT_SECONDS,
-                    "finding the Panopto player frame",
-                )
-                if iframe is not None:
-                    candidate = await bounded(
-                        iframe.content_frame(), PROTOCOL_TIMEOUT_SECONDS, "opening the Panopto player frame"
-                    )
-            except (CampusError, PlaywrightError):
-                raise _PlaybackFailure(
-                    current_clock().monotonic() - started_at,
-                    code="player-frame-unavailable",
-                    message="The Panopto player frame was unavailable.",
-                ) from None
-            if candidate is not None:
-                frame_url = str(getattr(candidate, "url", "") or "")
-                kind = _frame_kind(frame_url, str(getattr(page, "url", "") or ""))
-                recognized_player = kind == "panopto" and "Embed.aspx" in frame_url
-                if diagnostic is not None:
-                    diagnostic.frame = candidate
-                    diagnostic.frame_kind = kind
-                    diagnostic.frame_panopto = kind == "panopto"
-                try:
-                    video = await bounded(
-                        candidate.query_selector("video"),
-                        PROTOCOL_TIMEOUT_SECONDS,
-                        "checking the Panopto video frame",
-                    )
-                except (CampusError, PlaywrightError):
-                    if diagnostic is not None and recognized_player:
-                        diagnostic.stage = "video"
-                    raise _PlaybackFailure(
-                        current_clock().monotonic() - started_at,
-                        code="player-video-unavailable" if recognized_player else "player-frame-unavailable",
-                        message=(
-                            "The Panopto player frame loaded without an accessible video element."
-                            if recognized_player
-                            else "The Panopto player frame was unavailable."
-                        ),
-                    ) from None
-                if "Embed.aspx" in frame_url or video is not None:
-                    frame = candidate
-        else:
-            video = await bounded(
-                frame.query_selector("video"),
-                PROTOCOL_TIMEOUT_SECONDS,
-                "checking the Panopto video frame",
-            )
-        if frame is not None and video is not None:
-            break
-        if frame is not None:
-            if diagnostic is not None:
-                diagnostic.stage = "video"
-            play_button = await _visible_locator(
-                frame,
-                PLAY_BUTTON_SELECTOR,
-                "finding a visible Panopto splash play control",
-            )
-            if diagnostic is not None:
-                diagnostic.splash_visible = play_button is not None
-            if play_button is not None and splash_clicks < PLAYER_MAX_SPLASH_CLICKS:
-                retry_due = (
-                    splash_clicks > 0
-                    and first_click_at is not None
-                    and now - first_click_at >= PLAYER_SPLASH_RETRY_SECONDS
-                )
-                if splash_clicks == 0 or retry_due:
-                    await bounded(
-                        play_button.click(timeout=7000),
-                        PROTOCOL_TIMEOUT_SECONDS,
-                        "starting the Panopto player",
-                    )
-                    splash_clicks += 1
-                    if first_click_at is None:
-                        first_click_at = now
-                    if diagnostic is not None:
-                        diagnostic.splash_clicks = splash_clicks
-        await current_clock().sleep(
-            min(PLAYER_POLL_INTERVAL_SECONDS, max(0.0, video_deadline - current_clock().monotonic()))
-        )
-    if frame is None:
-        raise _PlaybackFailure(
-            current_clock().monotonic() - started_at,
-            code="player-frame-unavailable",
-            message="The Panopto player frame did not appear.",
-        )
-    if video is None:
-        if diagnostic is not None:
-            diagnostic.stage = "video"
-            await diagnostic.refresh()
-        raise _PlaybackFailure(
-            code="player-video-unavailable",
-            message="The Panopto player frame loaded without a video element.",
-        )
-    try:
-        await bounded(
-            frame.wait_for_selector("video", timeout=15000),
-            16.0,
-            "waiting for the Panopto video",
-        )
-    except Exception:
-        if diagnostic is not None:
-            await diagnostic.refresh()
-        raise _PlaybackFailure(
-            code="player-video-unavailable",
-            message="The Panopto player frame loaded without a video element.",
-        ) from None
-    return frame
-
-
-async def _read_video_state(frame: Any) -> dict[str, Any]:
-    value = await bounded(
-        frame.evaluate(READ_VIDEO_JS),
-        PROTOCOL_TIMEOUT_SECONDS,
-        "reading Panopto playback state",
-    )
-    if not isinstance(value, dict) or not value.get("exists"):
-        raise _PlaybackFailure(
-            code="player-video-unavailable",
-            message="The Panopto player frame loaded without a video element.",
-        )
-    return value
-
-
-async def _wait_for_speed(frame: Any, speed: float) -> bool:
-    clock = current_clock()
-    deadline = clock.monotonic() + SPEED_CHANGE_TIMEOUT_SECONDS
-    while True:
-        remaining = deadline - clock.monotonic()
-        if remaining <= 0:
-            return False
-        try:
-            status = await bounded(
-                frame.evaluate(READ_VIDEO_JS),
-                min(PROTOCOL_TIMEOUT_SECONDS, remaining),
-                "verifying Panopto playback speed",
-            )
-        except Exception:
-            return False
-        if (
-            isinstance(status, dict)
-            and status.get("exists")
-            and _panopto_rate_matches(status.get("playbackRate"), speed)
-        ):
-            return True
-        remaining = deadline - clock.monotonic()
-        if remaining <= 0:
-            return False
-        await clock.sleep(min(PLAYER_POLL_INTERVAL_SECONDS, remaining))
-
-
 def _reject_item_speed(handler: MediaHandler | None, speed: float) -> None:
     if handler is None or handler.item_speed_rejected is None:
         return
@@ -371,33 +158,13 @@ def _reject_item_speed(handler: MediaHandler | None, speed: float) -> None:
         raise rejected
 
 
-def _panopto_rate_matches(rate: object, speed: float) -> bool:
-    """Panopto reads any number, a Boolean included, and accepts a rate near the request."""
-    return isinstance(rate, int | float) and math.isclose(float(rate), speed)
-
-
-def _panopto_finished(status: dict[str, Any], current_time: float, duration: float, replay: bool) -> bool:
-    if status.get("ended"):
-        return True
-    if duration <= 0:
-        return False
-    if replay:
-        return _video_number(status, "playedCoverage") >= max(0.0, duration - REPLAY_COVERAGE_TOLERANCE_SECONDS)
-    return max(current_time, _video_number(status, "playedUntil")) >= duration
-
-
-def _panopto_watch_limit(duration: float, speed: float) -> float:
-    if duration > 0:
-        return min(PLAYER_MAX_SECONDS, duration / speed + PLAYER_WATCH_SLACK_SECONDS)
-    return PLAYER_MAX_SECONDS
-
-
-async def _play_visible_lecture(  # noqa: C901 - ordered LMS step sequence
+# Ordered preview lifetime: one modal open and close, with the existing cleanup-error precedence.
+async def _play_visible_lecture(
     page: Any,
     row_id: str,
     speed: float,
     *,
-    media: str = MediaKind.VIDEO,
+    media: object = MediaKind.VIDEO,
     replay: bool = False,
     on_opened: Callable[[], None] | None = None,
     on_started: Callable[[], None] | None = None,
@@ -409,8 +176,8 @@ async def _play_visible_lecture(  # noqa: C901 - ordered LMS step sequence
     modal_open = False
     primary_error: BaseException | None = None
     try:
-        handler = MEDIA_HANDLERS.get(media)
-        _reject_item_speed(handler, speed)
+        found = MEDIA_HANDLERS.get(media)
+        _reject_item_speed(found, speed)
         diagnostic.stage = "row"
         await _expand_row_through_ui(page, row_id)
         diagnostic.stage = "preview"
@@ -429,92 +196,26 @@ async def _play_visible_lecture(  # noqa: C901 - ordered LMS step sequence
             "waiting for the lecture preview",
         )
         diagnostic.stage = "frame"
-        if handler is not None and handler.play is not None:
 
-            def on_media_started() -> None:
-                nonlocal started_at
-                started_at = current_clock().monotonic()
-                if on_started is not None:
-                    on_started()
+        handler = found if found is not None and found.play is not None else MEDIA_HANDLERS[MediaKind.VIDEO]
 
-            return await handler.play(
-                page,
-                diagnostic,
-                replay=replay,
-                on_opened=on_opened,
-                on_started=on_media_started,
-                on_position=on_position,
-            )
-        frame = await _player_frame(page, diagnostic)
-        diagnostic.stage = "playback"
-        if on_opened is not None:
-            on_opened()
-        status = await _read_video_state(frame)
+        def on_media_started(measured_at: float | None = None) -> None:
+            nonlocal started_at
+            # Panopto passes the clock value it just read. YouTube passes nothing, so this
+            # still reads the clock, which is where its wrapped elapsed came from.
+            started_at = measured_at if measured_at is not None else current_clock().monotonic()
+            if on_started is not None:
+                on_started()
 
-        if not _panopto_rate_matches(status.get("playbackRate"), speed):
-            speed_selector = f'div.item[data-speed="{speed:g}"], [data-speed="{speed:g}"]'
-            speed_option = frame.locator(speed_selector).first
-            count = await bounded(speed_option.count(), PROTOCOL_TIMEOUT_SECONDS, "finding the Panopto speed option")
-            if not count:
-                raise _PlaybackFailure(code="playback-speed-unavailable")
-            try:
-                await bounded(
-                    speed_option.click(force=True, timeout=7000),
-                    PROTOCOL_TIMEOUT_SECONDS,
-                    "selecting the Panopto speed option",
-                )
-            except Exception:
-                raise _PlaybackFailure(code="playback-speed-unavailable") from None
-            if not await _wait_for_speed(frame, speed):
-                raise _PlaybackFailure(code="playback-speed-unavailable")
-            status = await _read_video_state(frame)
-        already_ended = replay and bool(status.get("ended"))
-
-        if status.get("paused") or already_ended:
-            play_button = await _visible_locator(frame, PLAY_BUTTON_SELECTOR, "finding a visible Panopto play button")
-            if play_button is None:
-                raise _PlaybackFailure()
-            await bounded(play_button.click(timeout=7000), PROTOCOL_TIMEOUT_SECONDS, "starting the Panopto video")
-            if already_ended and (await _read_video_state(frame)).get("ended"):
-                raise _PlaybackFailure(message="The official player did not restart playback.")
-
-        started_at = current_clock().monotonic()
-        if on_started is not None:
-            on_started()
-        last_progress_at = started_at
-        previous_time = -1.0
-        last_position_event_at: float | None = None
-        while True:
-            status = await _read_video_state(frame)
-            now = current_clock().monotonic()
-            current_time = _video_number(status, "currentTime")
-            duration = _video_number(status, "duration")
-            elapsed = now - started_at
-            if on_position is not None and _position_event_due(last_position_event_at, now):
-                on_position(current_time, duration)
-                last_position_event_at = now
-            if _panopto_finished(status, current_time, duration, replay):
-                return elapsed, _watch_time(elapsed)
-            if status.get("paused"):
-                play_button = await _visible_locator(
-                    frame,
-                    PLAY_BUTTON_SELECTOR,
-                    "finding a visible Panopto play button",
-                )
-                if play_button is not None:
-                    await bounded(
-                        play_button.click(timeout=7000),
-                        PROTOCOL_TIMEOUT_SECONDS,
-                        "resuming the Panopto video",
-                    )
-            if current_time > previous_time + 0.5:
-                previous_time = current_time
-                last_progress_at = now
-            elif now - last_progress_at >= PLAYER_STALL_SECONDS:
-                raise _PlaybackFailure(elapsed, code="playback-stalled")
-            if elapsed >= _panopto_watch_limit(duration, speed):
-                raise _PlaybackFailure(elapsed, code="playback-timeout")
-            await current_clock().sleep(PLAYER_POLL_INTERVAL_SECONDS)
+        return await handler.play(
+            page,
+            diagnostic,
+            speed=speed,
+            replay=replay,
+            on_opened=on_opened,
+            on_started=on_media_started,
+            on_position=on_position,
+        )
     except _PlaybackFailure as error:
         primary_error = error
         raise

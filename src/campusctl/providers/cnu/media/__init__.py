@@ -1,8 +1,6 @@
 """Catalog media keys mapped to the Panopto and YouTube handlers.
 
-`video` is the catalog label of the Panopto path, not a third player. Its playback
-body stays in preview until P6; only the existing post-authentication SSO step is
-callable from this table, so preview does not have to import itself.
+`video` is the catalog label of the Panopto path, not a third player.
 """
 
 from __future__ import annotations
@@ -25,14 +23,13 @@ class MediaHandler:
 
 
 # Keys are the catalog strings; MediaKind members compare and hash as those strings.
-# Panopto play stays None so preview keeps running the existing video body.
 MEDIA_HANDLERS = {
     MediaKind.VIDEO: MediaHandler(
         "panopto",
         queue_speed_rejected=None,
         item_speed_rejected=None,
         prepare=panopto.prepare,
-        play=None,
+        play=panopto.play,
     ),
     MediaKind.YOUTUBE: MediaHandler(
         "youtube",
