@@ -427,8 +427,8 @@ def dispatch_fetch(
     from campusctl.browser_options import preflight_browser_mode
     from campusctl.config import load_config
 
-    entity_ids = _selected_ids(args, domain)
     root = data_dir()
+    entity_ids = _selected_ids(args, domain)
     rows = _selected_rows(domain, root, entity_ids)
     out_path = getattr(args, "out", None)
     _check_output(domain, out_path, rows)

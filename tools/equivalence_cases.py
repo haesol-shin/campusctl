@@ -697,6 +697,13 @@ def _command_owner_cases() -> list[Case]:
     unresolvable = {"env": {"CAMPUSCTL_DATA_DIR": "~nonexistent-campusctl-review.invalid"}}
     add("bare-courses-unresolvable-data", ["courses"], "p3-healthy", 1, **unresolvable)
     add("bare-lectures-unresolvable-data", ["lectures"], "p3-healthy", 1, **unresolvable)
+    # Coursework resolves data_dir() before subcommand and fetch ID checks; --profile refusal precedes both.
+    for family in ("assignments", "notices", "materials"):
+        add(f"bare-{family}-unresolvable-data", [family], "p3-healthy", 1, **unresolvable)
+    for family in ("assignments", "notices"):
+        add(f"{family}-fetch-blank-id-unresolvable-data", [family, "fetch", " "], "p3-healthy", 1, **unresolvable)
+    add("materials-download-bare-unresolvable-data", ["materials", "download"], "p3-healthy", 1, **unresolvable)
+    add("profile-refused-unresolvable-data", ["--profile", "assignments", "list"], "p3-healthy", 2, **unresolvable)
     add("usage-no-command", [], "p3-healthy", 2)
     add("usage-unknown-command", ["bogus"], "p3-healthy", 2)
     add("usage-abbreviated-subcommand", ["lectures", "li"], "p3-healthy", 2)

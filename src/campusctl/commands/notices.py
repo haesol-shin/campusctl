@@ -99,6 +99,8 @@ def profile_scope(args: argparse.Namespace) -> tuple[str, ...] | None:
 
 def dispatch(args: argparse.Namespace, bindings: CommandBindings, context: CommandContext) -> CommandResult:
     """Dispatch cached notice listing or selected detail packages."""
+    # Resolve the data directory first, as before the unified pipeline: it outranks input checks.
+    data_dir()
     command = getattr(args, "notices_command", None)
     if command == "list":
         return list_with_refresh("notices", args, bindings, context, _list)

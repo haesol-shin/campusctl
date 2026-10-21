@@ -55,6 +55,8 @@ def profile_scope(args: argparse.Namespace) -> tuple[str, ...] | None:
 
 
 def dispatch(args: argparse.Namespace, bindings: CommandBindings, context: CommandContext) -> CommandResult:
+    # Resolve the data directory first, as before the unified pipeline: it outranks input checks.
+    data_dir()
     if args.materials_command == "list":
         return list_with_refresh("materials", args, bindings, context, _list)
     if args.materials_command == "download":
