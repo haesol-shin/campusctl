@@ -103,3 +103,24 @@ def _wrap(value: str, width: int) -> list[str]:
 
 def _pad(value: str, width: int) -> str:
     return value + " " * max(0, width - _cells(value))
+
+
+def _command_hint(label: str, command: str, width: int) -> list[str]:
+    combined = f"{label} {command}"
+    if width >= 60 and _cells(combined) <= width:
+        return [combined]
+    return [*_wrap(label, width), f"  {command}"]
+
+
+def _wrap_simple(line: str, width: int) -> list[str]:
+    prefix = "Next: "
+    if line.startswith(prefix) and line[len(prefix) :].startswith("campusctl "):
+        return _command_hint("Next:", line[len(prefix) :], width)
+    return _wrap(line, width)
+
+
+def _course_heading(label: str, width: int) -> list[str]:
+    prefix = "Course: "
+    if _cells(prefix) >= width:
+        return _wrap(f"Course: {label}", width)
+    return [prefix + _truncate(label, width - _cells(prefix))]

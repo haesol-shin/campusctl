@@ -278,8 +278,8 @@ def test_play_help_preserves_speed_choice_order(capsys: pytest.CaptureFixture[st
 def test_materials_doctor_reports_settings_without_creating_destination(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from campusctl.commands.doctor import _doctor
     from campusctl.config import validate_config
-    from campusctl.presentation import _doctor
 
     monkeypatch.setenv("CAMPUSCTL_CONFIG_DIR", str(tmp_path / "config"))
     monkeypatch.setenv("CAMPUSCTL_DATA_DIR", str(tmp_path / "data"))

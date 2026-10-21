@@ -32,8 +32,10 @@ from campusctl.config import SUPPORTED_SPEEDS, load_config
 from campusctl.envelope import CampusError
 from campusctl.paths import data_dir
 from campusctl.progress import _progress_output
+from campusctl.text_layout import _cells, _command_hint, _course_heading, _pad, _text, _truncate, _wrap
 
 CAPABILITY = {"commands": ["list", "play"]}
+_STATUS_WIDTH = 11
 
 
 def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -194,3 +196,229 @@ def dispatch(args: argparse.Namespace, bindings: CommandBindings, context: Comma
             return _play(args, bindings, context)
         case _:
             unchanged_bare_failure()
+
+
+def _lecture_status(lecture: dict[str, Any]) -> str:
+    if lecture.get("open") is False:
+        available_date = _available_date(lecture.get("available_from"))
+        return f"opens {available_date[5:]}" if available_date is not None else "not open"
+    completion = lecture.get("completion")
+    if completion == "complete":
+        return "done"
+    if completion == "recorded":
+        return "watched (not counted)"
+    if completion != "incomplete":
+        return "unknown"
+    progress = lecture.get("progress_text")
+    if isinstance(progress, str):
+        match = re.match(r"\s*(\d+)\s*분(?:\s*(\d+)\s*초)?\s*/", progress)
+        if match:
+            minutes = int(match.group(1))
+            seconds = int(match.group(2) or 0)
+            return "in progress" if minutes or seconds else "not started"
+    return "unfinished"
+
+
+def _course(lecture: dict[str, Any]) -> tuple[str, str]:
+    course = lecture.get("course")
+    if isinstance(course, dict):
+        course_id = _text(course.get("id"), "unknown")
+        label = _text(course.get("label"), course_id)
+        return course_id, label
+    return "unknown", "Unknown course"
+
+
+def _due_date(lecture: dict[str, Any]) -> str:
+    value = lecture.get("due_date")
+    if not isinstance(value, str):
+        return "-"
+    match = re.fullmatch(r"(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})(?::\d{2}(?:\.\d+)?)?", value)
+    return f"{match.group(1)} {match.group(2)}" if match else value
+
+
+def _cache_timestamp(value: object) -> str:
+    timestamp = _text(value)
+    match = re.fullmatch(r"(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})(?::\d{2}(?:\.\d+)?)?(?:Z|\+00:00)", timestamp)
+    return f"{match.group(1)} {match.group(2)} UTC" if match else timestamp
+
+
+def _media(lecture: dict[str, Any]) -> str:
+    media = _text(lecture.get("media"), "other")
+    return "" if media == "video" else f"[{media}]"
+
+
+def _available_date(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    match = re.match(r"^(\d{4}-\d{2}-\d{2})(?:$|T)", value)
+    return match.group(1) if match else None
+
+
+def _wrap_field(label: str, value: str, width: int) -> list[str]:
+    indent = "  "
+    prefix = f"{indent}{label}: "
+    if _cells(prefix) >= width:
+        return _wrap(f"{label}: {value}", width)
+    value_lines = _wrap(value, width - _cells(prefix))
+    return [prefix + value_lines[0], *(indent + line for line in value_lines[1:])]
+
+
+def _render_list(result: dict[str, Any], width: int) -> list[str]:  # noqa: C901
+    lectures = result.get("lectures")
+    if not isinstance(lectures, list):
+        return []
+    rows = [lecture for lecture in lectures if isinstance(lecture, dict)]
+    cache = result.get("cache")
+    generated_at = _cache_timestamp(cache.get("generated_at")) if isinstance(cache, dict) else ""
+    count_label = "lecture" if len(rows) == 1 else "lectures"
+    header = f"{len(rows)} {count_label}"
+    if generated_at:
+        updated = f"(updated {generated_at})"
+        if _cells(f"{header} {updated}") <= width:
+            lines = [f"{header} {updated}"]
+        else:
+            lines = _wrap(header, width) + _wrap(updated, width)
+    else:
+        lines = _wrap(header, width)
+    if not rows:
+        lines.append("")
+        lines.extend(_wrap("Nothing unfinished.", width))
+        lines.extend(
+            _command_hint("To include completed or recorded lectures:", "campusctl lectures list --all", width)
+        )
+        lines.extend(_command_hint("To refresh:", "campusctl sync", width))
+        return lines
+
+    groups: dict[str, tuple[str, list[dict[str, Any]]]] = {}
+    for lecture in rows:
+        course_id, label = _course(lecture)
+        if course_id not in groups:
+            groups[course_id] = (label, [])
+        groups[course_id][1].append(lecture)
+
+    for label, group_rows in groups.values():
+        lines.append("")
+        lines.extend(_course_heading(label, width))
+        due_width = max(3, max((_cells(_due_date(lecture)) for lecture in group_rows), default=3))
+        media_width = max((_cells(_media(lecture)) for lecture in group_rows), default=0)
+        has_media = media_width > 0
+        available_title_width = width - 6 - due_width - _STATUS_WIDTH - (2 + media_width if has_media else 0)
+        title_width = min(
+            available_title_width,
+            max((_cells(_text(lecture.get("title"), "(untitled lecture)")) for lecture in group_rows), default=0),
+        )
+        if width >= 60 and title_width > 0:
+            for lecture in group_rows:
+                title = _truncate(_text(lecture.get("title"), "(untitled lecture)"), title_width)
+                due = _due_date(lecture)
+                status = _lecture_status(lecture)
+                row = f"  {_pad(title, title_width)}  {_pad(due, due_width)}  {_pad(status, _STATUS_WIDTH)}"
+                if has_media:
+                    row += f"  {_media(lecture)}"
+                lines.append(row.rstrip())
+                entity_id = _text(lecture.get("entity_id"), "unknown-entity")
+                lines.append(f"    {entity_id}")
+        else:
+            for lecture in group_rows:
+                title_text = _text(lecture.get("title"), "(untitled lecture)")
+                title_width = max(0, width - _cells("  Title: "))
+                title = _truncate(title_text, title_width) if title_width else title_text
+                lines.extend(_wrap_field("Title", title, width))
+                lines.extend(_wrap_field("Due", _due_date(lecture), width))
+                lines.extend(_wrap_field("Status", _lecture_status(lecture), width))
+                media = _media(lecture)
+                if media:
+                    lines.extend(_wrap_field("Media", media, width))
+                entity_id = _text(lecture.get("entity_id"), "unknown-entity")
+                lines.append(f"    {entity_id}")
+
+    playable = next(
+        (
+            lecture
+            for lecture in rows
+            if lecture.get("open") is True
+            and lecture.get("completion") == "incomplete"
+            and lecture.get("media") in {"video", "youtube"}
+            and isinstance(lecture.get("entity_id"), str)
+            and lecture["entity_id"]
+        ),
+        None,
+    )
+    lines.append("")
+    if playable is not None:
+        entity_id = playable["entity_id"]
+        command = f"campusctl lectures play {entity_id}"
+        lines.extend(_command_hint("To play one:", command, width))
+    else:
+        opening_dates: list[str] = []
+        for lecture in rows:
+            if (
+                lecture.get("open") is False
+                and lecture.get("completion") == "incomplete"
+                and lecture.get("media") in {"video", "youtube"}
+                and isinstance(lecture.get("entity_id"), str)
+                and lecture["entity_id"]
+            ):
+                available_date = _available_date(lecture.get("available_from"))
+                if available_date is not None:
+                    opening_dates.append(available_date)
+        if opening_dates:
+            next_opening = min(opening_dates)
+            message = f"No lectures are open to play yet. Next opens: {next_opening[5:]}."
+        else:
+            message = "No lectures are open to play yet. Opening dates are not published yet."
+        lines.extend(_wrap(message, width))
+    lines.extend(_command_hint("To refresh:", "campusctl sync", width))
+    return lines
+
+
+def _render_play(result: dict[str, Any], width: int) -> list[str]:
+    items = result.get("items")
+    if not isinstance(items, list):
+        return []
+    labels = {
+        "completed": "Completed",
+        "already-complete": "Already complete",
+        "recorded": "Watched (not counted)",
+        "unverified": "Unverified",
+        "failed": "Failed",
+        "not-started": "Not started",
+        "unknown": "Unknown",
+    }
+    counts: dict[str, int] = dict.fromkeys(labels, 0)
+    lines: list[str] = []
+    processed = 0
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        value = item.get("outcome")
+        outcome = value if isinstance(value, str) and value else "unknown"
+        if outcome not in labels:
+            labels[outcome] = outcome.replace("-", " ").capitalize()
+            counts[outcome] = 0
+        counts[outcome] += 1
+        processed += 1
+        entity_id = _text(item.get("entity_id"), "unknown-entity")
+        lines.extend(_wrap(f"{labels[outcome]}:", width))
+        lines.append(f"  {entity_id}")
+        if outcome == "recorded":
+            lines.extend(
+                _wrap(
+                    "The LMS row reports full watch progress. It does not count for attendance or mark the lecture complete.",
+                    width,
+                )
+            )
+    if not processed:
+        lines.extend(_wrap("No lectures were played.", width))
+        return lines
+    summary = [f"{count} {key.replace('-', ' ')}" for key, count in counts.items() if count]
+    lines.extend(_wrap("Playback: " + ", ".join(summary) + ".", width))
+    return lines
+
+
+def render(command: str, result: dict[str, Any], width: int) -> list[str]:
+    if command == "lectures.list":
+        return _render_list(result, width)
+    if command == "lectures.play":
+        return _render_play(result, width)
+    return []

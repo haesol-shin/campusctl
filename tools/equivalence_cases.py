@@ -21,6 +21,7 @@ class Case(TypedDict):
     stdout_tty: NotRequired[bool]
     trace_publication: NotRequired[bool]
     fetch_fake: NotRequired[dict]
+    sync_shape: NotRequired[str]
 
 
 def _lecture_row(entity_id: str, title: str, course_id: str, label: str) -> dict:
@@ -133,6 +134,82 @@ def _write_layout_catalogs(root: Path) -> None:
         ),
         encoding="utf-8",
     )
+    _write_layout_domain_catalogs(root, short_label, long_label, short_id)
+
+
+def _write_layout_domain_catalogs(root: Path, short_label: str, long_label: str, short_id: str) -> None:
+    from campusctl.domain_catalog import write_domain_catalog
+    from campusctl.providers.cnu.assignments import parse_assignment_rows
+
+    course = {"course_id": short_id, "label": long_label, "class_no": None}
+    data = root / "data" / "catalog"
+    rows = parse_assignment_rows(
+        [{"task_id": "TB_L_REPORT1", "title": "\uacf5\u0301\uc9c0" + ("\uacfc\uc81c" * 12), "due_date": "2026-03-04"}],
+        course,
+    )
+    write_domain_catalog(
+        "assignments",
+        {"generated_at": "2026-01-02T03:04:05Z", "courses": [course], "assignments": rows},
+        data / "assignments.json",
+    )
+    material = {
+        "entity_id": "cnu_lms_material:s:file-1",
+        "course": {"id": short_id, "label": long_label},
+        "archive_entry": {"board_item_id": "board-1", "title": "\uc790\u0301" + ("\uc790\ub8cc" * 16)},
+        "file_id": "file-1",
+        "display_name": "\uc608\uc2dc.pdf",
+        "filename": "\uc608\uc2dc.pdf",
+        "media_type": None,
+        "size_bytes": None,
+        "downloadable": True,
+        "unavailable_reason": None,
+    }
+    write_domain_catalog(
+        "materials",
+        {"generated_at": "2026-01-02T03:04:05Z", "courses": [course], "materials": [material]},
+        data / "materials.json",
+    )
+
+
+def _write_p4b_catalogs(root: Path, fixture: str) -> None:
+    from campusctl.domain_catalog import write_domain_catalog
+    from campusctl.providers.cnu.assignments import parse_assignment_rows
+
+    data = root / "data" / "catalog"
+    data.mkdir(parents=True)
+    course = {"course_id": "wide.invalid", "label": "\ud569\uc131 \uacfc\ubaa9", "class_no": None}
+    warnings = fixture == "p4b-warnings"
+    rows = (
+        parse_assignment_rows([{"task_id": "TB_L_REPORT1", "title": "\uacfc\uc81c", "due_date": "2026-03-04"}], course)
+        if warnings
+        else []
+    )
+    payload = {
+        "generated_at": "2026-01-02T03:04:05Z",
+        "enrollment_state": "unknown" if warnings else "known",
+        "courses": [course] if warnings else [],
+        "failed_courses": (
+            [
+                {
+                    "course_id": "missing.invalid",
+                    "label": "\ub204\ub77d" + ("\uacfc\uc815" * 12),
+                    "reason": "course-sync-failed",
+                }
+            ]
+            if warnings
+            else []
+        ),
+        "assignments": rows,
+    }
+    write_domain_catalog("assignments", payload, data / "assignments.json")
+    if warnings:
+        return
+    for domain in ("notices", "materials"):
+        write_domain_catalog(
+            domain,
+            {"generated_at": "2026-01-02T03:04:05Z", "courses": [], domain: []},
+            data / f"{domain}.json",
+        )
 
 
 def _write_progress_catalog(catalog: Path) -> None:
@@ -245,6 +322,7 @@ _P3_FIXTURES = {
     "p3-sync-failure": ("keyring", "ready", "all"),
     "p3-sync-uncached": ("keyring", "ready", "none"),
     "p3-fetch": ("keyring", "ready", "fetch"),
+    "p3-doctor-suppress": ("cdp", "ready", "none"),
 }
 _P3_HELPER_FIXTURES = {"p3-helper"}
 _P3_COURSE = {"course_id": "course.invalid", "label": "Synthetic course", "class_no": None}
@@ -255,6 +333,12 @@ def _p3_config_text(kind: str, root: Path, executable: Path) -> str | None:
         return None
     if kind == "invalid":
         return "provider = [unterminated\n"
+    if kind == "cdp":
+        return (
+            'provider = "cnu"\n[account]\nusername = "synthetic-user"\n'
+            '[credentials]\nprovider = "keyring"\n'
+            '[browser]\ncdp_endpoint = "http://127.0.0.1:9"\n'
+        )
     browser = str(root / "missing-browser") if kind == "no-browser" else str(executable)
     headless = "false" if kind == "headed" else "true"
     credentials = (
@@ -329,7 +413,9 @@ def _write_p3_files(root: Path, fixture: str, executable: Path) -> None:
     )
 
 
-def _install_p3_fakes(stack: ExitStack, actions: list, fixture: str, state: dict) -> None:
+def _install_p3_fakes(
+    stack: ExitStack, actions: list, fixture: str, state: dict, sync_shape: str | None = None
+) -> None:
     import getpass
     import sys
     from contextlib import asynccontextmanager
@@ -384,8 +470,41 @@ def _install_p3_fakes(stack: ExitStack, actions: list, fixture: str, state: dict
         actions.append(["sync", "collect", list(domains), course_id, headless, course_snapshot is not None])
         if fixture == "p3-sync-failure":
             raise CampusError("session-busy", "Synthetic busy session.", "Retry later.", "busy")
-        counts = {"courses": 1, domains[0]: 1}
-        return {domain: sync_module.DomainOutcome(result=dict(counts)) for domain in domains}
+        if sync_shape is None:
+            counts = {"courses": 1, domains[0]: 1}
+            return {domain: sync_module.DomainOutcome(result=dict(counts)) for domain in domains}
+        failed = [{"course_id": "wide.invalid", "label": "\ud569\uc131 \uacfc\ubaa9", "reason": "course-sync-failed"}]
+        outcomes = {}
+        for index, domain in enumerate(domains):
+            result = {
+                "courses": 2,
+                domain: 1,
+                "failed_courses": failed,
+                "catalog": {"enrollment_state": "unknown", "generated_at": "2026-01-02T03:04:05Z"},
+            }
+            if domain == "lectures":
+                result["incomplete"] = 1
+            if sync_shape == "nested" and index == 1:
+                outcomes[domain] = sync_module.DomainOutcome(
+                    result=result,
+                    errors=[
+                        CampusError("course-sync-failed", "Synthetic course failed.", "Retry the course.", "error")
+                    ],
+                    status="partial",
+                )
+            elif sync_shape == "nested" and index > 1:
+                outcomes[domain] = sync_module.DomainOutcome(status="not-started")
+            elif sync_shape == "partial":
+                outcomes[domain] = sync_module.DomainOutcome(
+                    result=result,
+                    errors=[
+                        CampusError("course-sync-failed", "Synthetic course failed.", "Retry the course.", "error")
+                    ],
+                    status="partial",
+                )
+            else:
+                outcomes[domain] = sync_module.DomainOutcome(result=result, status="ok")
+        return outcomes
 
     stack.enter_context(patch.dict(sys.modules, {"keyring": SyntheticKeyring}))
     stack.enter_context(patch.object(getpass, "getpass", read_password))
@@ -729,6 +848,80 @@ def _command_owner_cases() -> list[Case]:
     return result
 
 
+def _p4b_cases() -> list[Case]:
+    """Human renderer bytes at widths 48 and 100: lists, sync, doctor, status, picker."""
+    specs = (
+        ("courses-wide", ["courses", "list"], "layout", 0, {}),
+        ("courses-empty", ["courses", "list"], "empty", 0, {}),
+        ("lectures-wide", ["lectures", "list", "--all"], "layout", 0, {}),
+        ("lectures-empty", ["lectures", "list"], "empty", 0, {}),
+        (
+            "lectures-play",
+            ["lectures", "play", "cnu_lecture:course.invalid:row-1", "--speed", "1.0"],
+            "progress-success",
+            0,
+            {},
+        ),
+        ("assignments-wide", ["assignments", "list"], "layout", 0, {}),
+        ("notices-wide", ["notices", "list"], "layout", 0, {}),
+        ("materials-wide", ["materials", "list"], "layout", 0, {}),
+        ("assignments-empty", ["assignments", "list"], "p4b-empty", 0, {}),
+        ("notices-empty", ["notices", "list"], "p4b-empty", 0, {}),
+        ("materials-empty", ["materials", "list"], "p4b-empty", 0, {}),
+        (
+            "assignments-fetch",
+            ["assignments", "fetch", "cnu_assignment:course.invalid:TB_L_REPORT1"],
+            "p3-fetch",
+            0,
+            {"fetch_fake": {}},
+        ),
+        (
+            "notices-fetch",
+            ["notices", "fetch", "cnu_notice:course.invalid:n1"],
+            "p3-fetch",
+            0,
+            {"fetch_fake": {}},
+        ),
+        ("auth-status", ["auth", "status"], "p3-healthy", 0, {}),
+        ("config-init", ["config", "init", "--username", "synthetic-user"], "p3-no-config", 0, {}),
+        ("setup", ["setup"], "p3-healthy", 0, {}),
+        ("doctor-ready", ["doctor"], "p3-healthy", 0, {}),
+        ("doctor-suppress", ["doctor"], "p3-doctor-suppress", 2, {}),
+        ("status-ready", ["status"], "p3-healthy", 0, {}),
+        ("status-missing-all", ["status"], "p3-no-catalogs", 2, {}),
+        ("status-unreadable", ["status"], "p4b-unreadable", 2, {}),
+        ("sync-nested", ["sync"], "p3-sync", 1, {"sync_shape": "nested"}),
+        ("sync-lectures-failed", ["sync", "--only", "lectures"], "p3-sync", 0, {"sync_shape": "failed"}),
+        ("sync-materials-failed", ["sync", "--only", "materials"], "p3-sync", 0, {"sync_shape": "failed"}),
+        ("sync-notices-failed", ["sync", "--only", "notices"], "p3-sync", 0, {"sync_shape": "failed"}),
+        ("sync-partial", ["sync", "--only", "assignments"], "p3-sync", 1, {"sync_shape": "partial"}),
+        ("sync-failure", ["sync", "--only", "lectures"], "p3-sync-failure", 75, {}),
+        ("picker-cancel", ["materials", "download"], "layout", 2, {"input": "\n", "tty": True}),
+        ("cache-warning", ["assignments", "list"], "p4b-warnings", 0, {}),
+    )
+    result: list[Case] = []
+    for name, argv, fixture, expected, extra in specs:
+        for width in (48, 100):
+            case: Case = {
+                "name": f"p4b-{name}-{width}",
+                "argv": argv,
+                "fixture": fixture,
+                "width": width,
+                "env": {"CAMPUSCTL_OUTPUT": "human"},
+                "expected": expected,
+            }
+            if extra.get("tty"):
+                case["stdin_tty"] = case["stdout_tty"] = True
+            if "input" in extra:
+                case["input"] = extra["input"]
+            if "fetch_fake" in extra:
+                case["fetch_fake"] = extra["fetch_fake"]
+            if "sync_shape" in extra:
+                case["sync_shape"] = extra["sync_shape"]
+            result.append(case)
+    return result
+
+
 def cases() -> list[Case]:
     help_paths = [
         [],
@@ -861,7 +1054,7 @@ def cases() -> list[Case]:
                 "expected": expected,
             }
         )
-    return [*result, *_command_owner_cases(), *_fetch_cases()]
+    return [*result, *_command_owner_cases(), *_fetch_cases(), *_p4b_cases()]
 
 
 @contextmanager
@@ -876,6 +1069,12 @@ def prepare(root: Path, case: Case, actions: list):
     headed = fixture.startswith("progress-")
     if fixture.startswith("p3-"):
         _write_p3_files(root, fixture, executable)
+    elif fixture == "p4b-unreadable":
+        catalog = root / "data" / "catalog" / "lectures.json"
+        catalog.parent.mkdir(parents=True)
+        catalog.write_text("not-json", encoding="utf-8")
+    elif fixture in {"p4b-empty", "p4b-warnings"}:
+        _write_p4b_catalogs(root, fixture)
     else:
         (root / "config" / "config.toml").write_text(
             'provider = "cnu"\n[credentials]\nprovider = "command"\n'
@@ -937,7 +1136,7 @@ def prepare(root: Path, case: Case, actions: list):
 
             stack.enter_context(patch.object(fcntl, "flock", busy_lock))
         elif fixture.startswith("p3-"):
-            _install_p3_fakes(stack, actions, fixture, state)
+            _install_p3_fakes(stack, actions, fixture, state, case.get("sync_shape"))
             if fixture in _P3_HELPER_FIXTURES:
                 stack.enter_context(patch.object(subprocess, "Popen", fail_helper))
         elif fixture.startswith("progress-"):

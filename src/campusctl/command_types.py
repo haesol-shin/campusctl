@@ -1,20 +1,39 @@
 """Records shared by command modules and their composition caller.
 
 A command module exposes `register(subparsers)` and `dispatch(args, bindings, context)`. It may
-also expose `render(command, result, width)`, `CAPABILITY`, `profile_scope(args)` and
-`command_key(args)`.
+also expose `render(command, result, width)` or `render_response(command, result, width, envelope)`,
+`CAPABILITY`, `profile_scope(args)` and `command_key(args)`.
 """
 
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass
-from typing import Any, NoReturn
+from dataclasses import dataclass, field
+from typing import Any, NamedTuple, NoReturn, TextIO
 
 from campusctl.envelope import CampusError, error_item
 from campusctl.profiling import SpanRecorder
 
 Renderer = Callable[[str, dict[str, Any], int], list[str]]
+
+
+class Rendered(NamedTuple):
+    """Lines of a response renderer and whether they already explain the envelope's errors."""
+
+    lines: list[str]
+    hide_errors: bool = False
+
+
+# Also reads the envelope: doctor and status decide from its status and errors.
+ResponseRenderer = Callable[[str, dict[str, Any], int, dict[str, Any]], Rendered]
+
+
+@dataclass(frozen=True, slots=True)
+class Renderers:
+    """Human renderers keyed by command family, the part of a command key before the first dot."""
+
+    results: Mapping[str, Renderer]
+    responses: Mapping[str, ResponseRenderer] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,6 +53,7 @@ class CommandContext:
     output_mode: str
     interactive: bool
     profile: SpanRecorder | None = None
+    output: Callable[[str, dict[str, Any], TextIO], None] | None = None
 
 
 @dataclass(frozen=True, slots=True)

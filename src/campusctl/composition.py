@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import argparse
 from types import ModuleType
+from typing import Any, TextIO
 
-from campusctl.command_types import CommandBindings, Renderer
+from campusctl.command_types import CommandBindings, Renderers
 from campusctl.commands import (
     assignments,
     auth,
@@ -19,6 +20,7 @@ from campusctl.commands import (
     status,
     sync,
 )
+from campusctl.presentation import render_human
 from campusctl.providers.cnu import courses as cnu_courses
 from campusctl.providers.cnu import player as cnu_player
 
@@ -30,9 +32,17 @@ CAPABILITIES: dict[str, list[str]] = {
     module.__name__.rpartition(".")[2]: list(module.CAPABILITY["commands"])
     for module in (sync, lectures, status, assignments, materials, notices)
 }
-RENDERERS: dict[str, Renderer] = {
-    name: module.render for name, module in COMMANDS_BY_NAME.items() if hasattr(module, "render")
-}
+RENDERERS = Renderers(
+    results={name: module.render for name, module in COMMANDS_BY_NAME.items() if hasattr(module, "render")},
+    responses={
+        name: module.render_response for name, module in COMMANDS_BY_NAME.items() if hasattr(module, "render_response")
+    },
+)
+
+
+def write_human(command: str, envelope: dict[str, Any], stream: TextIO) -> None:
+    """Write one human envelope with the renderers assembled above."""
+    render_human(command, envelope, stream, renderers=RENDERERS)
 
 
 def register_commands(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:

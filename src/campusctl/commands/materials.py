@@ -5,10 +5,11 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+from collections.abc import Callable
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 from campusctl.browser import settle_sso_popups
 from campusctl.browser_options import preflight_browser_mode
@@ -89,11 +90,10 @@ def _list(course_id: str | None) -> CommandResult:
     return command_result(result, publish=publish)
 
 
-def _pick_number(root: Path) -> tuple[str, dict[str, Any]]:
+def _pick_number(root: Path, output: Callable[[str, dict[str, Any], TextIO], None]) -> tuple[str, dict[str, Any]]:
     import sys
 
     from campusctl.envelope import make_envelope
-    from campusctl.presentation import render_human
 
     snapshot = catalog_snapshot("materials", root)
     if snapshot is None:
@@ -104,7 +104,7 @@ def _pick_number(root: Path) -> tuple[str, dict[str, Any]]:
             "user-action",
         )
     catalog = snapshot[0]
-    render_human(
+    output(
         "materials.list",
         make_envelope(
             result={
@@ -113,7 +113,6 @@ def _pick_number(root: Path) -> tuple[str, dict[str, Any]]:
             }
         ),
         sys.stdout,
-        renderers={"materials": render},
     )
     sys.stdout.flush()
     publish_material_snapshot(root, snapshot[1], [row["entity_id"] for row in catalog["materials"]])
@@ -140,7 +139,7 @@ def _requested_material(
                 "Run 'campusctl materials list --json' and pass one full ID.",
                 "user-action",
             )
-        return _pick_number(root)
+        return _pick_number(root, context.output)
     if args.entity_id.isdecimal() and not any(row["entity_id"] == args.entity_id for row in catalog["materials"]):
         if context.output_mode == "json":
             raise CampusError(
