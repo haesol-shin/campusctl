@@ -15,6 +15,7 @@ from campusctl.config import load_config
 from campusctl.course_selection import resolve_course
 from campusctl.envelope import CampusError, error_item
 from campusctl.paths import data_dir
+from campusctl.profiling import SpanRecorder
 from campusctl.sync import run_sync
 
 
@@ -101,6 +102,8 @@ def refresh(
     course_id: str | None,
     args: argparse.Namespace,
     snapshot: dict[str, Any] | None = None,
+    *,
+    profile: SpanRecorder | None = None,
 ) -> tuple[dict[str, Any], CampusError | list[CampusError] | None]:
     config = load_config()
     mode = preflight_browser_mode(config, f"{domain}.sync", override=args.headless_override)
@@ -110,7 +113,7 @@ def refresh(
         (domain,),
         course_id,
         headless=mode,
-        profile=getattr(args, "_profile", None),
+        profile=profile,
         course_snapshot=snapshot,
     )
 
@@ -151,7 +154,11 @@ def dispatch_coursework(
             )
         else:
             args.course, snapshot = select_course(args.course, root, ids_only=ids_only)
-        refreshed = refresh(args.command, root, args.course, args, snapshot) if args.refresh else None
+        refreshed = (
+            refresh(args.command, root, args.course, args, snapshot, profile=getattr(args, "_profile", None))
+            if args.refresh
+            else None
+        )
         try:
             result, error = module.dispatch(args)
         except CampusError:

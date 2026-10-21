@@ -447,6 +447,7 @@ def _command_owner_cases() -> list[Case]:
     add("doctor-display-env", ["doctor"], "p3-headed", 0, env={"DISPLAY": ":synthetic"})
     add("setup-no-tty-config", ["setup"], "p3-healthy", 0)
     add("setup-no-config", ["setup"], "p3-no-config", 0)
+    add("setup-prompt-decline", ["setup"], "p3-no-credentials", 2, input="n\n", **tty)
     add("setup-invalid-config", ["setup"], "p3-invalid-config", 2)
     add("sync-headed-flag-over-config", ["--headed", "sync", "--only", "lectures"], "p3-sync", 0)
     add("sync-config-headless", ["sync", "--only", "assignments"], "p3-sync", 0)
@@ -526,6 +527,10 @@ def _command_owner_cases() -> list[Case]:
         add(f"usage-{family}-bare", [family], "p3-healthy", _BARE_EXIT.get(family, 2))
         add(f"usage-{family}-unknown-option", [family, "--bogus"], "p3-healthy", 2)
         add(f"usage-{family}-unknown-subcommand", [family, "bogus"], "p3-healthy", 2)
+    # Bare courses resolves data_dir() before its TypeError; bare lectures does not.
+    unresolvable = {"env": {"CAMPUSCTL_DATA_DIR": "~nonexistent-campusctl-review.invalid"}}
+    add("bare-courses-unresolvable-data", ["courses"], "p3-healthy", 1, **unresolvable)
+    add("bare-lectures-unresolvable-data", ["lectures"], "p3-healthy", 1, **unresolvable)
     add("usage-no-command", [], "p3-healthy", 2)
     add("usage-unknown-command", ["bogus"], "p3-healthy", 2)
     add("usage-abbreviated-subcommand", ["lectures", "li"], "p3-healthy", 2)
@@ -672,6 +677,17 @@ def cases() -> list[Case]:
             if tty:
                 case["stdout_tty"] = True
             result.append(case)
+    for outcome, expected in (("success", 0), ("failure", 1)):
+        result.append(
+            {
+                "name": f"play-json-{outcome}",
+                "argv": ["lectures", "play", "cnu_lecture:course.invalid:row-1", "--speed", "1.0"],
+                "fixture": f"progress-{outcome}",
+                "width": 80,
+                "env": {"CAMPUSCTL_OUTPUT": "json"},
+                "expected": expected,
+            }
+        )
     return [*result, *_command_owner_cases()]
 
 
@@ -719,6 +735,26 @@ def prepare(root: Path, case: Case, actions: list):
         actions.append(["browser-probe", "open"])
         return SimpleNamespace(chromium=SimpleNamespace(executable_path=str(executable)), stop=stop_browser)
 
+    def _trace_course_publication() -> None:
+        # Record flush-then-publish order without stubbing the publication owner.
+        import os
+        import sys
+
+        original_flush = sys.stdout.flush
+        original_replace = os.replace
+
+        def flush() -> None:
+            actions.append(["stdout", "flush"])
+            original_flush()
+
+        def replace(src, dst, *args, **kwargs):
+            if os.fspath(dst).endswith("courses-last-list.json"):
+                actions.append(["selection", "publish", "courses"])
+            return original_replace(src, dst, *args, **kwargs)
+
+        sys.stdout.flush = flush
+        os.replace = replace
+
     with patch.object(PlaywrightContextManager, "start", probe_browser), ExitStack() as stack:
         if fixture == "helper-failed":
             stack.enter_context(patch.object(subprocess, "Popen", fail_helper))
@@ -732,4 +768,6 @@ def prepare(root: Path, case: Case, actions: list):
                 stack.enter_context(patch.object(subprocess, "Popen", fail_helper))
         elif fixture.startswith("progress-"):
             _install_progress_fakes(stack, actions, fixture)
+        if case["name"] == "owner-courses-list-human":
+            _trace_course_publication()
         yield state

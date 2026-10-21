@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any
 
 from campusctl import __version__, composition
@@ -16,7 +16,7 @@ from campusctl.cli_args import (
     _HelpRequested,
     _with_json,
 )
-from campusctl.command_types import CommandResult
+from campusctl.command_types import CommandContext, CommandResult, command_result
 from campusctl.commands.course_inputs import dispatch_coursework
 from campusctl.config import load_config
 from campusctl.course_selection import CourseAmbiguous
@@ -154,7 +154,8 @@ def _command_key(args: argparse.Namespace | None) -> str:
     return command if isinstance(command, str) else "usage"
 
 
-def _emit_status(command_key: str, output_mode: str, record: CommandResult) -> int:
+def _emit_command(command_key: str, output_mode: str, record: CommandResult) -> int:
+    """Write a local result whose status and errors were resolved at the command edge."""
     envelope = make_envelope(status=record.status, result=record.result, errors=list(record.errors))
     if output_mode == "json":
         write_json(envelope)
@@ -163,19 +164,49 @@ def _emit_status(command_key: str, output_mode: str, record: CommandResult) -> i
     return EXIT_CODES[record.status]
 
 
-def _dispatch(args: argparse.Namespace) -> tuple[Any, CampusError | list[CampusError] | None] | CommandResult | None:
+def _dispatch(
+    args: argparse.Namespace, context: CommandContext
+) -> CommandResult | tuple[Any, CampusError | list[CampusError] | None]:
     if args.version:
-        return {"version": __version__}, None
+        return command_result({"version": __version__})
     if args.command is None:
         raise UsageError("a command is required")
     module = composition.COMMANDS_BY_NAME[args.command]
     bindings = composition.bind()
     if module in composition.COURSEWORK:
+        # Coursework still reads these until P4. Local commands take CommandContext.
+        args._profile = context.profile
+        args._interactive = context.interactive
+        args._output_mode = context.output_mode
         return dispatch_coursework(module, args, bindings)
-    return module.dispatch(args, bindings)
+    return module.dispatch(args, bindings, context)
 
 
-def main(argv: Sequence[str] | None = None) -> int:  # noqa: C901
+def _emit_dispatched(
+    dispatched: CommandResult | tuple[Any, CampusError | list[CampusError] | None],
+    *,
+    command_key: str,
+    output_mode: str,
+) -> tuple[int, Any, Callable[[], None] | None]:
+    if isinstance(dispatched, CommandResult):
+        return _emit_command(command_key, output_mode, dispatched), dispatched.result, dispatched.publish
+    result, error = dispatched
+    if isinstance(error, list):
+        if command_key in {"assignments.fetch", "notices.fetch"} and isinstance(result, dict) and "items" in result:
+            code = _emit_response(
+                command_key,
+                output_mode,
+                result=result,
+                errors=error,
+                status=_fetch_batch_status(result, error),
+            )
+        else:
+            code = _emit_partial(result, error, output_mode=output_mode, command_key=command_key)
+        return code, result, None
+    return _emit_response(command_key, output_mode, result=result, error=error), result, None
+
+
+def main(argv: Sequence[str] | None = None) -> int:
     args: argparse.Namespace | None = None
     output_mode = "json"
     recorder: SpanRecorder | None = None
@@ -196,32 +227,10 @@ def main(argv: Sequence[str] | None = None) -> int:  # noqa: C901
                 raise UsageError("--profile is valid only for sync or list --refresh.")
             mode = resolve_headless(load_config(), args.headless_override)
             recorder = SpanRecorder(enabled=True, mode="headless" if mode else "headed", scope=scope)
-        args._profile = recorder
-        args._interactive = interactive
-        args._output_mode = output_mode
-        dispatched = _dispatch(args)
-        status = None
-        publish = None
-        if isinstance(dispatched, CommandResult):
-            result, error, status, publish = dispatched.result, None, dispatched.status, dispatched.publish
-        else:
-            result, error = dispatched
+        context = CommandContext(output_mode, interactive, recorder)
+        dispatched = _dispatch(args, context)
         command_key = _command_key(args)
-        if status is not None:
-            code = _emit_status(command_key, output_mode, dispatched)
-        elif isinstance(error, list):
-            if command_key in {"assignments.fetch", "notices.fetch"} and isinstance(result, dict) and "items" in result:
-                code = _emit_response(
-                    command_key,
-                    output_mode,
-                    result=result,
-                    errors=error,
-                    status=_fetch_batch_status(result, error),
-                )
-            else:
-                code = _emit_partial(result, error, output_mode=output_mode, command_key=command_key)
-        else:
-            code = _emit_response(command_key, output_mode, result=result, error=error)
+        code, result, publish = _emit_dispatched(dispatched, command_key=command_key, output_mode=output_mode)
         if code == 0 and output_mode == "human" and publish is not None:
             sys.stdout.flush()
             publish()

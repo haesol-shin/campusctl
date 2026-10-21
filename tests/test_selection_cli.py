@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -66,6 +69,37 @@ def test_json_list_does_not_replace_printed_roster_and_json_refuses_selectors(
         exit_code, output = _call(["status", "--course", selector, "--json"], capsys)
         assert exit_code == 2 and json.loads(output)["errors"][0]["code"] == code
     assert snapshot.read_bytes() == original
+
+
+def test_nested_version_during_dispatch_still_publishes_course_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("CAMPUSCTL_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("CAMPUSCTL_OUTPUT", "human")
+    _catalog(tmp_path, [("course-b", "Beta")])
+    nested: list[int] = []
+    entered = False
+
+    def interleave(frame, event, _arg):
+        nonlocal entered
+        if entered or event != "call" or frame.f_code is not cli._dispatch.__code__:
+            return None
+        entered = True
+        sys.settrace(None)
+        with contextlib.redirect_stdout(io.StringIO()):
+            nested.append(cli.main(["--version", "--json"]))
+        return None
+
+    sys.settrace(interleave)
+    try:
+        code, output = _call(["courses", "list"], capsys)
+    finally:
+        sys.settrace(None)
+
+    snapshot = json.loads((tmp_path / "selection" / "courses-last-list.json").read_text(encoding="utf-8"))
+    assert nested == [0]
+    assert code == 0 and "course-b" in output and not output.startswith("{")
+    assert snapshot["courses"][0]["course_id"] == "course-b"
 
 
 def test_browser_preflight_is_inside_lock_and_precedes_launch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

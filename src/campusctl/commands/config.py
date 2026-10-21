@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import argparse
-from typing import Any
 
 from campusctl.cli_args import EnvelopeArgumentParser, _with_json
-from campusctl.command_types import CommandBindings
+from campusctl.command_types import CommandBindings, CommandContext, CommandResult, command_result
 from campusctl.config_init import run_config_init
-from campusctl.envelope import CampusError, UsageError
+from campusctl.envelope import UsageError
 
 
 def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -20,20 +19,8 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     config_init.add_argument("--username", help="CNU login ID")
 
 
-def _interactive_config_init(args: argparse.Namespace | None) -> bool:
-    return (
-        args is not None
-        and getattr(args, "command", None) == "config"
-        and not args.version
-        and getattr(args, "config_command", None) == "init"
-        and bool(getattr(args, "_interactive", False))
-    )
-
-
-def dispatch(args: argparse.Namespace, bindings: CommandBindings) -> tuple[Any, CampusError | list[CampusError] | None]:
+def dispatch(args: argparse.Namespace, bindings: CommandBindings, context: CommandContext) -> CommandResult:
     del bindings
-    if args.config_command is None:
+    if args.config_command != "init":
         raise UsageError("a config command is required")
-    if args.config_command == "init":
-        return run_config_init(args.username, interactive=_interactive_config_init(args))
-    raise UsageError("a config command is required")
+    return command_result(*run_config_init(args.username, interactive=context.interactive))

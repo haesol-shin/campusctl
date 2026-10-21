@@ -14,6 +14,7 @@ from virtual_clock import VirtualClock, drive
 
 from campusctl import browser as browser_module
 from campusctl import cli
+from campusctl.command_types import CommandContext
 from campusctl.commands import lectures as lectures_command
 from campusctl.lock import exclusive_lock
 from campusctl.providers.cnu import player
@@ -1188,11 +1189,8 @@ def test_ctrl_c_during_youtube_playback_closes_modal_and_releases_session_lock(
 
     monkeypatch.setattr(browser_module, "open_session", locked_session)
     args = cli.build_parser().parse_args(["lectures", "play", FIRST_ID, "--json"])
-    args._output_mode = "json"
-    args._interactive = False
-
     with pytest.raises(KeyboardInterrupt):
-        cli._dispatch(args)
+        cli._dispatch(args, CommandContext(output_mode="json", interactive=False))
 
     assert page.frame.youtube_reads == 3
     assert ("close", "row-1") in page.calls
