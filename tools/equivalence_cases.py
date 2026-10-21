@@ -1,5 +1,6 @@
 """Small synthetic starting corpus; later neutral changes add their affected paths here."""
 
+import asyncio
 import importlib
 import json
 import re
@@ -1146,7 +1147,15 @@ def _p4b_cases() -> list[Case]:
 _P5_ROW = "cnu_lecture:course.invalid:row-1"
 _P5_ROW_2 = "cnu_lecture:course.invalid:row-2"
 _P5_LONG = {"p5-callbacks", "p5-callback-raises"}
-_P5_STALL = {"p5-stall", "p5-close-fails"}
+_P5_STALL = {"p5-stall", "p5-close-fails", "p5-stall-close-cancelled"}
+_P5_ADVANCING = {"p5-advancing", "p5-close-after-success"}
+_P5_RATES = {"p5-native-rate", "p5-rate-true", "p5-rate-near-one", "p5-rate-missing"}
+_P5_COVERAGE = {"p5-video-coverage", "p5-video-replay-ended", "p5-video-restart-fails"}
+_P5_CLOSE_FAILS = {"p5-close-fails", "p5-close-after-success", "p5-video-close-after-success"}
+
+
+def _p5_is_video(fixture: str) -> bool:
+    return fixture == "p5-missing-video" or fixture.startswith("p5-video-")
 
 
 def _p5_cases() -> list[Case]:
@@ -1166,6 +1175,51 @@ def _p5_cases() -> list[Case]:
         ("p5-cleanup-interrupt", [_P5_ROW, "--speed", "1.0"], "p5-interrupt", 130, "human", False),
         ("p5-mixed-queue", [_P5_ROW, _P5_ROW_2, "--speed", "1.0"], "p5-mixed", 0, "json", False),
         ("p5-video-only-sso", [_P5_ROW, "--speed", "1.0"], "p5-video-only", 0, "json", False),
+        ("l5-youtube-rate-true", [_P5_ROW, "--speed", "1.0"], "p5-rate-true", 1, "json", False),
+        ("l5-youtube-rate-near-one", [_P5_ROW, "--speed", "1.0"], "p5-rate-near-one", 1, "json", False),
+        ("l5-youtube-rate-missing", [_P5_ROW, "--speed", "1.0"], "p5-rate-missing", 1, "json", False),
+        ("l5-youtube-rate-drift", [_P5_ROW, "--speed", "1.0"], "p5-rate-drift", 1, "json", False),
+        ("l5-youtube-read-error", [_P5_ROW, "--speed", "1.0"], "p5-youtube-read-error", 1, "json", False),
+        ("l5-youtube-start-boundary", [_P5_ROW, "--speed", "1.0"], "p5-start-boundary", 0, "json", False),
+        ("l5-youtube-start-past-boundary", [_P5_ROW, "--speed", "1.0"], "p5-start-past", 1, "json", False),
+        ("l5-youtube-near-end", [_P5_ROW, "--speed", "1.0"], "p5-near-end", 0, "json", False),
+        ("l5-youtube-replay-near-end", [_P5_ROW, "--speed", "1.0", "--replay"], "p5-near-end", 0, "json", False),
+        ("l5-youtube-timeout", [_P5_ROW, "--speed", "1.0"], "p5-youtube-timeout", 1, "json", False),
+        ("l5-video-timeout", [_P5_ROW, "--speed", "1.0"], "p5-video-timeout", 1, "json", False),
+        ("l5-video-timeout-speed", [_P5_ROW, "--speed", "1.5"], "p5-video-timeout", 1, "json", False),
+        ("l5-video-rate-true", [_P5_ROW, "--speed", "1.0"], "p5-video-rate-true", 0, "json", False),
+        ("l5-video-rate-near-one", [_P5_ROW, "--speed", "1.0"], "p5-video-rate-near-one", 0, "json", False),
+        ("l5-video-rate-missing", [_P5_ROW, "--speed", "1.0"], "p5-video-rate-missing", 0, "json", False),
+        ("l5-video-coverage", [_P5_ROW, "--speed", "1.0"], "p5-video-coverage", 0, "json", False),
+        ("l5-video-replay-coverage", [_P5_ROW, "--speed", "1.0", "--replay"], "p5-video-coverage", 0, "json", False),
+        ("l5-video-replay-restart", [_P5_ROW, "--speed", "1.0", "--replay"], "p5-video-replay-ended", 0, "json", False),
+        (
+            "l5-video-replay-no-restart",
+            [_P5_ROW, "--speed", "1.0", "--replay"],
+            "p5-video-restart-fails",
+            1,
+            "json",
+            False,
+        ),
+        ("l5-video-callback-timing", [_P5_ROW, "--speed", "1.0"], "p5-video-callbacks", 0, "human", True),
+        ("l5-video-read-error", [_P5_ROW, "--speed", "1.0"], "p5-video-read-error", 1, "json", False),
+        ("l5-cleanup-close-after-success", [_P5_ROW, "--speed", "1.0"], "p5-close-after-success", 1, "json", False),
+        (
+            "l5-cleanup-close-cancelled-after-stall",
+            [_P5_ROW, "--speed", "1.0"],
+            "p5-stall-close-cancelled",
+            1,
+            "json",
+            False,
+        ),
+        (
+            "l5-video-cleanup-close-after-success",
+            [_P5_ROW, "--speed", "1.0"],
+            "p5-video-close-after-success",
+            1,
+            "json",
+            False,
+        ),
     ]
     cases = []
     for name, arguments, fixture, expected, mode, tty in specs:
@@ -1185,7 +1239,7 @@ def _p5_cases() -> list[Case]:
 
 def _write_p5_catalog(root: Path, fixture: str) -> None:
     second_media = "video" if fixture == "p5-mixed" else "youtube"
-    first_media = "video" if fixture in {"p5-missing-video", "p5-video-only", "p5-mixed"} else "youtube"
+    first_media = "video" if fixture in {"p5-video-only", "p5-mixed"} or _p5_is_video(fixture) else "youtube"
     if fixture == "p5-mixed":
         first_media = "youtube"
     lectures = [
@@ -1248,6 +1302,8 @@ class _P5Locator:
         return self
 
     async def count(self) -> int:
+        if "btnPreviewClose" in self.selector:
+            self.page.actions.append(["lookup", "close-button", self.page.modal_open])
         return int(await self.is_visible() or self._present())
 
     def _present(self) -> bool:
@@ -1326,7 +1382,7 @@ class _P5Page:
         self.fixture = fixture
         self.modal_open = False
         self.active_row = "row-1"
-        self.youtube_rows = {"row-1"} if fixture not in {"p5-missing-video", "p5-video-only"} else set()
+        self.youtube_rows = {"row-1"} if not _p5_is_video(fixture) else set()
         if fixture == "p5-mixed":
             self.youtube_rows = {"row-1"}
         self.states = {"row-1": "N", "row-2": "N"}
@@ -1335,6 +1391,13 @@ class _P5Page:
         self.started = False
         self.panopto_paused = True
         self.panopto_reads = 0
+        self.panopto_playing_reads = 0
+        # None omits the field, as a player without a readable rate would.
+        self.panopto_rate: object = {"p5-video-rate-true": True, "p5-video-rate-near-one": 1.0000000001}.get(
+            fixture, 1.0
+        )
+        if fixture == "p5-video-rate-missing":
+            self.panopto_rate = None
         self.authenticated = False
         self.sso_submits = 0
         self.evaluations: list[str] = []
@@ -1355,6 +1418,10 @@ class _P5Page:
             "p5-callback-raises",
             "p5-interrupt",
             "p5-mixed",
+            "p5-start-boundary",
+            "p5-start-past",
+            "p5-near-end",
+            "p5-youtube-timeout",
         }
         return needs_click and not self.yt_clicked and self.active_row in self.youtube_rows
 
@@ -1398,8 +1465,14 @@ class _P5Page:
             self.actions.append(["modal", "close", self.active_row])
             self.modal_open = False
             self.states[self.active_row] = "F"
-            if self.fixture == "p5-close-fails":
+            if self.fixture == "p5-stall-close-cancelled":
+                raise asyncio.CancelledError
+            if self.fixture in _P5_CLOSE_FAILS:
                 raise RuntimeError("synthetic close failure")
+            return
+        if "data-speed" in selector:
+            self.panopto_rate = float(re.search(r'data-speed="([^"]+)"', selector).group(1))
+            self.actions.append(["click", "panopto-speed", selector])
             return
         if selector == ".ytmCuedOverlayPlayButton":
             self.yt_clicked = True
@@ -1430,16 +1503,25 @@ class _P5Page:
         raise AssertionError("unexpected page evaluation")
 
     def youtube_status(self) -> dict:
-        if self.fixture == "p5-native-rate":
+        if self.fixture in _P5_RATES:
+            status = {"exists": True, "currentTime": 0.0, "duration": 15.0, "paused": True, "ended": False}
+            rate = {"p5-native-rate": 1.25, "p5-rate-true": True, "p5-rate-near-one": 1.0000000001}.get(self.fixture)
+            if rate is not None:
+                status["playbackRate"] = rate
+            return status
+        if self.fixture in {"p5-rate-drift", "p5-youtube-read-error"}:
+            self.yt_reads += 1
+            if self.fixture == "p5-youtube-read-error" and self.yt_reads >= 4:
+                raise RuntimeError("synthetic read failure")
             return {
                 "exists": True,
-                "currentTime": 0.0,
+                "currentTime": [0.0, 5.0, 10.0, 11.0][min(self.yt_reads, 4) - 1],
                 "duration": 15.0,
-                "paused": True,
+                "paused": False,
                 "ended": False,
-                "playbackRate": 1.25,
+                "playbackRate": 1.25 if self.fixture == "p5-rate-drift" and self.yt_reads >= 4 else 1.0,
             }
-        if self.fixture == "p5-advancing" or self.fixture in _P5_STALL:
+        if self.fixture in _P5_ADVANCING or self.fixture in _P5_STALL:
             self.yt_reads += 1
             if self.fixture in _P5_STALL and self.yt_reads >= 3:
                 return {
@@ -1451,7 +1533,7 @@ class _P5Page:
                     "playbackRate": 1.0,
                 }
             current = 0.0 if self.yt_reads == 1 else float(self.yt_reads) * 5
-            ended = self.fixture == "p5-advancing" and current >= 14
+            ended = self.fixture in _P5_ADVANCING and current >= 14
             if ended:
                 self.states[self.active_row] = "F"
             return {
@@ -1465,7 +1547,7 @@ class _P5Page:
         if not self.yt_clicked:
             return {
                 "exists": True,
-                "currentTime": 0.0,
+                "currentTime": {"p5-start-boundary": 0.05, "p5-start-past": 0.0500001}.get(self.fixture, 0.0),
                 "duration": 90.0 if self.fixture in _P5_LONG else 15.0,
                 "paused": True,
                 "ended": False,
@@ -1483,6 +1565,29 @@ class _P5Page:
                 "ended": False,
                 "playbackRate": 1.0,
             }
+        if self.fixture == "p5-youtube-timeout":
+            self.yt_reads += 1
+            return {
+                "exists": True,
+                "currentTime": float(self.yt_reads),
+                "duration": 600.0,
+                "paused": False,
+                "ended": False,
+                "playbackRate": 1.0,
+            }
+        if self.fixture == "p5-near-end":
+            self.yt_reads += 1
+            current = [14.5, 14.6, 15.0][min(self.yt_reads, 3) - 1]
+            if current >= 15.0:
+                self.states[self.active_row] = "F"
+            return {
+                "exists": True,
+                "currentTime": current,
+                "duration": 15.0,
+                "paused": False,
+                "ended": current >= 15.0,
+                "playbackRate": 1.0,
+            }
         self.yt_reads += 1
         duration = 90.0 if self.fixture in _P5_LONG else 15.0
         current = min(duration, (30.0 if self.fixture in _P5_LONG else 15.0) * self.yt_reads)
@@ -1498,21 +1603,54 @@ class _P5Page:
             "playbackRate": 1.0,
         }
 
+    def _panopto_point(self, current: float, duration: float, *, ended: bool, paused: bool) -> dict:
+        status = {
+            "exists": self.video_ready,
+            "currentTime": current,
+            "duration": duration,
+            "paused": paused,
+            "ended": ended,
+            "playedUntil": current,
+            "playedCoverage": current,
+        }
+        if self.panopto_rate is not None:
+            status["playbackRate"] = self.panopto_rate
+        return status
+
+    def _panopto_series(self) -> dict:
+        """Coverage 7.9 then 8.0 sits on the replay tolerance edge for a 10 s video."""
+        if self.panopto_paused:
+            ended = self.fixture in {"p5-video-replay-ended", "p5-video-restart-fails"}
+            return self._panopto_point(10.0 if ended else 0.0, 10.0, ended=ended, paused=not ended)
+        self.panopto_playing_reads += 1
+        reads = self.panopto_playing_reads
+        if self.fixture == "p5-video-restart-fails":
+            return self._panopto_point(10.0, 10.0, ended=True, paused=False)
+        if self.fixture == "p5-video-timeout":
+            return self._panopto_point(reads * 0.6, 2000.0, ended=False, paused=False)
+        if self.fixture == "p5-video-callbacks":
+            if reads >= 40:
+                self.states[self.active_row] = "F"
+            return self._panopto_point(float(reads), 40.0, ended=False, paused=False)
+        if self.fixture == "p5-video-read-error" and reads >= 3:
+            raise RuntimeError("synthetic read failure")
+        current = [3.0, 6.0, 7.9, 8.0, 10.0][min(reads, 5) - 1] if self.fixture in _P5_COVERAGE else reads * 3.0
+        if current >= 8.0:
+            self.states[self.active_row] = "F"
+        return self._panopto_point(current, 10.0, ended=False, paused=False)
+
     def panopto_status(self) -> dict:
         self.panopto_reads += 1
+        if self.fixture in _P5_COVERAGE or self.fixture in {
+            "p5-video-callbacks",
+            "p5-video-read-error",
+            "p5-video-timeout",
+        }:
+            return self._panopto_series()
         ended = not self.panopto_paused and self.panopto_reads >= 2
         if ended:
             self.states[self.active_row] = "F"
-        return {
-            "exists": self.video_ready,
-            "currentTime": 10.0 if ended else 0.0,
-            "duration": 10.0,
-            "paused": self.panopto_paused,
-            "ended": ended,
-            "playedUntil": 10.0 if ended else 0.0,
-            "playedCoverage": 10.0 if ended else 0.0,
-            "playbackRate": 1.0,
-        }
+        return self._panopto_point(10.0 if ended else 0.0, 10.0, ended=ended, paused=self.panopto_paused)
 
 
 def _install_p5_fakes(stack: ExitStack, actions: list, fixture: str) -> None:
@@ -1522,7 +1660,8 @@ def _install_p5_fakes(stack: ExitStack, actions: list, fixture: str) -> None:
     from campusctl.wait_clock import use_clock
 
     page = _P5Page(actions, fixture)
-    stack.enter_context(use_clock(_P5Clock(actions)))
+    clock = _P5Clock(actions)
+    stack.enter_context(use_clock(clock))
 
     @asynccontextmanager
     async def fake_open_session(*args, **kwargs):
@@ -1576,14 +1715,23 @@ def _install_p5_fakes(stack: ExitStack, actions: list, fixture: str) -> None:
 
     sys.stderr = _DiagnosticStderr()
 
-    if fixture in {"p5-callbacks", "p5-callback-raises"}:
+    if fixture in {"p5-callbacks", "p5-callback-raises", "p5-video-callbacks"}:
         real_progress = lectures_module._progress_output
 
         def wrapped_progress():
             callback, finish = real_progress()
 
             def progress(event: dict) -> None:
-                actions.append(["callback", event.get("type"), event.get("entity_id"), event.get("position_seconds")])
+                actions.append(
+                    [
+                        "callback",
+                        event.get("type"),
+                        event.get("entity_id"),
+                        event.get("position_seconds"),
+                        event.get("duration_seconds"),
+                        clock.timestamp,
+                    ]
+                )
                 if fixture == "p5-callback-raises" and event.get("type") == "position":
                     raise RuntimeError("synthetic progress failure")
                 callback(event)
