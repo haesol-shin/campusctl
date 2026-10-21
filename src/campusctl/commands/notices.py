@@ -4,19 +4,20 @@ from __future__ import annotations
 
 import argparse
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from typing import Any
 
 from campusctl.catalog_view import cache_metadata
 from campusctl.cli_args import EnvelopeArgumentParser
 from campusctl.command_types import CommandBindings, CommandContext, CommandResult, command_result
+from campusctl.commands.cache_warnings import cache_warning_lines
 from campusctl.commands.course_inputs import list_refresh_scope, list_with_refresh
-from campusctl.commands.fetch_queue import FetchDomain, dispatch_fetch, fetch_single, run_fetch_queue
+from campusctl.commands.fetch_queue import FetchDomain, FetchItem, dispatch_fetch, fetch_single, run_fetch_queue
 from campusctl.domain_catalog import domain_catalog_path, read_domain_catalog
 from campusctl.envelope import CampusError, UsageError
 from campusctl.paths import data_dir
-from campusctl.text_layout import _cells
-from campusctl.text_layout import _wrap as wrap_cells
+from campusctl.text_layout import _wrap_indented
 
 _PUBLIC_ROW_KEYS = frozenset(
     {
@@ -145,7 +146,7 @@ async def _fetch_notice_queue(
     rows: list[dict[str, Any]],
     *,
     headless: bool,
-) -> tuple[list[dict[str, Any]], list[CampusError] | None]:
+) -> tuple[list[FetchItem], list[CampusError] | None]:
     return await run_fetch_queue(config, root, rows, headless=headless, domain=_DOMAIN, capture=_capture)
 
 
@@ -155,11 +156,6 @@ async def sync(
     from campusctl.providers.cnu.notices import sync_notices
 
     return await sync_notices(config, root, course_id, headless=headless)
-
-
-def _wrap(message: str, width: int, *, indent: str = "") -> list[str]:
-    available = max(1, width - _cells(indent))
-    return [f"{indent}{line}" for line in wrap_cells(message, available)]
 
 
 def _stamp(value: object) -> str:
@@ -172,19 +168,18 @@ def _stamp(value: object) -> str:
     return parsed.strftime("%Y-%m-%d %H:%M UTC") if parsed.tzinfo else parsed.strftime("%Y-%m-%d %H:%M")
 
 
-def _warnings(state: object, failed: object, width: int) -> list[str]:
-    warnings: list[str] = []
-    if state == "unknown":
-        warnings.extend(_wrap("Warning: Enrollment unknown; all notices may be stale.", width))
-    if isinstance(failed, list):
-        for course in failed:
-            if not isinstance(course, dict):
-                continue
-            label = course.get("label") or course.get("course_id") or "Unknown course"
-            course_id = course.get("course_id") or "unknown"
-            reason = course.get("reason") or "course-sync-failed"
-            warnings.extend(_wrap(f"Warning: Notice cache stale for {label} ({course_id}): {reason}.", width))
-    return warnings
+def _stale_course(course: dict[str, Any]) -> str:
+    label = course.get("label") or course.get("course_id") or "Unknown course"
+    course_id = course.get("course_id") or "unknown"
+    reason = course.get("reason") or "course-sync-failed"
+    return f"Warning: Notice cache stale for {label} ({course_id}): {reason}."
+
+
+_warnings = partial(
+    cache_warning_lines,
+    unknown_enrollment="Warning: Enrollment unknown; all notices may be stale.",
+    stale_course=_stale_course,
+)
 
 
 def _package_lines(package: dict[str, Any]) -> list[str]:
@@ -233,7 +228,7 @@ def render(command: str, result: dict[str, Any], width: int) -> list[str]:
             return []
         courses = result.get("courses", 0)
         notices = result.get("notices", 0)
-        lines = _wrap(
+        lines = _wrap_indented(
             f"Synced {courses} {'course' if courses == 1 else 'courses'}, "
             f"{notices} {'notice' if notices == 1 else 'notices'}.",
             width,
@@ -248,12 +243,12 @@ def render(command: str, result: dict[str, Any], width: int) -> list[str]:
     cache = result.get("cache")
     cache = cache if isinstance(cache, dict) else {}
     count = len(rows)
-    lines = _wrap(
+    lines = _wrap_indented(
         f"{count} {'notice' if count == 1 else 'notices'} (updated {_stamp(cache.get('generated_at'))})", width
     )
     lines.extend(_warnings(cache.get("enrollment_state"), cache.get("failed_courses"), width))
     if not rows:
-        lines.extend(_wrap("No cached notices match this selection.", width))
+        lines.extend(_wrap_indented("No cached notices match this selection.", width))
         return lines
     last_course: object = None
     for row in rows:
@@ -261,12 +256,12 @@ def render(command: str, result: dict[str, Any], width: int) -> list[str]:
         course_id = course.get("id", "unknown")
         if course_id != last_course:
             lines.append("")
-            lines.extend(_wrap(f"Course: {course.get('label', course_id)} ({course_id})", width))
+            lines.extend(_wrap_indented(f"Course: {course.get('label', course_id)} ({course_id})", width))
             last_course = course_id
         unread = " (unread)" if row.get("is_unread") is True else " (read)" if row.get("is_unread") is False else ""
         status = f" — {row['status']}" if row.get("status") else ""
         lines.extend(
-            _wrap(
+            _wrap_indented(
                 f"{row.get('title') or '(untitled notice)'} — {row.get('date') or 'unknown'}{status}{unread}",
                 width,
                 indent="  ",
@@ -276,7 +271,7 @@ def render(command: str, result: dict[str, Any], width: int) -> list[str]:
         presence = "yes" if attachment is True else "no" if attachment is False else "unknown"
         views = row.get("view_count")
         lines.extend(
-            _wrap(
+            _wrap_indented(
                 f"Author: {row.get('author') or 'unknown'} · Views: {views if type(views) is int else 'unknown'}"
                 f" · Attachments: {presence}",
                 width,

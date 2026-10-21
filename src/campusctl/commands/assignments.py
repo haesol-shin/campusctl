@@ -10,7 +10,14 @@ from typing import Any
 from campusctl.catalog_view import cache_metadata
 from campusctl.command_types import CommandBindings, CommandContext, CommandResult, command_result
 from campusctl.commands.course_inputs import list_refresh_scope, list_with_refresh
-from campusctl.commands.fetch_queue import Capture, FetchDomain, dispatch_fetch, fetch_single, run_fetch_queue
+from campusctl.commands.fetch_queue import (
+    Capture,
+    FetchDomain,
+    FetchItem,
+    dispatch_fetch,
+    fetch_single,
+    run_fetch_queue,
+)
 from campusctl.domain_catalog import domain_catalog_path, read_domain_catalog
 from campusctl.envelope import CampusError, UsageError
 from campusctl.paths import data_dir
@@ -114,7 +121,7 @@ async def _fetch_assignment_queue(
     rows: list[dict[str, Any]],
     *,
     headless: bool,
-) -> tuple[list[dict[str, Any]], list[CampusError] | None]:
+) -> tuple[list[FetchItem], list[CampusError] | None]:
     return await run_fetch_queue(config, root, rows, headless=headless, domain=_DOMAIN, capture=_capture(config))
 
 

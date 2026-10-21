@@ -101,6 +101,11 @@ def _wrap(value: str, width: int) -> list[str]:
     return lines
 
 
+def _wrap_indented(message: str, width: int, *, indent: str = "") -> list[str]:
+    """Wrap to the width left after `indent` (at least one cell) and prefix every line with it."""
+    return [f"{indent}{line}" for line in _wrap(message, max(1, width - _cells(indent)))]
+
+
 def _pad(value: str, width: int) -> str:
     return value + " " * max(0, width - _cells(value))
 

@@ -9,7 +9,7 @@ from typing import Any
 from campusctl.browser import profile_context
 from campusctl.browser_options import preflight_browser_mode
 from campusctl.catalog_view import DOMAINS
-from campusctl.envelope import CampusError, error_item
+from campusctl.envelope import CampusError, error_item, resolve_status
 from campusctl.providers.cnu.sync_all import DomainOutcome, sync_all
 
 
@@ -58,11 +58,8 @@ def run_sync(
             outcome = outcomes[domain]
             flattened.extend(outcome.errors)
             committed |= bool(outcome.result)
-            status = outcome.status or (
-                "partial" if outcome.result and outcome.errors else outcome.errors[0].status if outcome.errors else "ok"
-            )
             visible[domain] = {
-                "status": status,
+                "status": outcome.status or resolve_status(bool(outcome.result), outcome.errors),
                 "result": outcome.result,
                 "errors": [error_item(error) for error in outcome.errors],
             }

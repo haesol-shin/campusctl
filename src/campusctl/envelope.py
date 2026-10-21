@@ -2,13 +2,28 @@ from __future__ import annotations
 
 import json
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from enum import StrEnum
 from typing import Any, TextIO
 
 from campusctl import __version__
 
-EXIT_CODES = {"ok": 0, "partial": 1, "error": 1, "user-action": 2, "busy": 75}
+
+class Status(StrEnum):
+    """Envelope statuses. Members equal their strings, so JSON and plain-string callers are unchanged."""
+
+    OK = "ok"
+    PARTIAL = "partial"
+    ERROR = "error"
+    USER_ACTION = "user-action"
+    BUSY = "busy"
+
+
+EXIT_CODES = {Status.OK: 0, Status.PARTIAL: 1, Status.ERROR: 1, Status.USER_ACTION: 2, Status.BUSY: 75}
+# What one failure can carry; ok and partial describe a whole result.
+FAILURE_STATUSES = frozenset({Status.USER_ACTION, Status.ERROR, Status.BUSY})
 
 
 @dataclass(eq=False)
@@ -16,10 +31,10 @@ class CampusError(Exception):
     code: str
     message: str
     remediation: str | None = None
-    status: str = "user-action"
+    status: str = Status.USER_ACTION
 
     def __post_init__(self) -> None:
-        if self.status not in {"user-action", "error", "busy"}:
+        if self.status not in FAILURE_STATUSES:
             raise ValueError("Invalid CampusError status")
         Exception.__init__(self, self.message)
 
@@ -29,8 +44,15 @@ class UsageError(CampusError):
         super().__init__("usage-error", message, "Run 'campusctl --help' for usage.", "user-action")
 
 
+def resolve_status(committed: bool, errors: Sequence[CampusError]) -> str:
+    """Status of a workflow result: partial when it committed something despite errors, else the first error's."""
+    if not errors:
+        return Status.OK
+    return Status.PARTIAL if committed else errors[0].status
+
+
 def make_envelope(
-    *, status: str = "ok", result: Any = None, errors: list[dict[str, Any]] | None = None
+    *, status: str = Status.OK, result: Any = None, errors: list[dict[str, Any]] | None = None
 ) -> dict[str, Any]:
     return {
         "schema_version": 1,
@@ -81,7 +103,7 @@ def emit(
         envelope_status = error.status
         errors = [error_item(error)]
     else:
-        envelope_status = status or "ok"
+        envelope_status = status or Status.OK
         errors = []
     envelope = make_envelope(status=envelope_status, result=result, errors=errors)
     write_json(envelope, stream=stream)
