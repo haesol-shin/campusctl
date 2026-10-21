@@ -1,8 +1,11 @@
 """Small synthetic starting corpus; later neutral changes add their affected paths here."""
 
+import importlib
 import json
+import re
 import subprocess
-from contextlib import ExitStack, contextmanager
+import sys
+from contextlib import ExitStack, asynccontextmanager, contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import NotRequired, TypedDict
@@ -1140,6 +1143,460 @@ def _p4b_cases() -> list[Case]:
     return result
 
 
+_P5_ROW = "cnu_lecture:course.invalid:row-1"
+_P5_ROW_2 = "cnu_lecture:course.invalid:row-2"
+_P5_LONG = {"p5-callbacks", "p5-callback-raises"}
+_P5_STALL = {"p5-stall", "p5-close-fails"}
+
+
+def _p5_cases() -> list[Case]:
+    """Real play_lectures paths. Names match the P5 equivalence list."""
+    specs = [
+        ("p5-youtube-blocked-click", [_P5_ROW, "--speed", "1.0"], "p5-blocked", 0, "json", False),
+        ("p5-youtube-advancing-no-click", [_P5_ROW, "--speed", "1.0"], "p5-advancing", 0, "json", False),
+        ("p5-youtube-queue-speed", [_P5_ROW, "--speed", "1.5", "--replay"], "p5-queue-speed", 1, "json", False),
+        ("p5-youtube-native-rate", [_P5_ROW, "--speed", "1.0"], "p5-native-rate", 1, "json", False),
+        ("p5-youtube-missing-frame", [_P5_ROW, "--speed", "1.0"], "p5-missing-frame", 1, "json", False),
+        ("p5-video-missing", [_P5_ROW, "--speed", "1.0"], "p5-missing-video", 1, "json", False),
+        ("p5-youtube-stall", [_P5_ROW, "--speed", "1.0"], "p5-stall", 1, "json", False),
+        ("p5-youtube-end-grace", [_P5_ROW, "--speed", "1.0"], "p5-end", 0, "json", False),
+        ("p5-callback-timing", [_P5_ROW, "--speed", "1.0"], "p5-callbacks", 0, "human", True),
+        ("p5-callback-raises", [_P5_ROW, "--speed", "1.0"], "p5-callback-raises", 0, "human", True),
+        ("p5-cleanup-close-fails", [_P5_ROW, "--speed", "1.0"], "p5-close-fails", 1, "json", False),
+        ("p5-cleanup-interrupt", [_P5_ROW, "--speed", "1.0"], "p5-interrupt", 130, "human", False),
+        ("p5-mixed-queue", [_P5_ROW, _P5_ROW_2, "--speed", "1.0"], "p5-mixed", 0, "json", False),
+        ("p5-video-only-sso", [_P5_ROW, "--speed", "1.0"], "p5-video-only", 0, "json", False),
+    ]
+    cases = []
+    for name, arguments, fixture, expected, mode, tty in specs:
+        case: Case = {
+            "name": name,
+            "argv": ["lectures", "play", *arguments],
+            "fixture": fixture,
+            "width": 80,
+            "env": {"CAMPUSCTL_OUTPUT": mode},
+            "expected": expected,
+        }
+        if tty:
+            case["stdout_tty"] = True
+        cases.append(case)
+    return cases
+
+
+def _write_p5_catalog(root: Path, fixture: str) -> None:
+    second_media = "video" if fixture == "p5-mixed" else "youtube"
+    first_media = "video" if fixture in {"p5-missing-video", "p5-video-only", "p5-mixed"} else "youtube"
+    if fixture == "p5-mixed":
+        first_media = "youtube"
+    lectures = [
+        _lecture_row(_P5_ROW, "Synthetic lecture", "course.invalid", "Synthetic course"),
+    ]
+    lectures[0]["media"] = first_media
+    if fixture == "p5-mixed":
+        lectures.append(_lecture_row(_P5_ROW_2, "Synthetic video", "course.invalid", "Synthetic course"))
+        lectures[1]["media"] = second_media
+    catalog = root / "data" / "catalog" / "lectures.json"
+    catalog.parent.mkdir(parents=True, exist_ok=True)
+    catalog.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "generated_at": "2026-01-02T03:04:05Z",
+                "generation_id": "synthetic-p5",
+                "courses": [{"course_id": "course.invalid", "label": "Synthetic course", "class_no": None}],
+                "lectures": lectures,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+class _P5Clock:
+    def __init__(self, actions: list) -> None:
+        self.timestamp = 0.0
+        self.actions = actions
+
+    def now(self) -> float:
+        return self.timestamp
+
+    def monotonic(self) -> float:
+        return self.timestamp
+
+    async def sleep(self, seconds: float) -> None:
+        self.actions.append(["sleep", seconds])
+        self.timestamp += seconds
+
+    def sleep_sync(self, seconds: float) -> None:
+        self.timestamp += seconds
+
+    async def wait_for(self, awaitable, seconds: float):
+        del seconds
+        return await awaitable
+
+
+class _P5Locator:
+    def __init__(self, page: "_P5Page", selector: str) -> None:
+        self.page = page
+        self.selector = selector
+
+    @property
+    def first(self) -> "_P5Locator":
+        return self
+
+    def nth(self, index: int) -> "_P5Locator":
+        del index
+        return self
+
+    async def count(self) -> int:
+        return int(await self.is_visible() or self._present())
+
+    def _present(self) -> bool:
+        if "btnPreviewClose" in self.selector or "btn_popClose" in self.selector:
+            return self.page.modal_open
+        if self.selector == ".ytmCuedOverlayPlayButton":
+            return self.page.overlay_present
+        return True
+
+    async def get_attribute(self, name: str) -> str | None:
+        if name == "data-weekno":
+            return "1"
+        if name == "data-status":
+            return "closed"
+        return None
+
+    async def is_visible(self) -> bool:
+        if "btnPreviewClose" in self.selector or "btn_popClose" in self.selector:
+            return self.page.modal_open
+        if self.selector == ".ytmCuedOverlayPlayButton":
+            return self.page.overlay_present
+        if "play" in self.selector.lower() and "titleDetail" not in self.selector:
+            return self.page.panopto_paused and self.page.video_ready
+        return True
+
+    async def scroll_into_view_if_needed(self, **kwargs) -> None:
+        del kwargs
+
+    async def click(self, **kwargs) -> None:
+        del kwargs
+        self.page._click(self.selector)
+
+
+class _P5Frame:
+    def __init__(self, page: "_P5Page", kind: str) -> None:
+        self.page = page
+        self.kind = kind
+        self.parent_frame = object()
+
+    @property
+    def url(self) -> str:
+        if self.kind == "youtube":
+            return "https://www.youtube-nocookie.com/embed/synthetic"
+        return "https://panopto.example/Embed.aspx"
+
+    def locator(self, selector: str) -> _P5Locator:
+        return _P5Locator(self.page, selector)
+
+    async def query_selector(self, selector: str):
+        if selector == "video" and self.page.video_ready:
+            return object()
+        return None
+
+    async def wait_for_selector(self, selector: str, **kwargs) -> None:
+        del selector, kwargs
+        if not self.page.video_ready:
+            raise TimeoutError("synthetic video missing")
+
+    async def evaluate(self, script: str, *args):
+        self.page.evaluations.append(script)
+        if "campusctl-read-youtube-video-state" in script:
+            return self.page.youtube_status()
+        if "campusctl-classify-player-page" in script:
+            return {
+                "page_state": "ready" if self.page.video_ready else "unknown",
+                "video_count": int(self.page.video_ready),
+            }
+        if "campusctl-read-video-state" in script:
+            return self.page.panopto_status()
+        raise AssertionError("unexpected frame evaluation")
+
+
+class _P5Page:
+    def __init__(self, actions: list, fixture: str) -> None:
+        self.actions = actions
+        self.fixture = fixture
+        self.modal_open = False
+        self.active_row = "row-1"
+        self.youtube_rows = {"row-1"} if fixture not in {"p5-missing-video", "p5-video-only"} else set()
+        if fixture == "p5-mixed":
+            self.youtube_rows = {"row-1"}
+        self.states = {"row-1": "N", "row-2": "N"}
+        self.yt_reads = 0
+        self.yt_clicked = False
+        self.started = False
+        self.panopto_paused = True
+        self.panopto_reads = 0
+        self.authenticated = False
+        self.sso_submits = 0
+        self.evaluations: list[str] = []
+        self.url = "https://lms.invalid/course"
+        self.context = self
+        self.youtube_frame = _P5Frame(self, "youtube")
+        self.panopto_frame = _P5Frame(self, "panopto")
+
+    @property
+    def video_ready(self) -> bool:
+        return self.fixture != "p5-missing-video"
+
+    @property
+    def overlay_present(self) -> bool:
+        needs_click = self.fixture in {
+            "p5-blocked",
+            "p5-end",
+            "p5-callbacks",
+            "p5-callback-raises",
+            "p5-interrupt",
+            "p5-mixed",
+        }
+        return needs_click and not self.yt_clicked and self.active_row in self.youtube_rows
+
+    @property
+    def frames(self) -> list[_P5Frame]:
+        if not self.modal_open or self.active_row not in self.youtube_rows or self.fixture == "p5-missing-frame":
+            return []
+        return [self.youtube_frame]
+
+    def locator(self, selector: str) -> _P5Locator:
+        return _P5Locator(self, selector)
+
+    async def wait_for_selector(self, selector: str, **kwargs) -> None:
+        del selector, kwargs
+
+    async def click(self, selector: str, **kwargs) -> None:
+        del kwargs
+        self.actions.append(["click", "course-room"])
+
+    async def query_selector(self, selector: str):
+        if selector == "iframe#previewFrame" and self.modal_open and self.active_row not in self.youtube_rows:
+            return self
+
+    async def content_frame(self):
+        return self.panopto_frame
+
+    async def cookies(self) -> list[dict[str, str]]:
+        if not self.authenticated:
+            return []
+        return [{"name": ".ASPXAUTH", "domain": "panopto.example"}]
+
+    def _click(self, selector: str) -> None:
+        row = re.search(r'\[id="([^"]+)"\]', selector)
+        if row:
+            self.active_row = row.group(1)
+        if "titleDetailContents" in selector:
+            self.modal_open = True
+            self.actions.append(["modal", "open", self.active_row])
+            return
+        if "btnPreviewClose" in selector or "btn_popClose" in selector:
+            self.actions.append(["modal", "close", self.active_row])
+            self.modal_open = False
+            self.states[self.active_row] = "F"
+            if self.fixture == "p5-close-fails":
+                raise RuntimeError("synthetic close failure")
+            return
+        if selector == ".ytmCuedOverlayPlayButton":
+            self.yt_clicked = True
+            self.actions.append(["click", "youtube-start"])
+            return
+        if "play" in selector.lower():
+            self.panopto_paused = False
+            self.actions.append(["click", "panopto-play"])
+
+    async def evaluate(self, script: str, *args):
+        self.evaluations.append(script)
+        if "campusctl-read-lecture-row" in script:
+            row_id = args[0] if args else self.active_row
+            return {
+                "state": self.states.get(row_id, "N"),
+                "moduletype": "LV",
+                "openyn": "Y",
+                "progress_text": None,
+                "attendance_counted": None,
+            }
+        if "campusctl-read-collapse-toggles" in script:
+            return []
+        if "panoptoSamlLogin_submit" in script:
+            self.authenticated = True
+            self.sso_submits += 1
+            self.actions.append(["sso", "submit"])
+            return True
+        raise AssertionError("unexpected page evaluation")
+
+    def youtube_status(self) -> dict:
+        if self.fixture == "p5-native-rate":
+            return {
+                "exists": True,
+                "currentTime": 0.0,
+                "duration": 15.0,
+                "paused": True,
+                "ended": False,
+                "playbackRate": 1.25,
+            }
+        if self.fixture == "p5-advancing" or self.fixture in _P5_STALL:
+            self.yt_reads += 1
+            if self.fixture in _P5_STALL and self.yt_reads >= 3:
+                return {
+                    "exists": True,
+                    "currentTime": 1.0,
+                    "duration": 15.0,
+                    "paused": True,
+                    "ended": False,
+                    "playbackRate": 1.0,
+                }
+            current = 0.0 if self.yt_reads == 1 else float(self.yt_reads) * 5
+            ended = self.fixture == "p5-advancing" and current >= 14
+            if ended:
+                self.states[self.active_row] = "F"
+            return {
+                "exists": True,
+                "currentTime": current,
+                "duration": 15.0,
+                "paused": False,
+                "ended": ended,
+                "playbackRate": 1.0,
+            }
+        if not self.yt_clicked:
+            return {
+                "exists": True,
+                "currentTime": 0.0,
+                "duration": 90.0 if self.fixture in _P5_LONG else 15.0,
+                "paused": True,
+                "ended": False,
+                "playbackRate": 1.0,
+            }
+        if self.fixture == "p5-interrupt":
+            self.yt_reads += 1
+            if self.yt_reads >= 2:
+                raise KeyboardInterrupt
+            return {
+                "exists": True,
+                "currentTime": 1.0,
+                "duration": 90.0,
+                "paused": False,
+                "ended": False,
+                "playbackRate": 1.0,
+            }
+        self.yt_reads += 1
+        duration = 90.0 if self.fixture in _P5_LONG else 15.0
+        current = min(duration, (30.0 if self.fixture in _P5_LONG else 15.0) * self.yt_reads)
+        ended = current >= duration - 1
+        if ended:
+            self.states[self.active_row] = "F"
+        return {
+            "exists": True,
+            "currentTime": current,
+            "duration": duration,
+            "paused": False,
+            "ended": ended,
+            "playbackRate": 1.0,
+        }
+
+    def panopto_status(self) -> dict:
+        self.panopto_reads += 1
+        ended = not self.panopto_paused and self.panopto_reads >= 2
+        if ended:
+            self.states[self.active_row] = "F"
+        return {
+            "exists": self.video_ready,
+            "currentTime": 10.0 if ended else 0.0,
+            "duration": 10.0,
+            "paused": self.panopto_paused,
+            "ended": ended,
+            "playedUntil": 10.0 if ended else 0.0,
+            "playedCoverage": 10.0 if ended else 0.0,
+            "playbackRate": 1.0,
+        }
+
+
+def _install_p5_fakes(stack: ExitStack, actions: list, fixture: str) -> None:
+    import campusctl.browser as browser_module
+    import campusctl.commands.lectures as lectures_module
+    from campusctl.providers.cnu import player as player_module
+    from campusctl.wait_clock import use_clock
+
+    page = _P5Page(actions, fixture)
+    stack.enter_context(use_clock(_P5Clock(actions)))
+
+    @asynccontextmanager
+    async def fake_open_session(*args, **kwargs):
+        del args, kwargs
+        actions.append(["session", "open"])
+        try:
+            yield SimpleNamespace(page=page)
+        finally:
+            actions.append(["session", "close"])
+
+    async def fake_login(*args, **kwargs) -> None:
+        del args, kwargs
+        actions.append(["auth", "login"])
+
+    stack.enter_context(patch.object(browser_module, "open_session", fake_open_session))
+    stack.enter_context(patch.object(player_module, "ensure_logged_in", fake_login))
+    try:
+        media = importlib.import_module("campusctl.providers.cnu.media")
+    except ImportError:
+        media = None
+    if media is not None and hasattr(media, "ensure_logged_in"):
+        stack.enter_context(patch.object(media, "ensure_logged_in", fake_login))
+
+    real_write = player_module.write_catalog
+
+    def traced_write(catalog, path=None):
+        changed = [
+            [item.get("entity_id"), item.get("completion")]
+            for item in catalog.get("lectures", [])
+            if isinstance(item, dict)
+        ]
+        actions.append(["catalog", "write", changed])
+        return real_write(catalog, path)
+
+    stack.enter_context(patch.object(player_module, "write_catalog", traced_write))
+
+    original_stderr = sys.stderr
+
+    class _DiagnosticStderr:
+        def write(self, text: str) -> int:
+            if "campusctl-play-diagnostic:" in text:
+                actions.append(["diagnostic", text.strip()])
+            return original_stderr.write(text)
+
+        def flush(self) -> None:
+            original_stderr.flush()
+
+        def isatty(self) -> bool:
+            return False
+
+    sys.stderr = _DiagnosticStderr()
+
+    if fixture in {"p5-callbacks", "p5-callback-raises"}:
+        real_progress = lectures_module._progress_output
+
+        def wrapped_progress():
+            callback, finish = real_progress()
+
+            def progress(event: dict) -> None:
+                actions.append(["callback", event.get("type"), event.get("entity_id"), event.get("position_seconds")])
+                if fixture == "p5-callback-raises" and event.get("type") == "position":
+                    raise RuntimeError("synthetic progress failure")
+                callback(event)
+
+            def finish_progress() -> None:
+                actions.append(["callback", "finish"])
+                finish()
+
+            return progress, finish_progress
+
+        stack.enter_context(patch.object(lectures_module, "_progress_output", wrapped_progress))
+
+
 def cases() -> list[Case]:
     help_paths = [
         [],
@@ -1272,7 +1729,7 @@ def cases() -> list[Case]:
                 "expected": expected,
             }
         )
-    return [*result, *_command_owner_cases(), *_fetch_cases(), *_p4b_cases(), *_l4_cases()]
+    return [*result, *_command_owner_cases(), *_fetch_cases(), *_p4b_cases(), *_l4_cases(), *_p5_cases()]
 
 
 @contextmanager
@@ -1284,7 +1741,7 @@ def prepare(root: Path, case: Case, actions: list):
     speed = fixture if fixture in {"1", "1.0", "1.25", "1.5", "1.1", "2.0", "true", "false", '"1.25"'} else "1.0"
     executable = root / "browser"
     executable.write_bytes(b"synthetic browser marker")
-    headed = fixture.startswith("progress-")
+    headed = fixture.startswith("progress-") or fixture.startswith("p5-")
     if fixture.startswith("p3-"):
         _write_p3_files(root, fixture, executable)
     elif fixture == "p4b-unreadable":
@@ -1293,6 +1750,15 @@ def prepare(root: Path, case: Case, actions: list):
         catalog.write_text("not-json", encoding="utf-8")
     elif fixture in {"p4b-empty", "p4b-warnings"}:
         _write_p4b_catalogs(root, fixture)
+    elif fixture.startswith("p5-"):
+        (root / "config" / "config.toml").write_text(
+            'provider = "cnu"\n[credentials]\nprovider = "command"\n'
+            f"command = [{json.dumps(str(root / 'synthetic-helper'))}]\n"
+            f"[browser]\nheadless = false\nexecutable_path = {json.dumps(str(executable))}\n"
+            "[playback]\ndefault_speed = 1.0\n",
+            encoding="utf-8",
+        )
+        _write_p5_catalog(root, fixture)
     else:
         (root / "config" / "config.toml").write_text(
             'provider = "cnu"\n[credentials]\nprovider = "command"\n'
@@ -1359,6 +1825,8 @@ def prepare(root: Path, case: Case, actions: list):
                 stack.enter_context(patch.object(subprocess, "Popen", fail_helper))
         elif fixture.startswith("progress-"):
             _install_progress_fakes(stack, actions, fixture)
+        elif fixture.startswith("p5-"):
+            _install_p5_fakes(stack, actions, fixture)
         if "fetch_fake" in case:
             _install_fetch_fakes(stack, actions, case["fetch_fake"])
         if case["name"] == "owner-courses-list-human" or case.get("trace_publication"):

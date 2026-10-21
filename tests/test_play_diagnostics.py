@@ -8,15 +8,15 @@ from typing import Any
 
 import pytest
 from playwright.async_api import Error as PlaywrightError
-from test_play import FIRST_ID, SECOND_ID, FakeFrame, FakePage, _lecture, _prepare
+from test_play import FIRST_ID, SECOND_ID, FakeFrame, FakePage, _lecture, _patch_playback_clock, _prepare
 
 from campusctl.envelope import CampusError
-from campusctl.providers.cnu import player
+from campusctl.providers.cnu import player, player_preview, player_types
 
 
 class MissingFramePage(FakePage):
     async def query_selector(self, selector: str) -> Any:
-        if selector == player.PLAYER_FRAME_SELECTOR:
+        if selector == player_preview.PLAYER_FRAME_SELECTOR:
             return None
         return await super().query_selector(selector)
 
@@ -27,8 +27,8 @@ class InterruptedFramePage(FakePage):
         self.error = error
 
     async def query_selector(self, selector: str) -> Any:
-        if selector == player.PLAYER_FRAME_SELECTOR:
-            await player.current_clock().sleep(4.0)
+        if selector == player_preview.PLAYER_FRAME_SELECTOR:
+            await player_preview.current_clock().sleep(4.0)
             raise self.error
         return await super().query_selector(selector)
 
@@ -39,12 +39,12 @@ class InterruptedContentFramePage(FakePage):
         self.error = error
 
     async def query_selector(self, selector: str) -> Any:
-        if selector == player.PLAYER_FRAME_SELECTOR:
+        if selector == player_preview.PLAYER_FRAME_SELECTOR:
             page = self
 
             class BrokenIframe:
                 async def content_frame(self) -> Any:
-                    await player.current_clock().sleep(4.0)
+                    await player_preview.current_clock().sleep(4.0)
                     raise page.error
 
             return BrokenIframe()
@@ -89,7 +89,7 @@ class VideoQueryErrorFrame(FakeFrame):
 
     async def query_selector(self, selector: str) -> Any:
         if selector == "video":
-            await player.current_clock().sleep(4.0)
+            await player_preview.current_clock().sleep(4.0)
             raise self.error
         return await super().query_selector(selector)
 
@@ -121,7 +121,7 @@ def _run(
     async def advance(seconds: float) -> None:
         clock[0] += seconds
 
-    monkeypatch.setattr(player, "current_clock", lambda: SimpleNamespace(monotonic=lambda: clock[0], sleep=advance))
+    _patch_playback_clock(monkeypatch, lambda: SimpleNamespace(monotonic=lambda: clock[0], sleep=advance))
     result, errors = asyncio.run(
         player.play_lectures(
             page,
@@ -168,14 +168,16 @@ def test_player_wait_deadlines_and_sanitized_diagnostic(
     code = f"player-{missing}-unavailable"
     assert result["items"][0]["reason_code"] == errors[0].code == code
     assert result["items"][0]["player_opened"] is False
-    assert clock[0] == (player.PLAYER_FRAME_WAIT_SECONDS if missing == "frame" else player.PLAYER_VIDEO_WAIT_SECONDS)
+    assert clock[0] == (
+        player_preview.PLAYER_FRAME_WAIT_SECONDS if missing == "frame" else player_preview.PLAYER_VIDEO_WAIT_SECONDS
+    )
     assert result["items"][0]["watch_time"] is None
     if missing == "frame":
-        assert result["items"][0]["elapsed_seconds"] == player.PLAYER_FRAME_WAIT_SECONDS
+        assert result["items"][0]["elapsed_seconds"] == player_preview.PLAYER_FRAME_WAIT_SECONDS
     lines = capsys.readouterr().err.splitlines()
     assert len(lines) == 1
-    assert lines[0].startswith(player.PLAY_DIAGNOSTIC_PREFIX)
-    record = json.loads(lines[0].removeprefix(player.PLAY_DIAGNOSTIC_PREFIX))
+    assert lines[0].startswith(player_types.PLAY_DIAGNOSTIC_PREFIX)
+    record = json.loads(lines[0].removeprefix(player_types.PLAY_DIAGNOSTIC_PREFIX))
     assert record == {
         "schema_version": 2,
         "index": 1,
@@ -222,7 +224,7 @@ def test_frame_lookup_errors_keep_elapsed_and_specific_code(
     assert result["items"][0]["watch_time"] is None
     assert result["items"][1]["outcome"] == "not-started"
     assert "Another session for the same account can replace the player page" in errors[0].remediation
-    record = json.loads(capsys.readouterr().err.removeprefix(player.PLAY_DIAGNOSTIC_PREFIX))
+    record = json.loads(capsys.readouterr().err.removeprefix(player_types.PLAY_DIAGNOSTIC_PREFIX))
     assert record["stage"] == "frame"
     assert record["frame_kind"] == "none"
 
@@ -254,7 +256,7 @@ def test_video_probe_error_matches_candidate_identity(
     assert result["items"][0]["elapsed_seconds"] == 4.0
     assert result["items"][0]["watch_time"] is None
     line = capsys.readouterr().err
-    record = json.loads(line.removeprefix(player.PLAY_DIAGNOSTIC_PREFIX))
+    record = json.loads(line.removeprefix(player_types.PLAY_DIAGNOSTIC_PREFIX))
     assert record["stage"] == ("video" if recognized else "frame")
     assert record["frame_kind"] == ("panopto" if recognized else "lms")
     assert "lms.invalid" not in line
@@ -272,7 +274,7 @@ def test_non_panopto_lms_frame_is_classified_without_url(
 
     assert result["items"][0]["reason_code"] == errors[0].code == "player-frame-unavailable"
     line = capsys.readouterr().err
-    record = json.loads(line.removeprefix(player.PLAY_DIAGNOSTIC_PREFIX))
+    record = json.loads(line.removeprefix(player_types.PLAY_DIAGNOSTIC_PREFIX))
     assert record["schema_version"] == 2
     assert record["frame_kind"] == "lms"
     assert record["frame_panopto"] is False
@@ -290,7 +292,7 @@ def test_non_panopto_lms_frame_is_classified_without_url(
     ],
 )
 def test_frame_kind_fixed_tokens(url: str, expected: str) -> None:
-    assert player._frame_kind(url, "https://lms.invalid/course") == expected
+    assert player_types._frame_kind(url, "https://lms.invalid/course") == expected
 
 
 def test_frame_lookup_programming_error_propagates(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -299,7 +301,7 @@ def test_frame_lookup_programming_error_propagates(monkeypatch: pytest.MonkeyPat
             raise AssertionError("programmer mistake")
 
     with pytest.raises(AssertionError, match="programmer mistake"):
-        asyncio.run(player._player_frame(BrokenPage()))
+        asyncio.run(player_preview._player_frame(BrokenPage()))
 
 
 @pytest.mark.parametrize(
@@ -326,7 +328,7 @@ def test_replay_coverage_boundary_and_non_replay_seek_behavior(
         assert clock[0] == 0.0
     else:
         assert result["items"][0]["reason_code"] == errors[0].code == "playback-stalled"
-        assert clock[0] == player.PLAYER_STALL_SECONDS
+        assert clock[0] == player_preview.PLAYER_STALL_SECONDS
         assert result["items"][1]["outcome"] == "not-started"
 
 
@@ -334,7 +336,7 @@ def test_watch_limit_is_distinct_from_stall(tmp_path: Path, monkeypatch: pytest.
     page = FakePage()
     page.frame = CoverageFrame(page, 0.5)
     _prepare(tmp_path, monkeypatch, page, default_speed=1.0)
-    monkeypatch.setattr(player, "PLAYER_MAX_SECONDS", 5.0)
+    monkeypatch.setattr(player_preview, "PLAYER_MAX_SECONDS", 5.0)
 
     result, errors, clock = _run(monkeypatch, page, replay=True)
 
@@ -357,10 +359,10 @@ def test_page_classification_rejects_free_text() -> None:
         async def evaluate(self, *_args: Any) -> dict[str, Any]:
             return {"page_state": "untrusted page text", "video_count": "untrusted count"}
 
-    diagnostic = player._PlayDiagnostic()
+    diagnostic = player_types._PlayDiagnostic()
     diagnostic.frame = UntrustedFrame()
     asyncio.run(diagnostic.refresh())
-    record = json.loads(diagnostic.record(1, "playback-failed").removeprefix(player.PLAY_DIAGNOSTIC_PREFIX))
+    record = json.loads(diagnostic.record(1, "playback-failed").removeprefix(player_types.PLAY_DIAGNOSTIC_PREFIX))
     assert record["page_state"] == "unknown"
     assert record["video_count"] == 0
     assert "untrusted" not in diagnostic.record(1, "playback-failed")

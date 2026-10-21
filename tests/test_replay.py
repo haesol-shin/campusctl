@@ -11,7 +11,8 @@ from typing import Any
 import pytest
 from test_play import FIRST_ID, SECOND_ID, FakeFrame, FakePage, _fast_player_sleeps, _lecture, _write_catalog
 
-from campusctl.providers.cnu import player
+from campusctl.providers.cnu import media as player_media
+from campusctl.providers.cnu import player, player_preview
 
 
 class RecordingFrame(FakeFrame):
@@ -46,6 +47,7 @@ async def _run(
         page.calls.append(("login", None))
 
     monkeypatch.setattr(player, "ensure_logged_in", login)
+    monkeypatch.setattr(player_media, "ensure_logged_in", login)
     _fast_player_sleeps(monkeypatch, page)
     selected = player.validate_requested_lectures([lecture["entity_id"] for lecture in lectures], lectures, replay=True)
     result, error = await player.play_lectures(
@@ -98,7 +100,7 @@ def test_replay_does_not_credit_stale_f_without_native_end(monkeypatch: pytest.M
     page.frame = NoEndFrame(page)
     lecture = _lecture(FIRST_ID, completion="complete")
     next_lecture = _lecture(SECOND_ID)
-    monkeypatch.setattr(player, "PLAYER_STALL_SECONDS", 0.001)
+    monkeypatch.setattr(player_preview, "PLAYER_STALL_SECONDS", 0.001)
     items, error = asyncio.run(_run(monkeypatch, tmp_path, page, [lecture, next_lecture]))
     assert error is not None
     assert [item["outcome"] for item in items] == ["failed", "not-started"]
@@ -146,15 +148,15 @@ def test_replay_modal_without_official_embed_is_not_player_opened(
 
     class MissingEmbedPage(ReplayPage):
         async def query_selector(self, selector: str) -> Any:
-            if missing == "frame" and selector == player.PLAYER_FRAME_SELECTOR:
+            if missing == "frame" and selector == player_preview.PLAYER_FRAME_SELECTOR:
                 return None
             return await super().query_selector(selector)
 
     page = MissingEmbedPage(states={"row-1": "F"})
     if missing == "video":
         page.frame = MissingVideoFrame(page)
-    monkeypatch.setattr(player, "PLAYER_FRAME_WAIT_SECONDS", 0.01)
-    monkeypatch.setattr(player, "PLAYER_VIDEO_WAIT_SECONDS", 0.02)
+    monkeypatch.setattr(player_preview, "PLAYER_FRAME_WAIT_SECONDS", 0.01)
+    monkeypatch.setattr(player_preview, "PLAYER_VIDEO_WAIT_SECONDS", 0.02)
     items, error = asyncio.run(_run(monkeypatch, tmp_path, page, [_lecture(FIRST_ID, completion="complete")]))
     assert error is not None and items[0]["outcome"] == "failed"
     assert items[0]["reason_code"] == f"player-{missing}-unavailable"
@@ -282,9 +284,9 @@ setInterval(() => {if (playing && ++reads >= 2) position = 10}, 40);
                 async def no_expansion(*args: Any) -> None:
                     return None
 
-                monkeypatch.setattr(player, "_expand_row_through_ui", no_expansion)
+                monkeypatch.setattr(player_preview, "_expand_row_through_ui", no_expansion)
                 opened: list[bool] = []
-                await player._play_visible_lecture(
+                await player_preview._play_visible_lecture(
                     page, "row-1", 1.5, replay=True, on_opened=lambda: opened.append(True)
                 )
                 frame = await (await page.query_selector("#previewFrame")).content_frame()
