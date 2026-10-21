@@ -1263,6 +1263,38 @@ def _p6_cases() -> list[Case]:
         ("p6-catalog-fail", [_P5_ROW, _P5_ROW_2, "--speed", "1.0"], "p6-catalog-fail", 1, "json"),
         ("p6-started-gap", [_P5_ROW, "--speed", "1.0"], "p6-started-gap", 1, "json"),
         ("p6-video-interrupt", [_P5_ROW, _P5_ROW_2, "--speed", "1.0"], "p6-video-interrupt", 130, "human"),
+        ("l6-rate-already", [_P5_ROW, "--speed", "1.5"], "p6-rate-preset", 0, "json"),
+        ("l6-rate-change", [_P5_ROW, "--speed", "1.5"], "p6-rate-change", 0, "json"),
+        ("l6-rate-option-missing", [_P5_ROW, "--speed", "1.5"], "p6-speed-missing", 1, "json"),
+        ("l6-already-complete", [_P5_ROW, _P5_ROW_2, "--speed", "1.0"], "p6-already-complete", 0, "json"),
+        ("l6-already-catalog-fail", [_P5_ROW, _P5_ROW_2, "--speed", "1.0"], "p6-already-catalog-fail", 1, "json"),
+        ("l6-recorded-pre", [_P5_ROW, _P5_ROW_2, "--speed", "1.0"], "p6-recorded-pre", 0, "json"),
+        ("l6-recorded-pre-catalog-fail", [_P5_ROW, _P5_ROW_2, "--speed", "1.0"], "p6-recorded-catalog-fail", 1, "json"),
+        ("l6-recorded-post", [_P5_ROW, _P5_ROW_2, "--speed", "1.0"], "p6-recorded-post", 0, "json"),
+        (
+            "l6-recorded-post-catalog-fail",
+            [_P5_ROW, _P5_ROW_2, "--speed", "1.0"],
+            "p6-recorded-post-catalog-fail",
+            1,
+            "json",
+        ),
+        ("l6-recorded-replay", [_P5_ROW, _P5_ROW_2, "--speed", "1.0", "--replay"], "p6-recorded-pre", 0, "json"),
+        ("l6-first-failure-tail", [_P5_ROW, _P5_ROW_2, "--speed", "1.0"], "p6-row-closed", 1, "json"),
+        ("l6-later-failure", [_P5_ROW, _P5_ROW_2, "--speed", "1.0"], "p6-second-closed", 1, "json"),
+        ("l6-frame-never", [_P5_ROW, "--speed", "1.0"], "p6-frame-never", 1, "json"),
+        ("l6-frame-video-error", [_P5_ROW, "--speed", "1.0"], "p6-frame-video-error", 1, "json"),
+        ("l6-frame-other-error", [_P5_ROW, "--speed", "1.0"], "p6-frame-other-error", 1, "json"),
+        ("l6-video-stall", [_P5_ROW, "--speed", "1.0"], "p6-video-stall", 1, "json"),
+        ("l6-login-fail", [_P5_ROW, _P5_ROW_2, "--speed", "1.0"], "p6-login-fail", 1, "json"),
+        ("l6-prepare-fail", [_P5_ROW, _P5_ROW_2, "--speed", "1.0"], "p6-prepare-fail", 1, "json"),
+        ("l6-interrupt-verify", [_P5_ROW, _P5_ROW_2, "--speed", "1.0"], "p6-verify-interrupt", 130, "human"),
+        ("l6-room-fail", [_P5_ROW, _P5_ROW_2, "--speed", "1.0"], "p6-room-fail", 1, "json"),
+        ("l6-room-campus-fail", [_P5_ROW, _P5_ROW_2, "--speed", "1.0"], "p6-room-campus-fail", 1, "json"),
+        ("l6-open-fail", [_P5_ROW, _P5_ROW_2, "--speed", "1.0"], "p6-open-fail", 1, "json"),
+        ("l6-catalog-crash", [_P5_ROW, _P5_ROW_2, "--speed", "1.0"], "p6-catalog-crash", 1, "json"),
+        ("l6-fractional-elapsed", [_P5_ROW, "--speed", "1.0"], "p6-fractional-elapsed", 0, "json"),
+        ("l6-progress-only", [_P5_ROW, "--speed", "1.0"], "p6-progress-only", 0, "json"),
+        ("l6-attendance-partial", [_P5_ROW, "--speed", "1.0"], "p6-attendance-partial", 0, "json"),
     ]
     cases = []
     for name, arguments, fixture, expected, mode in specs:
@@ -1322,6 +1354,23 @@ def _p6_cases() -> list[Case]:
             "invoke": "play_lectures",
         }
     )
+    for name, fixture, expected in (
+        ("l6-direct-bad-id", "p6-direct", 1),
+        ("l6-cancel-playback", "p6-video-cancelled", 1),
+        ("l6-cancel-verify", "p6-verify-cancelled", 1),
+    ):
+        cases.append(
+            {
+                "name": name,
+                "argv": ["lectures", "play"],
+                "fixture": fixture,
+                "width": 80,
+                "env": {"CAMPUSCTL_OUTPUT": "json"},
+                "expected": expected,
+                "invoke": "play_lectures",
+                "direct_media": ["video", "bad-id", "video"] if fixture == "p6-direct" else ["video", "video"],
+            }
+        )
     return cases
 
 
@@ -1345,6 +1394,23 @@ def _write_p5_catalog(root: Path, fixture: str) -> None:
         "p6-row-read-fail",
         "p6-catalog-fail",
         "p6-video-interrupt",
+        "p6-already-complete",
+        "p6-already-catalog-fail",
+        "p6-recorded-pre",
+        "p6-recorded-catalog-fail",
+        "p6-recorded-post",
+        "p6-recorded-post-catalog-fail",
+        "p6-row-closed",
+        "p6-second-closed",
+        "p6-login-fail",
+        "p6-prepare-fail",
+        "p6-video-cancelled",
+        "p6-verify-interrupt",
+        "p6-verify-cancelled",
+        "p6-room-fail",
+        "p6-room-campus-fail",
+        "p6-open-fail",
+        "p6-catalog-crash",
     }:
         lectures.append(_lecture_row(_P5_ROW_2, "Synthetic video", "course.invalid", "Synthetic course"))
         lectures[1]["media"] = second_media
@@ -1412,6 +1478,8 @@ class _P5Locator:
     async def count(self) -> int:
         if "btnPreviewClose" in self.selector:
             self.page.actions.append(["lookup", "close-button", self.page.modal_open])
+        if "data-speed" in self.selector and self.page.fixture == "p6-speed-missing":
+            return 0
         return int(await self.is_visible() or self._present())
 
     def _present(self) -> bool:
@@ -1457,12 +1525,18 @@ class _P5Frame:
     def url(self) -> str:
         if self.kind == "youtube":
             return "https://www.youtube-nocookie.com/embed/synthetic"
+        if self.page.fixture == "p6-frame-other-error":
+            return "https://lms.invalid/embed"
         return "https://panopto.example/Embed.aspx"
 
     def locator(self, selector: str) -> _P5Locator:
         return _P5Locator(self.page, selector)
 
     async def query_selector(self, selector: str):
+        if selector == "video" and self.page.fixture in {"p6-frame-video-error", "p6-frame-other-error"}:
+            from playwright.async_api import Error as PlaywrightError
+
+            raise PlaywrightError("synthetic frame query failure")
         if selector == "video" and self.page.video_ready:
             return object()
         return None
@@ -1500,6 +1574,9 @@ class _P5Page:
         if fixture == "p6-mixed-reverse":
             self.youtube_rows = {"row-2"}
         self.states = {"row-1": "N", "row-2": "N", "row-3": "N"}
+        if "already" in fixture:
+            self.states["row-1"] = "F"
+        self.closed_rows: set[str] = set()
         self.yt_reads = 0
         self.yt_clicked = False
         self.started = False
@@ -1507,9 +1584,11 @@ class _P5Page:
         self.panopto_reads = 0
         self.panopto_playing_reads = 0
         # None omits the field, as a player without a readable rate would.
-        self.panopto_rate: object = {"p5-video-rate-true": True, "p5-video-rate-near-one": 1.0000000001}.get(
-            fixture, 1.0
-        )
+        self.panopto_rate: object = {
+            "p5-video-rate-true": True,
+            "p5-video-rate-near-one": 1.0000000001,
+            "p6-rate-preset": 1.5,
+        }.get(fixture, 1.0)
         if fixture == "p5-video-rate-missing":
             self.panopto_rate = None
         self.authenticated = False
@@ -1562,6 +1641,8 @@ class _P5Page:
 
     async def query_selector(self, selector: str):
         if selector == "iframe#previewFrame" and self.modal_open and self.active_row not in self.youtube_rows:
+            if self.fixture == "p6-frame-never":
+                return None
             if self.fixture == "p6-frame-late":
                 self.frame_queries += 1
                 self.actions.append(["frame", "query", self.frame_queries])
@@ -1581,6 +1662,9 @@ class _P5Page:
         row = re.search(r'\[id="([^"]+)"\]', selector)
         if row:
             self.active_row = row.group(1)
+        if "titleDetailContents" in selector and self.fixture == "p6-open-fail" and self.active_row == "row-2":
+            self.actions.append(["modal", "open-failed", self.active_row])
+            raise RuntimeError("synthetic modal failure")
         if "titleDetailContents" in selector:
             self.modal_open = True
             self.panopto_paused = True
@@ -1591,6 +1675,7 @@ class _P5Page:
         if "btnPreviewClose" in selector or "btn_popClose" in selector:
             self.actions.append(["modal", "close", self.active_row])
             self.modal_open = False
+            self.closed_rows.add(self.active_row)
             if self.fixture != "p6-row-incomplete":
                 self.states[self.active_row] = "F"
             if self.fixture == "p5-stall-close-cancelled":
@@ -1612,6 +1697,29 @@ class _P5Page:
             if self.fixture == "p6-splash-click":
                 self._video_ready = True
 
+    def _lecture_row_state(self, row_id: str) -> dict:
+        """Row as the LMS reports it; recorded rows show full progress without counted attendance."""
+        row = {
+            "state": self.states.get(row_id, "N"),
+            "moduletype": "LV",
+            "openyn": "N"
+            if (self.fixture, row_id) in {("p6-row-closed", "row-1"), ("p6-second-closed", "row-2")}
+            else "Y",
+            "progress_text": None,
+            "attendance_counted": None,
+        }
+        recorded_before = self.fixture in {"p6-recorded-pre", "p6-recorded-catalog-fail"}
+        recorded_after = (
+            self.fixture in {"p6-recorded-post", "p6-recorded-post-catalog-fail"} and row_id in self.closed_rows
+        )
+        if row_id == "row-1" and (recorded_before or recorded_after):
+            row.update(state="N", progress_text="10분 / 10분", attendance_counted=False)
+        elif row_id == "row-1" and self.fixture == "p6-progress-only":
+            row.update(progress_text="10분 / 10분")
+        elif row_id == "row-1" and self.fixture == "p6-attendance-partial":
+            row.update(progress_text="3분 / 10분", attendance_counted=False)
+        return row
+
     async def evaluate(self, script: str, *args):
         self.evaluations.append(script)
         if "campusctl-read-lecture-row" in script:
@@ -1620,17 +1728,21 @@ class _P5Page:
             if self.fixture == "p6-row-read-fail" and self.row_reads > 1:
                 self.actions.append(["row", "read-failed", row_id])
                 raise RuntimeError("synthetic row read failure")
-            return {
-                "state": self.states.get(row_id, "N"),
-                "moduletype": "LV",
-                "openyn": "Y",
-                "progress_text": None,
-                "attendance_counted": None,
-            }
+            if self.fixture in {"p6-verify-interrupt", "p6-verify-cancelled"} and self.row_reads > 3:
+                self.actions.append(["row", "read-stopped", row_id])
+                raise KeyboardInterrupt if self.fixture == "p6-verify-interrupt" else asyncio.CancelledError
+            if self.fixture in {"p6-room-fail", "p6-room-campus-fail"} and self.row_reads == 3:
+                self.actions.append(["row", "read-failed", row_id])
+                if self.fixture == "p6-room-campus-fail":
+                    from campusctl.envelope import CampusError
+
+                    raise CampusError("browser-timeout", "Synthetic row read timeout.", "Retry.", "error")
+                raise RuntimeError("synthetic row read failure")
+            return self._lecture_row_state(row_id)
         if "campusctl-read-collapse-toggles" in script:
             return []
         if "panoptoSamlLogin_submit" in script:
-            self.authenticated = True
+            self.authenticated = self.fixture != "p6-prepare-fail"
             self.sso_submits += 1
             self.actions.append(["sso", "submit"])
             return True
@@ -1801,6 +1913,11 @@ class _P5Page:
         if self.fixture == "p6-video-interrupt" and not self.panopto_paused:
             self.actions.append(["interrupt", "video", self.active_row])
             raise KeyboardInterrupt
+        if self.fixture == "p6-video-cancelled" and not self.panopto_paused and self.active_row == "row-2":
+            self.actions.append(["cancel", "video", self.active_row])
+            raise asyncio.CancelledError
+        if self.fixture == "p6-video-stall":
+            return self._panopto_point(1.0, 10000.0, ended=False, paused=self.panopto_paused)
         if self.fixture == "p6-video-resume":
             status = self._panopto_resume()
             self.actions.append(["panopto-time", status["currentTime"], status["paused"]])
@@ -1854,6 +1971,10 @@ def _install_p5_fakes(stack: ExitStack, actions: list, fixture: str) -> None:
     async def fake_login(*args, **kwargs) -> None:
         del args, kwargs
         actions.append(["auth", "login"])
+        if fixture == "p6-login-fail":
+            from campusctl.envelope import CampusError
+
+            raise CampusError("auth-failed", "Synthetic login failure.", "Retry.", "error")
 
     stack.enter_context(patch.object(browser_module, "open_session", fake_open_session))
     stack.enter_context(patch.object(player_module, "ensure_logged_in", fake_login))
@@ -1874,10 +1995,12 @@ def _install_p5_fakes(stack: ExitStack, actions: list, fixture: str) -> None:
             if isinstance(item, dict)
         ]
         actions.append(["catalog", "write", changed])
-        if fixture == "p6-catalog-fail":
+        if "catalog-fail" in fixture:
             from campusctl.envelope import CampusError
 
             raise CampusError("catalog-write-failed", "Synthetic catalog write failed.", "Retry.", "error")
+        if fixture == "p6-catalog-crash":
+            raise RuntimeError("synthetic catalog crash")
         return real_write(catalog, path)
 
     stack.enter_context(patch.object(player_module, "write_catalog", traced_write))
@@ -1928,6 +2051,16 @@ def _install_p5_fakes(stack: ExitStack, actions: list, fixture: str) -> None:
         stack.enter_context(patch.object(lectures_module, "_progress_output", wrapped_progress))
     if fixture == "p6-started-gap":
         _arm_panopto_started_gap(page, clock)
+    if fixture == "p6-fractional-elapsed":
+        original_status = page.panopto_status
+
+        def status() -> dict:
+            value = original_status()
+            if not page.panopto_paused:
+                clock.timestamp += 0.26
+            return value
+
+        page.panopto_status = status
 
 
 def _arm_panopto_started_gap(page: _P5Page, clock: _P5Clock) -> None:
@@ -2068,10 +2201,21 @@ def invoke_play(case: Case) -> int:
             from collections import UserString
 
             row["media"] = UserString("youtube")
+        elif spec == "bad-id":
+            row["entity_id"] = "not-a-lecture-id"
         else:
             row["media"] = spec
         lectures.append(row)
-    result, error = asyncio.run(play_lectures(_DIRECT_PAGE, {"playback": {"default_speed": 1.0}}, lectures))
+    events: list[dict] = []
+    try:
+        result, error = asyncio.run(
+            play_lectures(_DIRECT_PAGE, {"playback": {"default_speed": 1.0}}, lectures, progress=events.append)
+        )
+    except asyncio.CancelledError:
+        # A cancelled queue returns nothing; the events show which items had reported before it.
+        finished = [[event["entity_id"], event["outcome"]] for event in events if event["type"] == "finished"]
+        print(json.dumps({"raised": "CancelledError", "finished": finished}, separators=(",", ":")))
+        return 1
     if error is None:
         code = None
     elif isinstance(error, list):
