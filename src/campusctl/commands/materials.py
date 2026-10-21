@@ -20,7 +20,7 @@ from campusctl.catalog_view import (
     resolve_material_number,
 )
 from campusctl.cli_args import _OUTPUT_NOTE, EnvelopeArgumentParser
-from campusctl.command_types import CommandBindings, CommandContext, CommandResult, command_result
+from campusctl.command_types import CommandBindings, CommandContext, CommandResult, Renderers, command_result
 from campusctl.commands.course_inputs import list_refresh_scope, list_with_refresh
 from campusctl.envelope import CampusError, UsageError
 from campusctl.paths import data_dir
@@ -113,7 +113,7 @@ def _pick_number(root: Path) -> tuple[str, dict[str, Any]]:
             }
         ),
         sys.stdout,
-        renderers={"materials": render},
+        renderers=Renderers(results={"materials": render}),
     )
     sys.stdout.flush()
     publish_material_snapshot(root, snapshot[1], [row["entity_id"] for row in catalog["materials"]])

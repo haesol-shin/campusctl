@@ -12,6 +12,7 @@ from campusctl.command_types import CommandBindings, CommandContext, CommandResu
 from campusctl.config import load_config
 from campusctl.credentials import helper_status, keyring_status, prompt_and_store
 from campusctl.envelope import CampusError, UsageError
+from campusctl.text_layout import _text, _wrap_simple
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,3 +97,45 @@ def dispatch(args: argparse.Namespace, bindings: CommandBindings, context: Comma
     if args.auth_command == "set":
         return _set(config)
     return _status(args, config)
+
+
+def _summary(command: str, result: dict[str, Any]) -> list[str]:
+    if command == "auth.set" and "configured" in result:
+        configured = result.get("configured")
+        if configured is True:
+            return ["Password saved to the OS keyring."]
+        if configured is False:
+            return ["No password was saved."]
+        return ["Password-save status is unknown."]
+    if command == "auth.status" and any(
+        key in result for key in ("provider", "configured", "backend", "helper", "check")
+    ):
+        provider = _text(result.get("provider"))
+        configured = result.get("configured")
+        if provider == "command":
+            helper = _text(result.get("helper"), "unknown")
+            state = (
+                "is configured"
+                if configured is True
+                else "is not configured"
+                if configured is False
+                else "status is unknown"
+            )
+            check = (
+                result.get("check")
+                if result.get("check") in {"ok", "failed"}
+                else "unknown"
+                if "check" in result
+                else "not run"
+            )
+            return [f"Credential helper {helper} {state}; check: {check}."]
+        if provider == "keyring":
+            state = "saved" if configured is True else "not saved" if configured is False else "status unknown"
+            backend = _text(result.get("backend"), "unknown backend")
+            return [f"Credentials are {state} in the OS keyring ({backend})."]
+        return ["Credential provider status is unknown."]
+    return []
+
+
+def render(command: str, result: dict[str, Any], width: int) -> list[str]:
+    return [wrapped for line in _summary(command, result) for wrapped in _wrap_simple(line, width)]

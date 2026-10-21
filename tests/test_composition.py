@@ -4,6 +4,7 @@ import io
 from typing import Any
 
 from campusctl import cli, composition
+from campusctl.command_types import Renderers
 from campusctl.presentation import render_human
 
 
@@ -35,7 +36,7 @@ def test_injected_renderer_handles_domain_and_sync_commands() -> None:
             command,
             {"status": "ok", "result": {"value": "ready"}, "errors": []},
             stream,
-            renderers={"sample": sample},
+            renderers=Renderers(results={"sample": sample}),
             width=72,
         )
         assert stream.getvalue() == f"sample:{command}:ready:72\n"

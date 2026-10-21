@@ -20,6 +20,7 @@ from campusctl.command_types import (
 from campusctl.commands.course_inputs import list_refresh_scope, refresh, refresh_result
 from campusctl.envelope import CampusError
 from campusctl.paths import data_dir
+from campusctl.text_layout import _cells, _course_heading, _pad, _text, _truncate, _wrap
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,3 +75,26 @@ def dispatch(args: argparse.Namespace, bindings: CommandBindings, context: Comma
     if context.output_mode != "json":
         publish = partial(publish_course_snapshot, root, roster)
     return command_result(listed.to_json(), publish=publish)
+
+
+def _render_list(result: dict[str, Any], width: int) -> list[str]:
+    courses = result.get("courses")
+    if not isinstance(courses, list):
+        return []
+    rows = [course for course in courses if isinstance(course, dict)]
+    count_label = "course" if len(rows) == 1 else "courses"
+    lines = _wrap(f"{len(rows)} {count_label}", width)
+    for number, course in enumerate(rows, 1):
+        course_id = _text(course.get("course_id"), "unknown")
+        label = _text(course.get("label"), course_id)
+        if width < 60 or _cells(course_id) + 8 > width:
+            lines.extend(_course_heading(label, width))
+            lines.extend(_wrap(f"  {number}. {course_id}", width))
+        else:
+            label_width = width - _cells(course_id) - 8
+            lines.append(f"{number}. {_pad(_truncate(label, label_width), label_width)}  {course_id}")
+    return lines
+
+
+def render(command: str, result: dict[str, Any], width: int) -> list[str]:
+    return _render_list(result, width) if command == "courses.list" else []

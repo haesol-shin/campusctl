@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from types import ModuleType
 
-from campusctl.command_types import CommandBindings, Renderer
+from campusctl.command_types import CommandBindings, Renderers
 from campusctl.commands import (
     assignments,
     auth,
@@ -30,9 +30,12 @@ CAPABILITIES: dict[str, list[str]] = {
     module.__name__.rpartition(".")[2]: list(module.CAPABILITY["commands"])
     for module in (sync, lectures, status, assignments, materials, notices)
 }
-RENDERERS: dict[str, Renderer] = {
-    name: module.render for name, module in COMMANDS_BY_NAME.items() if hasattr(module, "render")
-}
+RENDERERS = Renderers(
+    results={name: module.render for name, module in COMMANDS_BY_NAME.items() if hasattr(module, "render")},
+    responses={
+        name: module.render_response for name, module in COMMANDS_BY_NAME.items() if hasattr(module, "render_response")
+    },
+)
 
 
 def register_commands(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:

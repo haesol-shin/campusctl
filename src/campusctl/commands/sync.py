@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from typing import Any
 
 from campusctl.browser_options import preflight_browser_mode
 from campusctl.catalog_view import DOMAINS
@@ -13,6 +14,7 @@ from campusctl.config import load_config
 from campusctl.envelope import CampusError
 from campusctl.paths import data_dir
 from campusctl.sync import parse_domains, run_sync
+from campusctl.text_layout import _text, _wrap
 
 CAPABILITY = {"commands": list(DOMAINS)}
 
@@ -70,3 +72,28 @@ def dispatch(args: argparse.Namespace, bindings: CommandBindings, context: Comma
             course_snapshot=snapshot,
         )
     )
+
+
+def render(command: str, result: dict[str, Any], width: int) -> list[str]:
+    del command  # `sync` and `sync.lectures` print the same summary.
+    if isinstance(result.get("domains"), dict):
+        return [f"{name}: {entry.get('status', 'unknown')}" for name, entry in result["domains"].items()]
+    if not any(key in result for key in ("courses", "lectures", "incomplete", "failed_courses")):
+        return []
+    courses = result.get("courses", 0)
+    lectures = result.get("lectures", 0)
+    incomplete = result.get("incomplete", 0)
+    lines = _wrap(
+        f"Synced {courses} {'course' if courses == 1 else 'courses'}, "
+        f"{lectures} {'lecture' if lectures == 1 else 'lectures'}, {incomplete} unfinished.",
+        width,
+    )
+    failed = result.get("failed_courses")
+    if isinstance(failed, list):
+        for course in failed:
+            if not isinstance(course, dict):
+                continue
+            label = _text(course.get("label"), _text(course.get("course_id"), "Unknown course"))
+            course_id = _text(course.get("course_id"), "unknown")
+            lines.extend(_wrap(f"Failed: {label} ({course_id})", width))
+    return lines
