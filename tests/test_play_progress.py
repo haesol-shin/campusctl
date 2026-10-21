@@ -8,12 +8,13 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from test_play import FIRST_ID, SECOND_ID, FakePage, _lecture, _patch_playback_clock, _prepare
+from test_play import FIRST_ID, SECOND_ID, THIRD_ID, FakePage, _lecture, _patch_playback_clock, _prepare
 
 from campusctl import cli
 from campusctl.command_types import CommandContext
+from campusctl.commands import lectures as lectures_command
 from campusctl.progress import render_progress
-from campusctl.providers.cnu import player, player_types
+from campusctl.providers.cnu import player, player_preview, player_types
 from campusctl.providers.cnu.media import panopto
 
 
@@ -283,3 +284,210 @@ def test_render_progress_is_ascii_and_title_fits_the_requested_width() -> None:
         render_progress({"type": "position", "position_seconds": 750, "duration_seconds": 1680}, stream, 80)
         == "  12:30 / 28:00"
     )
+
+
+_EMIT_POINTS = ("started", "position", "verifying", "finished", "not-started")
+
+
+def _is_emit(event: dict[str, Any], point: str) -> bool:
+    if point == "not-started":
+        return event.get("type") == "finished" and event.get("outcome") == "not-started"
+    if point == "finished":
+        return event.get("type") == "finished" and event.get("outcome") != "not-started"
+    return event.get("type") == point
+
+
+def _queue_for(point: str) -> list[dict[str, Any]]:
+    if point == "not-started":
+        return [_lecture(FIRST_ID), _lecture(SECOND_ID), _lecture(THIRD_ID)]
+    return [_lecture(FIRST_ID), _lecture(SECOND_ID)]
+
+
+def _page_for(point: str, *, fail_close: bool = False) -> FakePage:
+    if point == "not-started":
+        return FakePage(complete_after_play={"row-1": False}, fail_close=fail_close)
+    return FakePage(complete_after_play={"row-1": True, "row-2": True}, fail_close=fail_close)
+
+
+def _arm_emit(monkeypatch: pytest.MonkeyPatch, point: str) -> None:
+    if point == "not-started":
+        monkeypatch.setattr(player, "COMPLETION_POLL_SECONDS", 0.01)
+        monkeypatch.setattr(player, "COMPLETION_POLL_INTERVAL_SECONDS", 0.001)
+
+
+def _completions(tmp_path: Any) -> dict[str, str]:
+    catalog = json.loads((tmp_path / "catalog" / "lectures.json").read_text(encoding="utf-8"))
+    return {item["entity_id"]: item["completion"] for item in catalog["lectures"]}
+
+
+def _error_codes(error: Any) -> list[str]:
+    if error is None:
+        return []
+    if isinstance(error, list):
+        return [item.code for item in error]
+    return [error.code]
+
+
+def _close_attempts(page: FakePage) -> list[tuple[str, Any]]:
+    return [call for call in page.calls if call[0] == "close-attempt"]
+
+
+def _raising_progress(point: str, exc_type: type[BaseException]) -> tuple[list[dict[str, Any]], Any, list[int], Any]:
+    calls: list[dict[str, Any]] = []
+    late_writes: list[int] = []
+    raised = False
+
+    def progress(event: dict[str, Any]) -> None:
+        nonlocal raised
+        calls.append(event)
+        if not raised and _is_emit(event, point):
+            raised = True
+            raise exc_type()
+
+    real_write = player.write_catalog
+
+    def traced_write(catalog: dict[str, Any], path: Any = None) -> Any:
+        if raised:
+            late_writes.append(1)
+        return real_write(catalog, path)
+
+    return calls, progress, late_writes, traced_write
+
+
+@pytest.mark.parametrize("exc_type", [asyncio.CancelledError, KeyboardInterrupt])
+@pytest.mark.parametrize("point", _EMIT_POINTS)
+def test_progress_callback_cancellation_stops_the_queue(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch, point: str, exc_type: type[BaseException]
+) -> None:
+    page = _page_for(point)
+    _prepare(tmp_path, monkeypatch, page)
+    _arm_emit(monkeypatch, point)
+    calls, progress, late_writes, traced_write = _raising_progress(point, exc_type)
+    monkeypatch.setattr(player, "write_catalog", traced_write)
+
+    with pytest.raises(exc_type):
+        _play(page, _queue_for(point), progress)
+
+    assert late_writes == []
+    assert len(_close_attempts(page)) == 1
+    assert [call for call in page.calls if call[0] == "open-player"] == [("open-player", "row-1")]
+    if point == "finished":
+        assert _completions(tmp_path)[FIRST_ID] == "complete"
+        assert _completions(tmp_path)[SECOND_ID] == "incomplete"
+    else:
+        assert set(_completions(tmp_path).values()) == {"incomplete"}
+    if point == "not-started":
+        assert [event["entity_id"] for event in calls if event.get("outcome") == "not-started"] == [SECOND_ID]
+    else:
+        assert all(event.get("entity_id") != SECOND_ID for event in calls)
+
+
+@pytest.mark.parametrize("point", _EMIT_POINTS)
+def test_ordinary_progress_callback_failure_keeps_today_result(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch, point: str
+) -> None:
+    page = _page_for(point)
+    _prepare(tmp_path, monkeypatch, page)
+    _arm_emit(monkeypatch, point)
+    calls, progress, _late_writes, _traced_write = _raising_progress(point, RuntimeError)
+
+    result, error = _play(page, _queue_for(point), progress)
+    experiment_completions = _completions(tmp_path)
+
+    control = _page_for(point)
+    _prepare(tmp_path, monkeypatch, control)
+    _arm_emit(monkeypatch, point)
+    control_result, control_error = _play(control, _queue_for(point))
+
+    assert _error_codes(error) == _error_codes(control_error)
+    assert [item["entity_id"] for item in result["items"]] == [item["entity_id"] for item in control_result["items"]]
+    assert [item["outcome"] for item in result["items"]] == [item["outcome"] for item in control_result["items"]]
+    assert experiment_completions == _completions(tmp_path)
+    # The failing event must be the last callback: progress stays off afterwards.
+    assert next(i for i, event in enumerate(calls) if _is_emit(event, point)) == len(calls) - 1
+    assert len(_close_attempts(page)) == len(_close_attempts(control))
+    if point == "not-started":
+        assert [event["entity_id"] for event in calls if event.get("outcome") == "not-started"] == [SECOND_ID]
+        assert [item["outcome"] for item in result["items"]] == ["unverified", "not-started", "not-started"]
+
+
+@pytest.mark.parametrize("exc_type", [asyncio.CancelledError, KeyboardInterrupt])
+@pytest.mark.parametrize("point", ["started", "position"])
+def test_progress_interrupt_wins_over_preview_close_failure(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch, point: str, exc_type: type[BaseException]
+) -> None:
+    # origin/main non-callback interrupt: preview stores the primary error and a failed close does not replace it.
+    page = _page_for(point, fail_close=True)
+    _prepare(tmp_path, monkeypatch, page)
+    _calls, progress, late_writes, traced_write = _raising_progress(point, exc_type)
+    monkeypatch.setattr(player, "write_catalog", traced_write)
+
+    with pytest.raises(exc_type):
+        _play(page, _queue_for(point), progress)
+
+    assert late_writes == []
+    assert _close_attempts(page) == [("close-attempt", "row-1")]
+    assert ("close", "row-1") not in page.calls
+    assert set(_completions(tmp_path).values()) == {"incomplete"}
+
+
+def test_progress_interrupt_wins_when_close_raises_another_base_exception(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    page = _page_for("started")
+    _prepare(tmp_path, monkeypatch, page)
+
+    async def close_interrupted(_page: Any) -> None:
+        page.calls.append(("close-attempt", page.active_row_id))
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(player_preview, "_close_player", close_interrupted)
+    _calls, progress, late_writes, traced_write = _raising_progress("started", asyncio.CancelledError)
+    monkeypatch.setattr(player, "write_catalog", traced_write)
+
+    with pytest.raises(asyncio.CancelledError):
+        _play(page, _queue_for("started"), progress)
+
+    assert late_writes == []
+    assert _close_attempts(page) == [("close-attempt", "row-1")]
+    assert set(_completions(tmp_path).values()) == {"incomplete"}
+
+
+def test_progress_callback_system_exit_propagates(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    page = _page_for("position")
+    _prepare(tmp_path, monkeypatch, page)
+    _calls, progress, late_writes, traced_write = _raising_progress("position", SystemExit)
+    monkeypatch.setattr(player, "write_catalog", traced_write)
+
+    with pytest.raises(SystemExit):
+        _play(page, _queue_for("position"), progress)
+
+    assert late_writes == []
+    assert _close_attempts(page) == [("close-attempt", "row-1")]
+
+
+def test_human_play_exits_130_when_progress_callback_is_interrupted(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    page = FakePage(complete_after_play={"row-1": True, "row-2": True})
+    sessions = _prepare(tmp_path, monkeypatch, page, default_speed=1.0)
+
+    def raising_progress() -> tuple[Any, Any]:
+        def progress(_event: dict[str, Any]) -> None:
+            raise KeyboardInterrupt
+
+        return progress, lambda: None
+
+    monkeypatch.setattr(lectures_command, "_progress_output", raising_progress)
+    stream = FailingTTY()
+    stream.fail_on_position_newline = False
+    monkeypatch.setattr(cli.sys, "stdout", stream)
+
+    exit_code = cli.main(["lectures", "play", FIRST_ID, SECOND_ID])
+
+    assert exit_code == 130
+    assert stream.getvalue().endswith("Interrupted.\n")
+    assert sessions.active is False
+    assert _close_attempts(page) == [("close-attempt", "row-1")]
+    assert [call for call in page.calls if call[0] == "open-player"] == [("open-player", "row-1")]
+    assert set(_completions(tmp_path).values()) == {"incomplete"}

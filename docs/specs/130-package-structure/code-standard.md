@@ -152,7 +152,7 @@ courses: Sequence[CourseRow]
 - A user-visible failure is `CampusError(code, message, remediation, status)` using a code from the contracts; a new code is a contract change. Workflows keep returning `(result, error)`; only the command boundary builds the envelope.
 - `except Exception` only to convert into `CampusError`, record a diagnostic and re-raise, or at an existing per-item/per-domain isolation boundary. New best-effort cleanup uses `with contextlib.suppress(SpecificError):` plus a reason, never silent `pass`.
 - In touched functions, convert existing silent `except ...: pass` to `contextlib.suppress(<specific exception>)` only after demonstrating the same caught exception set, action order and primary/cleanup precedence. Narrowing an existing broad catch is not automatically equivalent: if proof fails, preserve it for the neutral PR and separate any behavior change. Untouched catches are not churn targets.
-- `except BaseException` only to remember the primary error and re-raise; never swallow `asyncio.CancelledError` or `KeyboardInterrupt`. Named temporary exception: baseline `providers/cnu/player.py:1150-1154` `_emit` swallows `BaseException` from callbacks. Preserve that behavior through neutral P5/P6 and needed L5/L6; B1 separately makes cancellation/interruption propagate before YouTube speed, with dedicated callback/cleanup tests and acceptance. Remove this exception in B1, not during extraction.
+- `except BaseException` only to remember the primary error and re-raise; never swallow `asyncio.CancelledError` or `KeyboardInterrupt`.
 - Resources use `async with`/`asynccontextmanager`. Existing `try`/`finally` cleanup-error precedence is behavior: do not replace it with `ExitStack` in a structural PR. Every browser/protocol await stays bounded (`browser.bounded`).
 
 ```python
@@ -186,5 +186,5 @@ Keep the current density: an optional one-line module docstring, a one-line docs
 6. Functions: one job, name matches; `ruff check` is clean, with no new `# noqa: C901` and no baseline score increase.
 7. Classes: each owns state or lifetime; no single-implementation base or protocol.
 8. Types: no new `Any` for a known shape; no `cast` or `type: ignore`.
-9. Errors: contract codes, no new silent `except`, suppression equivalence proved, cancellation propagates except the named pre-B1 `_emit` exception; cleanup order kept.
+9. Errors: contract codes, no new silent `except`, suppression equivalence proved, cancellation propagates; cleanup order kept.
 10. Comments explain why; nothing dead is left behind.
