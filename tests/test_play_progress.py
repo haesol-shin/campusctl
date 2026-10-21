@@ -8,12 +8,12 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from test_play import FIRST_ID, SECOND_ID, FakePage, _lecture, _prepare
+from test_play import FIRST_ID, SECOND_ID, FakePage, _lecture, _patch_playback_clock, _prepare
 
 from campusctl import cli
 from campusctl.command_types import CommandContext
 from campusctl.progress import render_progress
-from campusctl.providers.cnu import player
+from campusctl.providers.cnu import player, player_preview, player_types
 
 
 def _play(
@@ -72,7 +72,7 @@ def _interrupt_after_position(monkeypatch: pytest.MonkeyPatch) -> None:
             }
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(player, "_read_video_state", read_video_state)
+    monkeypatch.setattr(player_preview, "_read_video_state", read_video_state)
 
 
 def test_progress_events_follow_two_lectures_in_playback_order(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -136,10 +136,8 @@ def test_position_events_are_throttled_to_thirty_seconds(tmp_path: Any, monkeypa
             "playbackRate": 1.0,
         }
 
-    monkeypatch.setattr(
-        player, "current_clock", lambda: SimpleNamespace(monotonic=lambda: clock[0], sleep=advance_clock)
-    )
-    monkeypatch.setattr(player, "_read_video_state", read_video_state)
+    _patch_playback_clock(monkeypatch, lambda: SimpleNamespace(monotonic=lambda: clock[0], sleep=advance_clock))
+    monkeypatch.setattr(player_preview, "_read_video_state", read_video_state)
     events: list[dict[str, Any]] = []
 
     result, error = _play(page, [_lecture(FIRST_ID)], events.append)
@@ -196,7 +194,7 @@ def test_human_tty_early_stop_finishes_progress_on_a_clean_line(
     captured = capsys.readouterr()
 
     assert exit_code == 1
-    assert captured.err.startswith(player.PLAY_DIAGNOSTIC_PREFIX)
+    assert captured.err.startswith(player_types.PLAY_DIAGNOSTIC_PREFIX)
     assert "\r  00:10 / 00:10\n  Done: failed\n" in captured.out
     assert captured.out.endswith("\n")
 
@@ -216,7 +214,7 @@ def test_human_tty_progress_line_ends_before_stderr_diagnostic(tmp_path: Any, mo
     progress_line = "\r  00:10 / 00:10\n  Done: failed\n"
     assert progress_line in content
     progress_end = content.index(progress_line) + len(progress_line)
-    diagnostic_start = content.index(player.PLAY_DIAGNOSTIC_PREFIX)
+    diagnostic_start = content.index(player_types.PLAY_DIAGNOSTIC_PREFIX)
     assert progress_end <= diagnostic_start
 
 

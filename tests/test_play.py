@@ -17,7 +17,8 @@ from campusctl import cli
 from campusctl.command_types import CommandContext
 from campusctl.commands import lectures as lectures_command
 from campusctl.lock import exclusive_lock
-from campusctl.providers.cnu import player
+from campusctl.providers.cnu import player, player_preview, player_types
+from campusctl.providers.cnu.media import panopto, youtube
 from campusctl.wait_clock import current_clock
 
 GENERATED_AT = "2026-10-01T12:00:00Z"
@@ -587,14 +588,20 @@ def _prepare(
         page.calls.append(("login", None))
 
     monkeypatch.setattr(player, "ensure_logged_in", fake_login)
+    monkeypatch.setattr(panopto, "ensure_logged_in", fake_login)
     return sessions
 
 
 def _invoke(capsys: pytest.CaptureFixture[str], entity_ids: list[str], *options: str) -> tuple[int, dict[str, Any]]:
     code = cli.main(["lectures", "play", *entity_ids, *options, "--json"])
     captured = capsys.readouterr()
-    assert all(line.startswith(player.PLAY_DIAGNOSTIC_PREFIX) for line in captured.err.splitlines())
+    assert all(line.startswith(player_types.PLAY_DIAGNOSTIC_PREFIX) for line in captured.err.splitlines())
     return code, json.loads(captured.out)
+
+
+def _patch_playback_clock(monkeypatch: pytest.MonkeyPatch, factory: Any) -> None:
+    for module in (player, player_preview, youtube, panopto):
+        monkeypatch.setattr(module, "current_clock", factory)
 
 
 def _fast_player_sleeps(monkeypatch: pytest.MonkeyPatch, page: FakePage) -> None:
@@ -604,9 +611,7 @@ def _fast_player_sleeps(monkeypatch: pytest.MonkeyPatch, page: FakePage) -> None
         page.calls.append(("sleep", seconds))
         await real_sleep(min(seconds, 0.001))
 
-    monkeypatch.setattr(
-        player, "current_clock", lambda: SimpleNamespace(monotonic=current_clock().monotonic, sleep=fast_sleep)
-    )
+    _patch_playback_clock(monkeypatch, lambda: SimpleNamespace(monotonic=current_clock().monotonic, sleep=fast_sleep))
 
 
 def _assert_no_dom_visibility_mutations(page: FakePage) -> None:
@@ -920,7 +925,7 @@ def test_youtube_autoplay_to_natural_end_records_full_not_counted_watch_and_cont
     assert "Playback: 1 completed, 1 recorded." in output.out
     assert any(event.get("type") == "position" for event in events)
     assert ("play-for", "row-1") not in page.calls
-    end_wait = page.calls.index(("sleep", player.YOUTUBE_AFTER_END_SECONDS))
+    end_wait = page.calls.index(("sleep", youtube.YOUTUBE_AFTER_END_SECONDS))
     close = page.calls.index(("close", "row-1"))
     assert end_wait < close
     catalog = json.loads((tmp_path / "catalog" / "lectures.json").read_text(encoding="utf-8"))
@@ -1090,7 +1095,7 @@ def test_youtube_start_failure_is_bounded_without_click_retry(
     assert diagnostic in errors[0].message
     assert result["items"][0]["outcome"] == "failed"
     assert page.frame.clicks == [".ytmCuedOverlayPlayButton"] * expected_clicks
-    assert clock.now() <= player.YOUTUBE_AUTOPLAY_WAIT_SECONDS
+    assert clock.now() <= youtube.YOUTUBE_AUTOPLAY_WAIT_SECONDS
     assert ("close", "row-1") in page.calls
     assert not page.player_control_clicks
 
@@ -1110,12 +1115,12 @@ def test_youtube_does_not_click_outside_start_state(state: dict[str, Any]) -> No
     page = FakePage(youtube_mode="cued", youtube_start_state=state)
     clock = VirtualClock()
 
-    with pytest.raises(player._PlaybackFailure) as caught:
-        asyncio.run(drive(player._wait_for_youtube_start(page.frame), clock))
+    with pytest.raises(player_types._PlaybackFailure) as caught:
+        asyncio.run(drive(youtube._wait_for_youtube_start(page.frame), clock))
 
     assert caught.value.code == "youtube-autoplay-blocked"
     assert not page.frame.clicks
-    assert clock.now() == player.YOUTUBE_AUTOPLAY_WAIT_SECONDS
+    assert clock.now() == youtube.YOUTUBE_AUTOPLAY_WAIT_SECONDS
 
 
 def test_youtube_hanging_click_uses_only_remaining_start_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1132,10 +1137,10 @@ def test_youtube_hanging_click_uses_only_remaining_start_deadline(monkeypatch: p
         return await evaluate(script, *args)
 
     monkeypatch.setattr(page.frame, "evaluate", delayed_state)
-    monkeypatch.setattr(player, "YOUTUBE_AUTOPLAY_WAIT_SECONDS", 7.0)
+    monkeypatch.setattr(youtube, "YOUTUBE_AUTOPLAY_WAIT_SECONDS", 7.0)
 
-    with pytest.raises(player._PlaybackFailure) as caught:
-        asyncio.run(drive(player._wait_for_youtube_start(page.frame), clock))
+    with pytest.raises(player_types._PlaybackFailure) as caught:
+        asyncio.run(drive(youtube._wait_for_youtube_start(page.frame), clock))
 
     assert caught.value.code == "youtube-autoplay-blocked"
     assert "check or click failed" in caught.value.message
@@ -1154,14 +1159,14 @@ def test_youtube_stall_after_two_minutes_fails_and_closes_modal(
         page.calls.append(("sleep", seconds))
         clock[0] += seconds
 
-    monkeypatch.setattr(player, "current_clock", lambda: SimpleNamespace(monotonic=lambda: clock[0], sleep=advance))
+    _patch_playback_clock(monkeypatch, lambda: SimpleNamespace(monotonic=lambda: clock[0], sleep=advance))
 
     exit_code, response = _invoke(capsys, [FIRST_ID])
 
     assert exit_code == 1
     assert response["errors"][0]["code"] == "playback-stalled"
     assert response["result"]["items"][0]["outcome"] == "failed"
-    assert clock[0] > player.PLAYER_STALL_SECONDS
+    assert clock[0] > youtube.PLAYER_STALL_SECONDS
     assert ("close", "row-1") in page.calls
     assert not page.player_open
 
@@ -1294,19 +1299,19 @@ def test_player_close_failure_preserves_failed_item_and_pauses_queue(
 
 def test_missing_youtube_frame_reaches_virtual_deadline() -> None:
     clock = VirtualClock()
-    with pytest.raises(player._PlaybackFailure) as caught:
-        asyncio.run(drive(player._youtube_frame(SimpleNamespace(frames=[])), clock))
+    with pytest.raises(player_types._PlaybackFailure) as caught:
+        asyncio.run(drive(youtube._youtube_frame(SimpleNamespace(frames=[])), clock))
     assert caught.value.message == "The YouTube embed frame did not appear."
-    assert clock.now() == player.PLAYER_FRAME_WAIT_SECONDS
+    assert clock.now() == youtube.PLAYER_FRAME_WAIT_SECONDS
     assert not clock.sleepers
 
 
 def test_panopto_splash_control_creates_video_before_waiting_for_it(monkeypatch: pytest.MonkeyPatch) -> None:
     page = FakePage(video_after_splash_click=True)
     page.player_open = True
-    monkeypatch.setattr(player, "PLAYER_POLL_INTERVAL_SECONDS", 0.0)
+    monkeypatch.setattr(player_preview, "PLAYER_POLL_INTERVAL_SECONDS", 0.0)
 
-    frame = asyncio.run(player._player_frame(page))
+    frame = asyncio.run(player_preview._player_frame(page))
 
     assert frame is page.frame
     assert page.frame.video_ready
@@ -1326,7 +1331,7 @@ def test_speed_selection_failure_pauses_queue_before_playback(
 ) -> None:
     page = FakePage(speed_option_present=speed_option_present, speed_applies=speed_applies)
     _prepare(tmp_path, monkeypatch, page)
-    monkeypatch.setattr(player, "SPEED_CHANGE_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(player_preview, "SPEED_CHANGE_TIMEOUT_SECONDS", 0.01)
 
     exit_code, response = _invoke(capsys, [FIRST_ID, SECOND_ID])
 
@@ -1388,9 +1393,9 @@ def test_cancelled_playback_is_not_replaced_by_player_close_failure(monkeypatch:
         await asyncio.sleep(0)
         return {}
 
-    monkeypatch.setattr(player, "_read_video_state", cancel_read)
+    monkeypatch.setattr(player_preview, "_read_video_state", cancel_read)
     with pytest.raises(asyncio.CancelledError):
-        asyncio.run(player._play_visible_lecture(page, "row-1", 1.25))
+        asyncio.run(player_preview._play_visible_lecture(page, "row-1", 1.25))
 
     assert ("close-attempt", "row-1") in page.calls
 
@@ -1400,7 +1405,7 @@ def test_panopto_login_failure_reports_all_not_started_before_player(
 ) -> None:
     page = FakePage(panopto_authenticated=False)
     sessions = _prepare(tmp_path, monkeypatch, page)
-    monkeypatch.setattr(player, "PANOPTO_SESSION_WAIT_SECONDS", 0.01)
+    monkeypatch.setattr(panopto, "PANOPTO_SESSION_WAIT_SECONDS", 0.01)
 
     exit_code, response = _invoke(capsys, [FIRST_ID, SECOND_ID])
 
