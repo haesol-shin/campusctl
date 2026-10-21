@@ -15,8 +15,8 @@ from . import player_preview
 from .courses import COURSE_LINK_SELECTOR
 from .lectures import LEARNING_ROW_SELECTOR, progress_is_full
 from .login import MY_LECTURE_URL, ensure_logged_in
-from .media import MEDIA_HANDLERS
-from .player_types import MediaKind, _css_string, _PlaybackFailure, _PlayDiagnostic, _watch_time
+from .media import MEDIA_HANDLERS, handler_for
+from .player_types import _css_string, _PlaybackFailure, _PlayDiagnostic, _watch_time
 
 COURSE_ROOM_SELECTOR = 'a[href="/std/course"]'
 COMPLETION_POLL_SECONDS = 600.0
@@ -173,17 +173,12 @@ def _queue_speed_rejected(lectures: list[dict[str, Any]], speed: float, replay: 
 async def _prepare_media(page: Any, config: dict[str, Any], lectures: list[dict[str, Any]]) -> None:
     """Run each handler's queue preparation once, in first-seen order, after authentication.
 
-    Preview plays Panopto unless the table entry has a play function. That is every
-    input other than ``youtube``, including missing, ``None`` and unknown media.
-    Those inputs still get the one Panopto SSO; this is not a new playability check.
+    Missing, None and unknown media resolve through ``handler_for``, the same lookup preview
+    uses. Those inputs still get the one Panopto SSO; this is not a new playability check.
     """
     prepared: set[str] = set()
-    panopto = MEDIA_HANDLERS[MediaKind.VIDEO]
     for lecture in lectures:
-        media = lecture.get("media")
-        handler = MEDIA_HANDLERS.get(media) if isinstance(media, str) else None
-        if handler is None or handler.play is None:
-            handler = panopto
+        handler = handler_for(lecture.get("media"))
         if handler.prepare is None or handler.name in prepared:
             continue
         prepared.add(handler.name)
@@ -395,7 +390,7 @@ async def play_lectures(  # noqa: C901
                 page,
                 row_id,
                 selected_speed,
-                media=lecture.get("media", MediaKind.VIDEO),
+                media=lecture.get("media"),
                 replay=replay,
                 diagnostic=diagnostic,
                 on_opened=mark_opened,

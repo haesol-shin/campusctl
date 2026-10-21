@@ -283,11 +283,14 @@ async def play(
     page: Any,
     diagnostic: _PlayDiagnostic,
     *,
+    speed: float,
     replay: bool = False,
     on_opened: Callable[[], None] | None = None,
     on_started: Callable[[], None] | None = None,
     on_position: Callable[[float, float], None] | None = None,
 ) -> tuple[float, str]:
+    # Item speed is rejected before the modal. The argument keeps one play call for every handler.
+    del speed
     diagnostic.stage = "frame"
     frame = await _youtube_frame(page)
     diagnostic.frame = frame

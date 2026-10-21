@@ -13,7 +13,8 @@ from test_play import FIRST_ID, SECOND_ID, FakePage, _lecture, _patch_playback_c
 from campusctl import cli
 from campusctl.command_types import CommandContext
 from campusctl.progress import render_progress
-from campusctl.providers.cnu import player, player_preview, player_types
+from campusctl.providers.cnu import player, player_types
+from campusctl.providers.cnu.media import panopto
 
 
 def _play(
@@ -72,7 +73,7 @@ def _interrupt_after_position(monkeypatch: pytest.MonkeyPatch) -> None:
             }
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(player_preview, "_read_video_state", read_video_state)
+    monkeypatch.setattr(panopto, "_read_video_state", read_video_state)
 
 
 def test_progress_events_follow_two_lectures_in_playback_order(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -137,7 +138,7 @@ def test_position_events_are_throttled_to_thirty_seconds(tmp_path: Any, monkeypa
         }
 
     _patch_playback_clock(monkeypatch, lambda: SimpleNamespace(monotonic=lambda: clock[0], sleep=advance_clock))
-    monkeypatch.setattr(player_preview, "_read_video_state", read_video_state)
+    monkeypatch.setattr(panopto, "_read_video_state", read_video_state)
     events: list[dict[str, Any]] = []
 
     result, error = _play(page, [_lecture(FIRST_ID)], events.append)

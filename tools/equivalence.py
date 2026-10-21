@@ -188,9 +188,12 @@ def run_child(tree: Path, root: Path, scenario: Path) -> int:
     os.environ["LINES"] = "24"
     os.environ.update(case.get("env", {}))
     with module.prepare(root, case, actions) as fake_state:
-        from campusctl import cli
+        if case.get("invoke") == "play_lectures":
+            code = module.invoke_play(case)
+        else:
+            from campusctl import cli
 
-        code = cli.main(case["argv"])
+            code = cli.main(case["argv"])
     if violations:
         raise RuntimeError("Scenario attempted forbidden external I/O")
     for name, imported in tuple(sys.modules.items()):
