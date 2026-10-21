@@ -371,7 +371,8 @@ async def play_lectures(  # noqa: C901 - ordered LMS step sequence
         if progress_enabled and progress is not None:
             try:
                 progress(event)
-            except BaseException:
+            except Exception:
+                # Display failures stay best-effort. Cancellation, interruption and other BaseException signals propagate.
                 progress_enabled = False
 
     def _finished(entity_id: str, outcome: str) -> None:

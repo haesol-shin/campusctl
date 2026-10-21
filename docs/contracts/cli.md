@@ -49,7 +49,7 @@ Human `status` without any catalogs starts “No coursework has been synced yet.
 
 YouTube startup has one 30-second deadline beginning before the first embed-state read. Overlay lookup, the playback-state recheck and the single click share that deadline; a failed or timed-out click is not retried. Startup is confirmed only when the video is unpaused and its position has advanced by more than 0.05 seconds from the first observed position.
 
-Press Ctrl-C to interrupt the active playback queue. The command exits without a JSON response; completed catalog updates remain, and player, browser-session, and lock cleanup is attempted before exit.
+Press Ctrl-C to interrupt the active playback queue, including an interruption raised while reporting progress. The command exits without a JSON response; completed catalog updates remain, and player, browser-session, and lock cleanup is attempted before exit. An ordinary progress-display failure does not stop the queue: progress reporting turns off and playback continues.
 
 ### LMS collection
 
