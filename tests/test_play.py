@@ -17,9 +17,8 @@ from campusctl import cli
 from campusctl.command_types import CommandContext
 from campusctl.commands import lectures as lectures_command
 from campusctl.lock import exclusive_lock
-from campusctl.providers.cnu import media as player_media
 from campusctl.providers.cnu import player, player_preview, player_types
-from campusctl.providers.cnu.media import youtube
+from campusctl.providers.cnu.media import panopto, youtube
 from campusctl.wait_clock import current_clock
 
 GENERATED_AT = "2026-10-01T12:00:00Z"
@@ -589,7 +588,7 @@ def _prepare(
         page.calls.append(("login", None))
 
     monkeypatch.setattr(player, "ensure_logged_in", fake_login)
-    monkeypatch.setattr(player_media, "ensure_logged_in", fake_login)
+    monkeypatch.setattr(panopto, "ensure_logged_in", fake_login)
     return sessions
 
 
@@ -601,7 +600,7 @@ def _invoke(capsys: pytest.CaptureFixture[str], entity_ids: list[str], *options:
 
 
 def _patch_playback_clock(monkeypatch: pytest.MonkeyPatch, factory: Any) -> None:
-    for module in (player, player_preview, youtube, player_media):
+    for module in (player, player_preview, youtube, panopto):
         monkeypatch.setattr(module, "current_clock", factory)
 
 
@@ -1406,7 +1405,7 @@ def test_panopto_login_failure_reports_all_not_started_before_player(
 ) -> None:
     page = FakePage(panopto_authenticated=False)
     sessions = _prepare(tmp_path, monkeypatch, page)
-    monkeypatch.setattr(player_media, "PANOPTO_SESSION_WAIT_SECONDS", 0.01)
+    monkeypatch.setattr(panopto, "PANOPTO_SESSION_WAIT_SECONDS", 0.01)
 
     exit_code, response = _invoke(capsys, [FIRST_ID, SECOND_ID])
 

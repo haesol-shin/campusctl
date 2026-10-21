@@ -11,8 +11,8 @@ from typing import Any
 import pytest
 from test_play import FIRST_ID, SECOND_ID, FakeFrame, FakePage, _fast_player_sleeps, _lecture, _write_catalog
 
-from campusctl.providers.cnu import media as player_media
 from campusctl.providers.cnu import player, player_preview
+from campusctl.providers.cnu.media import panopto
 
 
 class RecordingFrame(FakeFrame):
@@ -47,7 +47,7 @@ async def _run(
         page.calls.append(("login", None))
 
     monkeypatch.setattr(player, "ensure_logged_in", login)
-    monkeypatch.setattr(player_media, "ensure_logged_in", login)
+    monkeypatch.setattr(panopto, "ensure_logged_in", login)
     _fast_player_sleeps(monkeypatch, page)
     selected = player.validate_requested_lectures([lecture["entity_id"] for lecture in lectures], lectures, replay=True)
     result, error = await player.play_lectures(

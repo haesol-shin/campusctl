@@ -171,11 +171,20 @@ def _queue_speed_rejected(lectures: list[dict[str, Any]], speed: float, replay: 
 
 
 async def _prepare_media(page: Any, config: dict[str, Any], lectures: list[dict[str, Any]]) -> None:
-    """Run each handler's queue preparation once, in first-seen order, after authentication."""
+    """Run each handler's queue preparation once, in first-seen order, after authentication.
+
+    Preview plays Panopto unless the table entry has a play function. That is every
+    input other than ``youtube``, including missing, ``None`` and unknown media.
+    Those inputs still get the one Panopto SSO; this is not a new playability check.
+    """
     prepared: set[str] = set()
+    panopto = MEDIA_HANDLERS["video"]
     for lecture in lectures:
-        handler = MEDIA_HANDLERS.get(lecture.get("media"))
-        if handler is None or handler.prepare is None or handler.name in prepared:
+        media = lecture.get("media")
+        handler = MEDIA_HANDLERS.get(media) if isinstance(media, str) else None
+        if handler is None or handler.play is None:
+            handler = panopto
+        if handler.prepare is None or handler.name in prepared:
             continue
         prepared.add(handler.name)
         await handler.prepare(page, config)

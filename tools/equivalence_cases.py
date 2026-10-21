@@ -1159,7 +1159,7 @@ def _p5_cases() -> list[Case]:
         ("p5-youtube-missing-frame", [_P5_ROW, "--speed", "1.0"], "p5-missing-frame", 1, "json", False),
         ("p5-video-missing", [_P5_ROW, "--speed", "1.0"], "p5-missing-video", 1, "json", False),
         ("p5-youtube-stall", [_P5_ROW, "--speed", "1.0"], "p5-stall", 1, "json", False),
-        ("p5-youtube-end-grace", [_P5_ROW, "--speed", "1.0"], "p5-end", 0, "json", False),
+        ("p5-youtube-item-speed", [_P5_ROW, "--speed", "1.5"], "p5-item-speed", 1, "json", False),
         ("p5-callback-timing", [_P5_ROW, "--speed", "1.0"], "p5-callbacks", 0, "human", True),
         ("p5-callback-raises", [_P5_ROW, "--speed", "1.0"], "p5-callback-raises", 0, "human", True),
         ("p5-cleanup-close-fails", [_P5_ROW, "--speed", "1.0"], "p5-close-fails", 1, "json", False),
@@ -1351,7 +1351,6 @@ class _P5Page:
     def overlay_present(self) -> bool:
         needs_click = self.fixture in {
             "p5-blocked",
-            "p5-end",
             "p5-callbacks",
             "p5-callback-raises",
             "p5-interrupt",
@@ -1540,12 +1539,13 @@ def _install_p5_fakes(stack: ExitStack, actions: list, fixture: str) -> None:
 
     stack.enter_context(patch.object(browser_module, "open_session", fake_open_session))
     stack.enter_context(patch.object(player_module, "ensure_logged_in", fake_login))
-    try:
-        media = importlib.import_module("campusctl.providers.cnu.media")
-    except ImportError:
-        media = None
-    if media is not None and hasattr(media, "ensure_logged_in"):
-        stack.enter_context(patch.object(media, "ensure_logged_in", fake_login))
+    for module_name in ("campusctl.providers.cnu.media", "campusctl.providers.cnu.media.panopto"):
+        try:
+            media = importlib.import_module(module_name)
+        except ImportError:
+            continue
+        if hasattr(media, "ensure_logged_in"):
+            stack.enter_context(patch.object(media, "ensure_logged_in", fake_login))
 
     real_write = player_module.write_catalog
 
