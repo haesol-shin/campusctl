@@ -75,7 +75,7 @@ def test_json_bytes_match_direct_envelope_writer(
         status = "partial"
         expected_exit = 1
 
-    monkeypatch.setattr(cli, "_dispatch", lambda _args: (result, error))
+    monkeypatch.setattr(cli, "_dispatch", lambda _args, _context: (result, error))
 
     assert cli.main(argv) == expected_exit
     expected_text = io.StringIO()
@@ -151,7 +151,7 @@ def test_human_stdout_is_prepared_before_dispatch(monkeypatch: pytest.MonkeyPatc
     events: list[str] = []
     monkeypatch.setattr(cli, "prepare_stdout_for_text", lambda: events.append("prepare"))
 
-    def dispatch(_args: Any) -> tuple[dict[str, str], None]:
+    def dispatch(_args: Any, _context: Any) -> tuple[dict[str, str], None]:
         events.append("dispatch")
         return {"title": "ready"}, None
 
@@ -165,7 +165,7 @@ def test_keyboard_interrupt_is_readable_and_returns_130_in_human_mode(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _, stdout = _streams(monkeypatch, stdin_tty=True, stdout_tty=True)
-    monkeypatch.setattr(cli, "_dispatch", lambda _args: (_ for _ in ()).throw(KeyboardInterrupt()))
+    monkeypatch.setattr(cli, "_dispatch", lambda _args, _context: (_ for _ in ()).throw(KeyboardInterrupt()))
 
     assert cli.main(["doctor"]) == 130
     assert stdout.getvalue() == "Interrupted.\n"
@@ -173,7 +173,7 @@ def test_keyboard_interrupt_is_readable_and_returns_130_in_human_mode(
 
 def test_keyboard_interrupt_propagates_in_json_mode(monkeypatch: pytest.MonkeyPatch) -> None:
     _streams(monkeypatch, stdin_tty=True, stdout_tty=True)
-    monkeypatch.setattr(cli, "_dispatch", lambda _args: (_ for _ in ()).throw(KeyboardInterrupt()))
+    monkeypatch.setattr(cli, "_dispatch", lambda _args, _context: (_ for _ in ()).throw(KeyboardInterrupt()))
 
     with pytest.raises(KeyboardInterrupt):
         cli.main(["doctor", "--json"])
@@ -184,7 +184,7 @@ def test_unexpected_exception_has_no_traceback_in_human_mode(monkeypatch: pytest
     monkeypatch.setattr(
         cli,
         "_dispatch",
-        lambda _args: (_ for _ in ()).throw(RuntimeError("sensitive detail")),
+        lambda _args, _context: (_ for _ in ()).throw(RuntimeError("sensitive detail")),
     )
 
     assert cli.main(["doctor"]) == 1
@@ -291,7 +291,7 @@ def test_partial_result_and_error_use_human_renderer(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(
         cli,
         "_dispatch",
-        lambda _args: (
+        lambda _args, _context: (
             {"courses": 1, "lectures": 2, "incomplete": 1, "failed_courses": []},
             [CampusError("course-sync-failed", "One course could not be synced.")],
         ),
@@ -394,7 +394,9 @@ def test_fetch_batch_emitter_keeps_first_failure_status(
     ]
     for errors, items, status, exit_code in cases:
         _, stdout = _streams(monkeypatch, stdin_tty=False, stdout_tty=output == "human")
-        monkeypatch.setattr(cli, "_dispatch", lambda _args, items=items, errors=errors: ({"items": items}, errors))
+        monkeypatch.setattr(
+            cli, "_dispatch", lambda _args, _context, items=items, errors=errors: ({"items": items}, errors)
+        )
         argv = [command, "fetch", "one", "two"]
         if output == "json":
             argv.append("--json")
@@ -415,7 +417,7 @@ def test_fetch_batch_emitter_keeps_first_failure_status(
     monkeypatch.setattr(
         cli,
         "_dispatch",
-        lambda _args: ({"courses": 1, "lectures": 0, "incomplete": 0, "failed_courses": []}, ordinary),
+        lambda _args, _context: ({"courses": 1, "lectures": 0, "incomplete": 0, "failed_courses": []}, ordinary),
     )
     assert cli.main(["sync", "--json"]) == 1
     preserved = json.loads(stdout.getvalue())

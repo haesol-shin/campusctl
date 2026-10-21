@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import argparse
-from typing import Any
 
 from campusctl.browser_options import preflight_browser_mode
 from campusctl.catalog_view import DOMAINS
 from campusctl.cli_args import _OUTPUT_NOTE, _with_json
-from campusctl.command_types import CommandBindings
+from campusctl.command_types import CommandBindings, CommandContext, CommandResult, command_result
 from campusctl.commands.course_inputs import network_course
 from campusctl.config import load_config
 from campusctl.envelope import CampusError
@@ -43,9 +42,9 @@ def profile_scope(args: argparse.Namespace) -> tuple[str, ...]:
     return parse_domains(args.only)
 
 
-def dispatch(args: argparse.Namespace, bindings: CommandBindings) -> tuple[Any, CampusError | list[CampusError] | None]:
+def dispatch(args: argparse.Namespace, bindings: CommandBindings, context: CommandContext) -> CommandResult:
     root = data_dir()
-    ids_only = args._output_mode == "json"
+    ids_only = context.output_mode == "json"
     domains = parse_domains(args.only)
     config = load_config()
     modes = {
@@ -60,12 +59,14 @@ def dispatch(args: argparse.Namespace, bindings: CommandBindings) -> tuple[Any, 
         mode=modes[domains[0]],
         discover_courses=bindings.discover_courses,
     )
-    return run_sync(
-        config,
-        root,
-        domains,
-        course_id,
-        headless=args.headless_override,
-        profile=getattr(args, "_profile", None),
-        course_snapshot=snapshot,
+    return command_result(
+        *run_sync(
+            config,
+            root,
+            domains,
+            course_id,
+            headless=args.headless_override,
+            profile=context.profile,
+            course_snapshot=snapshot,
+        )
     )

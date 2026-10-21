@@ -11,6 +11,7 @@ import pytest
 from test_play import FIRST_ID, SECOND_ID, FakePage, _lecture, _prepare
 
 from campusctl import cli
+from campusctl.command_types import CommandContext
 from campusctl.progress import render_progress
 from campusctl.providers.cnu import player
 
@@ -240,12 +241,10 @@ def test_terminal_write_failure_does_not_mask_keyboard_interrupt(
     _prepare(tmp_path, monkeypatch, page, default_speed=1.0)
     _interrupt_after_position(monkeypatch)
     stream = FailingTTY()
-    monkeypatch.setattr(cli.sys, "stdout", stream)
     args = cli.build_parser().parse_args(["lectures", "play", FIRST_ID])
-    args._output_mode = "human"
-
+    monkeypatch.setattr(cli.sys, "stdout", stream)
     with pytest.raises(KeyboardInterrupt):
-        cli._dispatch(args)
+        cli._dispatch(args, CommandContext(output_mode="human", interactive=False))
     assert stream.raised == 1
 
 

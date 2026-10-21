@@ -6,6 +6,7 @@ import argparse
 import re
 import sys
 from contextlib import suppress
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
@@ -13,7 +14,13 @@ from campusctl.browser_options import preflight_browser_mode
 from campusctl.catalog import read_catalog
 from campusctl.catalog_view import cache_metadata
 from campusctl.cli_args import EnvelopeArgumentParser, _with_json
-from campusctl.command_types import CommandBindings
+from campusctl.command_types import (
+    CommandBindings,
+    CommandContext,
+    CommandResult,
+    command_result,
+    unchanged_bare_failure,
+)
 from campusctl.commands.course_inputs import (
     list_refresh_scope,
     network_course,
@@ -58,6 +65,21 @@ def _natural_sort_key(value: Any) -> tuple[int, tuple[tuple[int, str | int], ...
     return 0, parts
 
 
+@dataclass(frozen=True, slots=True)
+class _LectureList:
+    """List payload. `refresh` is omitted unless a refresh ran."""
+
+    cache: dict[str, Any]
+    lectures: list[Any]
+    refresh: dict[str, Any] | None = None
+
+    def to_json(self) -> dict[str, Any]:
+        payload = {"cache": self.cache, "lectures": self.lectures}
+        if self.refresh is not None:
+            payload["refresh"] = self.refresh
+        return payload
+
+
 def _lecture_course_id(lecture: dict[str, Any]) -> str:
     course = lecture.get("course")
     if not isinstance(course, dict):
@@ -66,9 +88,9 @@ def _lecture_course_id(lecture: dict[str, Any]) -> str:
     return course_id if isinstance(course_id, str) else ""
 
 
-def _list(args: argparse.Namespace, bindings: CommandBindings) -> tuple[Any, CampusError | list[CampusError] | None]:
+def _list(args: argparse.Namespace, bindings: CommandBindings, context: CommandContext) -> CommandResult:
     root = data_dir()
-    ids_only = args._output_mode == "json"
+    ids_only = context.output_mode == "json"
     if args.refresh:
         config = load_config()
         mode = preflight_browser_mode(config, "lectures.sync", override=args.headless_override)
@@ -83,13 +105,13 @@ def _list(args: argparse.Namespace, bindings: CommandBindings) -> tuple[Any, Cam
         )
     else:
         course_id, snapshot = select_course(args.course, root, ids_only=ids_only)
-    refreshed = refresh("lectures", root, course_id, args, snapshot) if args.refresh else None
+    refreshed = refresh("lectures", root, course_id, args, snapshot, profile=context.profile) if args.refresh else None
     try:
         catalog = read_catalog()
     except CampusError:
         if refreshed is None or not refreshed[1]:
             raise
-        return {"refresh": refresh_result(refreshed)}, refreshed[1]
+        return command_result({"refresh": refresh_result(refreshed)}, refreshed[1])
     course_order = {course["course_id"]: index for index, course in enumerate(catalog["courses"])}
     lectures = catalog["lectures"]
     if course_id is not None:
@@ -104,17 +126,15 @@ def _list(args: argparse.Namespace, bindings: CommandBindings) -> tuple[Any, Cam
             _natural_sort_key(lecture.get("sequence")),
         ),
     )
-    result = {
-        "cache": {**cache_metadata(catalog, now=datetime.now(UTC), domain="lectures"), "path_present": True},
-        "lectures": lectures,
-    }
-    if refreshed is not None:
-        result["refresh"] = refresh_result(refreshed)
-        return result, refreshed[1]
-    return result, None
+    listed = _LectureList(
+        cache={**cache_metadata(catalog, now=datetime.now(UTC), domain="lectures"), "path_present": True},
+        lectures=lectures,
+        refresh=refresh_result(refreshed) if refreshed is not None else None,
+    )
+    return command_result(listed.to_json(), None if refreshed is None else refreshed[1])
 
 
-def _play(args: argparse.Namespace, bindings: CommandBindings) -> tuple[Any, CampusError | list[CampusError] | None]:
+def _play(args: argparse.Namespace, bindings: CommandBindings, context: CommandContext) -> CommandResult:
     import asyncio
 
     from campusctl.browser import open_session
@@ -122,9 +142,8 @@ def _play(args: argparse.Namespace, bindings: CommandBindings) -> tuple[Any, Cam
     catalog = read_catalog()
     lectures = bindings.validate_requested_lectures(args.entity_ids, catalog["lectures"], replay=args.replay)
     config = load_config()
-    output_mode = args._output_mode
-    if args.replay and output_mode == "human":
-        if not args._interactive:
+    if args.replay and context.output_mode == "human":
+        if not context.interactive:
             raise CampusError(
                 "replay-confirmation-required",
                 "Replay needs two interactive terminals.",
@@ -145,10 +164,10 @@ def _play(args: argparse.Namespace, bindings: CommandBindings) -> tuple[Any, Cam
 
     progress_callback = None
     finish_progress = None
-    if output_mode == "human":
+    if context.output_mode == "human":
         progress_callback, finish_progress = _progress_output()
 
-    async def _play() -> tuple[dict[str, Any], CampusError | list[CampusError] | None]:
+    async def _run() -> tuple[dict[str, Any], CampusError | list[CampusError] | None]:
         try:
             async with open_session(config, data_dir=data_dir(), headless=mode, operation="lectures.play") as session:
                 return await bindings.play_lectures(
@@ -164,15 +183,14 @@ def _play(args: argparse.Namespace, bindings: CommandBindings) -> tuple[Any, Cam
                 with suppress(Exception):
                     finish_progress()
 
-    return asyncio.run(_play())
+    return command_result(*asyncio.run(_run()))
 
 
-def dispatch(
-    args: argparse.Namespace, bindings: CommandBindings
-) -> tuple[Any, CampusError | list[CampusError] | None] | None:
-    if args.lectures_command == "list":
-        return _list(args, bindings)
-    if args.lectures_command == "play":
-        return _play(args, bindings)
-    # No subcommand: the caller's unpacking rejects this as before; L3 decides the contract.
-    return None
+def dispatch(args: argparse.Namespace, bindings: CommandBindings, context: CommandContext) -> CommandResult:
+    match args.lectures_command:
+        case "list":
+            return _list(args, bindings, context)
+        case "play":
+            return _play(args, bindings, context)
+        case _:
+            unchanged_bare_failure()
