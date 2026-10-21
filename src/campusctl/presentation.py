@@ -2,18 +2,14 @@ from __future__ import annotations
 
 import re
 import shutil
-from collections.abc import Callable
+from collections.abc import Mapping
 from typing import Any, TextIO
 
 from campusctl.catalog import catalog_path
-from campusctl.commands import discover_domain_modules
+from campusctl.command_types import Renderer
 from campusctl.domain_catalog import domain_catalog_path
 from campusctl.paths import data_dir
 from campusctl.text_layout import _cells, _pad, _text, _truncate, _wrap
-
-_DOMAIN_RENDERERS: dict[str, Callable[[str, dict[str, Any], int], list[str]]] = {
-    name: module.render for name, module in discover_domain_modules().items()
-}
 
 _STATUS_WIDTH = 11
 _QUOTED_COMMAND = re.compile(r"""(?P<quote>['"`])(?P<command>campusctl(?: [^'"`]+)+)(?P=quote)""")
@@ -597,6 +593,7 @@ def render_human(  # noqa: C901
     envelope: dict[str, Any],
     stream: TextIO,
     *,
+    renderers: Mapping[str, Renderer],
     width: int | None = None,
     color: bool = False,
 ) -> None:
@@ -609,8 +606,8 @@ def render_human(  # noqa: C901
     domain_name, separator, suffix = command.partition(".")
     if domain_name == "sync":
         domain_name = suffix
-    if separator and domain_name in _DOMAIN_RENDERERS:
-        lines = _DOMAIN_RENDERERS[domain_name](command, result, terminal_width)
+    if separator and domain_name in renderers:
+        lines = renderers[domain_name](command, result, terminal_width)
     elif command == "lectures.list":
         lines = _lectures(result, terminal_width)
     elif command == "courses.list":

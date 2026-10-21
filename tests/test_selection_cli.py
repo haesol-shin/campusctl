@@ -6,8 +6,10 @@ import json
 from pathlib import Path
 
 import pytest
+from config_patch import patch_load_config
 
 from campusctl import cli
+from campusctl.commands import course_inputs
 
 
 def _catalog(root: Path, courses: list[tuple[str, str]]) -> None:
@@ -108,7 +110,7 @@ def test_refresh_runs_only_selected_domain_and_returns_updated_cache(
     from campusctl.providers.cnu.sync_all import DomainOutcome
 
     monkeypatch.setenv("CAMPUSCTL_DATA_DIR", str(tmp_path))
-    monkeypatch.setattr(cli, "load_config", lambda: {})
+    patch_load_config(monkeypatch, lambda: {})
     calls: list[str | None] = []
 
     async def refresh(config: dict, root: Path, domains: tuple[str, ...], course_id: str | None, **kwargs: object):
@@ -146,7 +148,7 @@ def test_numeric_course_is_resolved_before_combined_collection(
     monkeypatch.setenv("CAMPUSCTL_OUTPUT", "human")
     _catalog(tmp_path, [("course-b", "Beta")])
     assert _call(["courses", "list"], capsys)[0] == 0
-    monkeypatch.setattr(cli, "load_config", lambda: {})
+    patch_load_config(monkeypatch, lambda: {})
     calls: list[str] = []
 
     async def collect(config: dict, root: Path, domains: tuple[str, ...], course_id: str | None, **kwargs: object):
@@ -188,10 +190,12 @@ def test_uncached_human_name_uses_live_roster_for_filtered_refresh(
 
     monkeypatch.setenv("CAMPUSCTL_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("CAMPUSCTL_OUTPUT", "human")
-    monkeypatch.setattr(cli, "load_config", lambda: {})
+    patch_load_config(monkeypatch, lambda: {})
     selectors: list[str | None] = []
 
-    def discover(selector: str, config: dict, root: Path, domain: str, *, ids_only: bool, mode: bool):
+    def discover(
+        selector: str, config: dict, root: Path, domain: str, *, ids_only: bool, mode: bool, discover_courses: object
+    ):
         assert domain == "assignments" and not ids_only and not mode
         return resolve_course(selector, [{"course_id": "course-a", "label": "Alpha Study"}], ids_only=False)
 
@@ -211,7 +215,7 @@ def test_uncached_human_name_uses_live_roster_for_filtered_refresh(
         )
         return {"assignments": DomainOutcome({"courses": 1, "assignments": 0})}
 
-    monkeypatch.setattr(cli, "_discover_live_course", discover)
+    monkeypatch.setattr(course_inputs, "discover_live_course", discover)
     monkeypatch.setattr(dispatcher, "sync_all", provider)
     code, output = _call(["assignments", "list", "--course", "Alpha", "--refresh"], capsys)
     assert code == 0 and selectors == ["course-a"] and "0 assignments" in output

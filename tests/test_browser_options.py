@@ -120,9 +120,10 @@ def test_actual_local_headless_chromium_without_display(tmp_path: Path, monkeypa
 def test_doctor_exposes_supported_fetch_headless_keys(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CAMPUSCTL_CONFIG_DIR", str(tmp_path / "config"))
     monkeypatch.setenv("CAMPUSCTL_DATA_DIR", str(tmp_path / "data"))
-    from campusctl.cli import doctor_result
+    from campusctl.composition import CAPABILITIES
+    from campusctl.doctor import doctor_result
 
-    result, _error = doctor_result()
+    result, _error = doctor_result(None, CAPABILITIES)
     support = result["browser"]["headless_support"]
     assert support["assignments.fetch"] is True
     assert support["notices.fetch"] is True

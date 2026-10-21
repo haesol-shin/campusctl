@@ -102,6 +102,7 @@ def dispatch(args: argparse.Namespace) -> tuple[dict[str, Any], CampusError | No
                 }
             ),
             sys.stdout,
+            renderers={"materials": render},
         )
         sys.stdout.flush()
         publish_material_snapshot(root, snapshot[1], [row["entity_id"] for row in catalog["materials"]])

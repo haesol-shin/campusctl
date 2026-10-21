@@ -9,10 +9,12 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from config_patch import patch_load_config
 from virtual_clock import VirtualClock, drive
 
 from campusctl import browser as browser_module
 from campusctl import cli
+from campusctl.commands import lectures as lectures_command
 from campusctl.lock import exclusive_lock
 from campusctl.providers.cnu import player
 from campusctl.wait_clock import current_clock
@@ -576,7 +578,7 @@ def _prepare(
 ) -> FakeSessions:
     _write_catalog(tmp_path, lectures)
     monkeypatch.setenv("CAMPUSCTL_DATA_DIR", str(tmp_path))
-    monkeypatch.setattr(cli, "load_config", lambda: {"playback": {"default_speed": default_speed}})
+    patch_load_config(monkeypatch, lambda: {"playback": {"default_speed": default_speed}})
     sessions = FakeSessions(page)
     monkeypatch.setattr(browser_module, "open_session", sessions.open_session)
 
@@ -904,7 +906,7 @@ def test_youtube_autoplay_to_natural_end_records_full_not_counted_watch_and_cont
     _fast_player_sleeps(monkeypatch, page)
     events: list[dict[str, Any]] = []
     monkeypatch.setattr(cli, "_resolve_output_mode", lambda *args, **kwargs: "human")
-    monkeypatch.setattr(cli, "_progress_output", lambda: (events.append, lambda: None))
+    monkeypatch.setattr(lectures_command, "_progress_output", lambda: (events.append, lambda: None))
 
     exit_code = cli.main(["lectures", "play", FIRST_ID, SECOND_ID, "--speed", "1.0"])
     output = capsys.readouterr()

@@ -4,7 +4,7 @@ from io import StringIO
 from types import SimpleNamespace
 from typing import Any
 
-from campusctl import __version__
+from campusctl import __version__, composition
 from campusctl.presentation import render_human
 
 ENTITY_ID = "cnu_lecture:course-a:lecture-row-001"
@@ -49,6 +49,7 @@ def _render(command: str, result: dict[str, Any], *, width: int = 80, errors: li
         command,
         {"status": "partial" if errors else "ok", "result": result, "errors": errors or []},
         stream,
+        renderers=composition.RENDERERS,
         width=width,
     )
     return stream.getvalue()
@@ -375,6 +376,7 @@ def test_renderer_uses_terminal_width_when_omitted(monkeypatch) -> None:
         "doctor",
         {"status": "ok", "result": {"config": {"present": True}}, "errors": []},
         stream,
+        renderers=composition.RENDERERS,
     )
 
     assert stream.getvalue() == "[ok] Configuration\nfile present\nReady.\n"

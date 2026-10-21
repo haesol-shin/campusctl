@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from config_patch import patch_load_config
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from campusctl import cli
@@ -83,7 +84,7 @@ class FakePage:
 def test_unsupported_domain_is_rejected_before_loading_config(
     capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(cli, "load_config", lambda: pytest.fail("unsupported domain must be validated first"))
+    patch_load_config(monkeypatch, lambda: pytest.fail("unsupported domain must be validated first"))
     code = cli.main(["sync", "--only", "no-such-domain", "--json"])
     envelope = json.loads(capsys.readouterr().out)
     assert code == 2
@@ -95,7 +96,7 @@ def test_busy_session_lock_returns_exit_75(
 ) -> None:
     lock_path = tmp_path / "session.lock"
     monkeypatch.setenv("CAMPUSCTL_DATA_DIR", str(tmp_path))
-    monkeypatch.setattr(cli, "load_config", lambda: {"browser": {"lock_path": str(lock_path)}})
+    patch_load_config(monkeypatch, lambda: {"browser": {"lock_path": str(lock_path)}})
     with exclusive_lock(lock_path):
         code = cli.main(["sync", "--json"])
     envelope = json.loads(capsys.readouterr().out)

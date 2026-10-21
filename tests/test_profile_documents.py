@@ -5,6 +5,7 @@ from collections import Counter
 from types import SimpleNamespace
 
 import pytest
+from config_patch import patch_load_config
 
 from campusctl import browser
 from campusctl.browser import (
@@ -220,7 +221,7 @@ def test_profiled_sync_matches_plain_sync_and_attributes_waits(tmp_path, monkeyp
             },
             catalog_path(on_root),
         )
-        monkeypatch.setattr(cli, "load_config", lambda *args, **kwargs: config)
+        patch_load_config(monkeypatch, lambda *args, **kwargs: config)
         monkeypatch.setenv("CAMPUSCTL_DATA_DIR", str(on_root))
         code = cli.main(["--headless", "--profile", "--json", "sync", "--only", ",".join(DOMAINS), "--course", IDS[0]])
         captured = capsys.readouterr()
