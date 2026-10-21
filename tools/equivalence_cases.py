@@ -1152,6 +1152,12 @@ _P5_ADVANCING = {"p5-advancing", "p5-close-after-success"}
 _P5_RATES = {"p5-native-rate", "p5-rate-true", "p5-rate-near-one", "p5-rate-missing"}
 _P5_COVERAGE = {"p5-video-coverage", "p5-video-replay-ended", "p5-video-restart-fails"}
 _P5_CLOSE_FAILS = {"p5-close-fails", "p5-close-after-success", "p5-video-close-after-success"}
+_P5_ODD_DURATION = {
+    "p5-video-zero-duration": 0.0,
+    "p5-video-negative-duration": -5.0,
+    "p5-video-nan-duration": float("nan"),
+    "p5-video-inf-duration": float("inf"),
+}
 
 
 def _p5_is_video(fixture: str) -> bool:
@@ -1181,6 +1187,11 @@ def _p5_cases() -> list[Case]:
         ("l5-youtube-rate-drift", [_P5_ROW, "--speed", "1.0"], "p5-rate-drift", 1, "json", False),
         ("l5-youtube-read-error", [_P5_ROW, "--speed", "1.0"], "p5-youtube-read-error", 1, "json", False),
         ("l5-youtube-start-boundary", [_P5_ROW, "--speed", "1.0"], "p5-start-boundary", 0, "json", False),
+        ("l5-youtube-start-edge", [_P5_ROW, "--speed", "1.0"], "p5-start-edge", 0, "json", False),
+        ("l5-video-zero-duration", [_P5_ROW, "--speed", "1.0"], "p5-video-zero-duration", 0, "json", False),
+        ("l5-video-negative-duration", [_P5_ROW, "--speed", "1.0"], "p5-video-negative-duration", 0, "json", False),
+        ("l5-video-nan-duration", [_P5_ROW, "--speed", "1.0"], "p5-video-nan-duration", 0, "json", False),
+        ("l5-video-inf-duration", [_P5_ROW, "--speed", "1.0"], "p5-video-inf-duration", 0, "json", False),
         ("l5-youtube-start-past-boundary", [_P5_ROW, "--speed", "1.0"], "p5-start-past", 1, "json", False),
         ("l5-youtube-near-end", [_P5_ROW, "--speed", "1.0"], "p5-near-end", 0, "json", False),
         ("l5-youtube-replay-near-end", [_P5_ROW, "--speed", "1.0", "--replay"], "p5-near-end", 0, "json", False),
@@ -1419,6 +1430,7 @@ class _P5Page:
             "p5-interrupt",
             "p5-mixed",
             "p5-start-boundary",
+            "p5-start-edge",
             "p5-start-past",
             "p5-near-end",
             "p5-youtube-timeout",
@@ -1575,6 +1587,20 @@ class _P5Page:
                 "ended": False,
                 "playbackRate": 1.0,
             }
+        if self.fixture == "p5-start-edge":
+            self.yt_reads += 1
+            # Exactly the movement threshold above the start position, then a real advance.
+            current = [0.05, 5.0, 15.0][min(self.yt_reads, 3) - 1]
+            if current >= 15.0:
+                self.states[self.active_row] = "F"
+            return {
+                "exists": True,
+                "currentTime": current,
+                "duration": 15.0,
+                "paused": False,
+                "ended": current >= 15.0,
+                "playbackRate": 1.0,
+            }
         if self.fixture == "p5-near-end":
             self.yt_reads += 1
             current = [14.5, 14.6, 15.0][min(self.yt_reads, 3) - 1]
@@ -1641,6 +1667,16 @@ class _P5Page:
 
     def panopto_status(self) -> dict:
         self.panopto_reads += 1
+        if self.fixture in _P5_ODD_DURATION:
+            duration = _P5_ODD_DURATION[self.fixture]
+            if self.panopto_paused:
+                return self._panopto_point(0.0, duration, ended=False, paused=True)
+            self.panopto_playing_reads += 1
+            reads = self.panopto_playing_reads
+            ended = reads >= 4
+            if ended:
+                self.states[self.active_row] = "F"
+            return self._panopto_point(reads * 3.0, duration, ended=ended, paused=False)
         if self.fixture in _P5_COVERAGE or self.fixture in {
             "p5-video-callbacks",
             "p5-video-read-error",
