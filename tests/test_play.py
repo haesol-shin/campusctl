@@ -1491,8 +1491,9 @@ def test_panopto_elapsed_includes_the_gap_after_play_click(monkeypatch: pytest.M
     monkeypatch.setattr(panopto, "_player_frame", frame)
     seen: list[float] = []
 
-    def on_started() -> None:
+    def on_started(measured_at: float) -> None:
         seen.append(clock.timestamp)
+        assert measured_at == clock.timestamp
         clock.timestamp += 4.0
 
     elapsed, watch_time = asyncio.run(
@@ -1532,3 +1533,66 @@ def test_unsupported_speed_is_usage_error_before_browser_open(
     assert response["status"] == "user-action"
     assert response["errors"][0]["code"] == "usage-error"
     assert sessions.opens == 0
+
+
+def test_userstring_youtube_plays_youtube_through_preview(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from collections import UserString
+
+    page = FakePage(youtube_rows={"row-1"}, complete_after_play={"row-1": True})
+    _prepare(tmp_path, monkeypatch, page, lectures=[_lecture(FIRST_ID, media="youtube")], default_speed=1.0)
+    _fast_player_sleeps(monkeypatch, page)
+    lecture = _lecture(FIRST_ID, media="youtube")
+    lecture["media"] = UserString("youtube")
+
+    result, error = asyncio.run(player.play_lectures(page, {"playback": {"default_speed": 1.0}}, [lecture], speed=1.0))
+
+    assert error is None
+    assert result["items"][0]["outcome"] == "completed"
+    assert any("campusctl-read-youtube-video-state" in script for script in page.evaluations)
+    assert not any("campusctl-read-video-state" in script for script in page.evaluations)
+
+
+def test_unhashable_media_fails_in_preview_before_the_modal() -> None:
+    for media in ([], {}):
+        page = FakePage()
+        with pytest.raises(player_types._PlaybackFailure) as caught:
+            asyncio.run(player_preview._play_visible_lecture(page, "row-1", 1.0, media=media))
+        assert caught.value.code == "playback-failed"
+        assert caught.value.elapsed_seconds == 0.0
+        assert page.calls == []
+        assert not page.player_open
+
+
+def test_prepare_keeps_the_string_guard(monkeypatch: pytest.MonkeyPatch) -> None:
+    from collections import UserString
+
+    seen: list[str] = []
+
+    async def has_session(_page: Any) -> bool:
+        seen.append("panopto")
+        return True
+
+    monkeypatch.setattr(panopto, "_has_panopto_session", has_session)
+    page = FakePage()
+    config = {"playback": {"default_speed": 1.0}}
+
+    async def once(media: object, *, missing: bool = False) -> None:
+        seen.clear()
+        lecture = _lecture(FIRST_ID)
+        if missing:
+            lecture.pop("media")
+        else:
+            lecture["media"] = media
+        await player._prepare_media(page, config, [lecture])
+
+    cases = (
+        (None, True, ["panopto"]),
+        (None, False, ["panopto"]),
+        (UserString("youtube"), False, ["panopto"]),
+        ([], False, ["panopto"]),
+        ("offline", False, ["panopto"]),
+        ("youtube", False, []),
+    )
+    for media, missing, expected in cases:
+        asyncio.run(once(media, missing=missing))
+        assert seen == expected

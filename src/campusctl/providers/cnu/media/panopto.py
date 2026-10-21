@@ -308,7 +308,7 @@ async def play(  # noqa: C901 - ordered LMS step sequence
     speed: float,
     replay: bool = False,
     on_opened: Callable[[], None] | None = None,
-    on_started: Callable[[], None] | None = None,
+    on_started: Callable[[float], None] | None = None,
     on_position: Callable[[float, float], None] | None = None,
 ) -> tuple[float, str]:
     frame = await _player_frame(page, diagnostic)
@@ -346,7 +346,7 @@ async def play(  # noqa: C901 - ordered LMS step sequence
 
     started_at = current_clock().monotonic()
     if on_started is not None:
-        on_started()
+        on_started(started_at)
     last_progress_at = started_at
     previous_time = -1.0
     last_position_event_at: float | None = None

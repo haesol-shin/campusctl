@@ -1251,7 +1251,7 @@ def _p5_cases() -> list[Case]:
 
 
 def _p6_cases() -> list[Case]:
-    """Panopto paths that P5 did not already name. Each one runs real play_lectures."""
+    """Panopto paths that P5 did not already name. Playback cases run real play_lectures."""
     specs = [
         ("p6-mixed-reverse", [_P5_ROW, _P5_ROW_2, "--speed", "1.0"], "p6-mixed-reverse", 0, "json"),
         ("p6-splash-click", [_P5_ROW, "--speed", "1.0"], "p6-splash-click", 0, "json"),
@@ -1261,6 +1261,7 @@ def _p6_cases() -> list[Case]:
         ("p6-row-incomplete", [_P5_ROW, _P5_ROW_2, "--speed", "1.0"], "p6-row-incomplete", 1, "json"),
         ("p6-row-read-fail", [_P5_ROW, _P5_ROW_2, "--speed", "1.0"], "p6-row-read-fail", 1, "json"),
         ("p6-catalog-fail", [_P5_ROW, _P5_ROW_2, "--speed", "1.0"], "p6-catalog-fail", 1, "json"),
+        ("p6-started-gap", [_P5_ROW, "--speed", "1.0"], "p6-started-gap", 1, "json"),
         ("p6-video-interrupt", [_P5_ROW, _P5_ROW_2, "--speed", "1.0"], "p6-video-interrupt", 130, "human"),
     ]
     cases = []
@@ -1285,6 +1286,40 @@ def _p6_cases() -> list[Case]:
             "expected": 0,
             "invoke": "play_lectures",
             "direct_media": ["missing", "none", "offline"],
+        }
+    )
+    cases.append(
+        {
+            "name": "p6-userstring-youtube",
+            "argv": ["lectures", "play"],
+            "fixture": "p5-blocked",
+            "width": 80,
+            "env": {"CAMPUSCTL_OUTPUT": "json"},
+            "expected": 0,
+            "invoke": "play_lectures",
+            "direct_media": ["userstring-youtube"],
+        }
+    )
+    cases.append(
+        {
+            "name": "p6-unhashable-preview",
+            "argv": ["lectures", "play"],
+            "fixture": "p6-unhashable-preview",
+            "width": 80,
+            "env": {"CAMPUSCTL_OUTPUT": "json"},
+            "expected": 1,
+            "invoke": "play_lectures",
+        }
+    )
+    cases.append(
+        {
+            "name": "p6-prepare-guard",
+            "argv": ["lectures", "play"],
+            "fixture": "p6-prepare-guard",
+            "width": 80,
+            "env": {"CAMPUSCTL_OUTPUT": "json"},
+            "expected": 0,
+            "invoke": "play_lectures",
         }
     )
     return cases
@@ -1891,6 +1926,120 @@ def _install_p5_fakes(stack: ExitStack, actions: list, fixture: str) -> None:
             return progress, finish_progress
 
         stack.enter_context(patch.object(lectures_module, "_progress_output", wrapped_progress))
+    if fixture == "p6-started-gap":
+        _arm_panopto_started_gap(page, clock)
+
+
+def _arm_panopto_started_gap(page: _P5Page, clock: _P5Clock) -> None:
+    """Advance once between the handler's started_at read and a later failing state read."""
+    original_monotonic = clock.monotonic
+    original_click = page._click
+    original_status = page.panopto_status
+    armed = False
+
+    def monotonic() -> float:
+        nonlocal armed
+        value = original_monotonic()
+        if armed:
+            armed = False
+            clock.timestamp += 0.002
+        return value
+
+    def click(selector: str) -> None:
+        nonlocal armed
+        original_click(selector)
+        lowered = selector.lower()
+        if (
+            "play" in lowered
+            and "titledetailcontents" not in lowered
+            and "btnpreviewclose" not in lowered
+            and "btn_popclose" not in lowered
+        ):
+            clock.timestamp = 2.049
+            armed = True
+
+    def status() -> dict:
+        if not page.panopto_paused:
+            clock.timestamp = 4.1
+            raise RuntimeError("synthetic browser read failure at fixed external deadline")
+        return original_status()
+
+    clock.monotonic = monotonic
+    page._click = click
+    page.panopto_status = status
+
+
+def _invoke_unhashable_preview() -> int:
+    """Preview lookup of an unhashable media value, before the modal."""
+    import asyncio
+
+    from campusctl.providers.cnu.player_preview import _play_visible_lecture
+    from campusctl.providers.cnu.player_types import _PlaybackFailure
+
+    page = _DIRECT_PAGE
+    try:
+        asyncio.run(_play_visible_lecture(page, "row-1", 1.0, media=[]))
+    except _PlaybackFailure as error:
+        print(
+            json.dumps(
+                {
+                    "code": error.code,
+                    "elapsed": error.elapsed_seconds,
+                    "error": "_PlaybackFailure",
+                    "modal_open": page.modal_open,
+                },
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+        )
+        return 1
+    print(json.dumps({"error": None, "modal_open": page.modal_open}, separators=(",", ":"), sort_keys=True))
+    return 0
+
+
+def _invoke_prepare_guard() -> int:
+    """Queue preparation keeps its string guard; each input is one call."""
+    import asyncio
+    from collections import UserString
+
+    from campusctl.providers.cnu.player import _prepare_media
+
+    page = _DIRECT_PAGE
+    config = {"playback": {"default_speed": 1.0}}
+
+    async def run() -> list[dict]:
+        results = []
+        for index, spec in enumerate(("missing", "none", "userstring", "list", "offline", "youtube"), 1):
+            page.authenticated = False
+            page.sso_submits = 0
+            row = _lecture_row(
+                f"cnu_lecture:course.invalid:row-{index}",
+                f"Synthetic {spec}",
+                "course.invalid",
+                "Synthetic course",
+            )
+            if spec == "missing":
+                row.pop("media", None)
+            elif spec == "none":
+                row["media"] = None
+            elif spec == "userstring":
+                row["media"] = UserString("youtube")
+            elif spec == "list":
+                row["media"] = []
+            elif spec == "offline":
+                row["media"] = "offline"
+            else:
+                row["media"] = "youtube"
+            error_name = None
+            try:
+                await _prepare_media(page, config, [row])
+            except Exception as error:
+                error_name = type(error).__name__
+            results.append({"error": error_name, "spec": spec, "sso": page.sso_submits})
+        return results
+
+    print(json.dumps(asyncio.run(run()), separators=(",", ":")))
+    return 0
 
 
 def invoke_play(case: Case) -> int:
@@ -1899,6 +2048,10 @@ def invoke_play(case: Case) -> int:
 
     from campusctl.providers.cnu.player import play_lectures
 
+    if case.get("fixture") == "p6-unhashable-preview":
+        return _invoke_unhashable_preview()
+    if case.get("fixture") == "p6-prepare-guard":
+        return _invoke_prepare_guard()
     lectures = []
     for index, spec in enumerate(case.get("direct_media", ()), 1):
         row = _lecture_row(
@@ -1911,6 +2064,10 @@ def invoke_play(case: Case) -> int:
             row.pop("media", None)
         elif spec == "none":
             row["media"] = None
+        elif spec == "userstring-youtube":
+            from collections import UserString
+
+            row["media"] = UserString("youtube")
         else:
             row["media"] = spec
         lectures.append(row)

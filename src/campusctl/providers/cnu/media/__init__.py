@@ -39,14 +39,3 @@ MEDIA_HANDLERS = {
         play=youtube.play,
     ),
 }
-
-
-def handler_for(media: object) -> MediaHandler:
-    """Missing, None and unknown media stay on Panopto, the same as queue preparation.
-
-    Every input other than ``youtube`` still takes that path. This is not a new playability check.
-    """
-    found = MEDIA_HANDLERS.get(media) if isinstance(media, str) else None
-    if found is None:
-        return MEDIA_HANDLERS[MediaKind.VIDEO]
-    return found

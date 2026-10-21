@@ -13,7 +13,7 @@ from typing import Any
 from campusctl.browser import PROTOCOL_TIMEOUT_SECONDS, bounded
 from campusctl.wait_clock import current_clock
 
-from .media import MediaHandler, handler_for
+from .media import MEDIA_HANDLERS, MediaHandler
 from .player_types import (
     MediaKind,
     _css_string,
@@ -150,8 +150,8 @@ async def _close_player(page: Any) -> None:
     await bounded(close_button.click(timeout=7000), PROTOCOL_TIMEOUT_SECONDS, "closing the lecture player")
 
 
-def _reject_item_speed(handler: MediaHandler, speed: float) -> None:
-    if handler.item_speed_rejected is None:
+def _reject_item_speed(handler: MediaHandler | None, speed: float) -> None:
+    if handler is None or handler.item_speed_rejected is None:
         return
     rejected = handler.item_speed_rejected(speed)
     if rejected is not None:
@@ -176,8 +176,8 @@ async def _play_visible_lecture(
     modal_open = False
     primary_error: BaseException | None = None
     try:
-        handler = handler_for(media)
-        _reject_item_speed(handler, speed)
+        found = MEDIA_HANDLERS.get(media)
+        _reject_item_speed(found, speed)
         diagnostic.stage = "row"
         await _expand_row_through_ui(page, row_id)
         diagnostic.stage = "preview"
@@ -197,9 +197,13 @@ async def _play_visible_lecture(
         )
         diagnostic.stage = "frame"
 
-        def on_media_started() -> None:
+        handler = found if found is not None and found.play is not None else MEDIA_HANDLERS[MediaKind.VIDEO]
+
+        def on_media_started(measured_at: float | None = None) -> None:
             nonlocal started_at
-            started_at = current_clock().monotonic()
+            # Panopto passes the clock value it just read. YouTube passes nothing, so this
+            # still reads the clock, which is where its wrapped elapsed came from.
+            started_at = measured_at if measured_at is not None else current_clock().monotonic()
             if on_started is not None:
                 on_started()
 
