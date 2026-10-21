@@ -1,19 +1,75 @@
-"""Ordered multi-ID fetch in one authenticated browser session."""
+"""Fetch selection, single-item fetch and ordered multi-ID fetch for detail-package domains."""
 
 from __future__ import annotations
 
+import argparse
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from contextlib import suppress
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from campusctl.browser import PROTOCOL_TIMEOUT_SECONDS
-from campusctl.envelope import CampusError
+from campusctl.command_types import CommandResult, command_result
+from campusctl.domain_catalog import domain_catalog_path, read_domain_catalog
+from campusctl.envelope import CampusError, UsageError, error_item
+from campusctl.paths import data_dir
 from campusctl.providers.cnu.login import LOGIN_FORM_SELECTOR
 
 Capture = Callable[[Any, dict[str, Any]], Awaitable[Any]]
 ErrorFactory = Callable[[str, Exception], CampusError]
+# Adapts a provider's typed entity-unknown error; None leaves it to the generic wording.
+EntityUnknownAdapter = Callable[[CampusError], CampusError | None]
+
+
+@dataclass(frozen=True, slots=True)
+class FetchDomain:
+    """Wording and policy a domain supplies to the shared single and batch fetch.
+
+    `name` is the catalog, command and operation name (`assignments`); `label` prefixes messages
+    (`Assignments`); `kind` is the source-package kind. `timeout_steps` lists the detail steps whose
+    timeout message may be repeated; `timeout_wording` renames a step in that message.
+    """
+
+    name: str
+    label: str
+    kind: str
+    timeout_steps: frozenset[str]
+    timeout_wording: Mapping[str, str] = field(default_factory=dict)
+    entity_unknown: EntityUnknownAdapter | None = None
+
+    def fetch_error(self, step: str, error: Exception) -> CampusError:
+        code = error.code if isinstance(error, CampusError) else "fetch-failed"
+        status = error.status if isinstance(error, CampusError) else "error"
+        if step == "detail capture" and isinstance(error, CampusError):
+            adapted = self._detail_error(error)
+            if adapted is not None:
+                return adapted
+        remediation = {
+            "catalog load": f"Sync {self.name} again and retry.",
+            "configuration load": "Check campusctl configuration and retry.",
+            "authentication": "Sign in and retry.",
+            "detail capture": f"Sync {self.name} again and select the current full ID.",
+            "package creation": "Retry the fetch and inspect unsupported resources.",
+        }.get(step, "Check the browser session and retry.")
+        return CampusError(code, f"{self.label} fetch: {step} failed.", remediation, status)
+
+    def _detail_error(self, error: CampusError) -> CampusError | None:
+        if error.code == "browser-timeout":
+            detail_step = error.message.removeprefix("Timed out while ").removesuffix(".")
+            if error.message == f"Timed out while {detail_step}." and detail_step in self.timeout_steps:
+                wording = self.timeout_wording.get(detail_step, detail_step)
+                return CampusError(
+                    error.code,
+                    f"{self.label} fetch: {wording} timed out.",
+                    "Check the browser and retry.",
+                    error.status,
+                )
+        if error.code == "entity-unknown" and self.entity_unknown is not None:
+            return self.entity_unknown(error)
+        return None
+
 
 _ITEM_CODES = frozenset(
     {
@@ -139,54 +195,124 @@ def _not_started(entity_id: str) -> dict[str, Any]:
     return {"entity_id": entity_id, "outcome": "not-started"}
 
 
+def _omitted_error(label: str) -> CampusError:
+    return CampusError(
+        "resource-omitted",
+        f"{label} fetch packaging: some resources are unsupported.",
+        status="user-action",
+    )
+
+
+async def _authenticate(session: Any, config: dict[str, Any], domain: FetchDomain) -> Any:
+    """Sign in and settle SSO popups; both single and batch fetch start here."""
+    from campusctl.browser import settle_sso_popups
+    from campusctl.providers.cnu.login import ensure_logged_in
+
+    page = session.page
+    try:
+        await ensure_logged_in(page, config)
+    except Exception as exc:
+        raise domain.fetch_error("authentication", exc) from exc
+    try:
+        await settle_sso_popups(session, domain=domain.name)
+    except Exception as exc:
+        raise domain.fetch_error("SSO settlement", exc) from exc
+    return page
+
+
+async def _fetch_item(
+    page: Any,
+    row: dict[str, Any],
+    *,
+    root: Path,
+    out: Path | None,
+    domain: FetchDomain,
+    capture: Capture,
+    step_error: ErrorFactory | None,
+) -> dict[str, Any]:
+    """Capture one detail and build its package; the single and batch paths share this body.
+
+    step_error wraps a failing step in the domain error (single fetch); None re-raises
+    the original exception so the batch caller can classify it.
+    """
+    from campusctl.source_package import build_source_package
+
+    try:
+        snapshot = await capture(page, row)
+    except Exception as exc:
+        if step_error is None:
+            raise
+        raise step_error("detail capture", exc) from exc
+    try:
+        return await build_source_package(
+            page,
+            snapshot,
+            entity_id=row["entity_id"],
+            kind=domain.kind,
+            course_id=row["course"]["id"],
+            course_label=row["course"]["label"],
+            root=root,
+            out=out,
+        )
+    except Exception as exc:
+        if step_error is None:
+            raise
+        raise step_error("package creation", exc) from exc
+
+
+async def fetch_single(
+    config: dict[str, Any],
+    root: Path,
+    row: dict[str, Any],
+    *,
+    out: Path | None,
+    headless: bool,
+    domain: FetchDomain,
+    capture: Capture,
+) -> dict[str, Any]:
+    """Fetch one selected detail; each failing step raises the domain's error for that step."""
+    from campusctl.browser import open_session
+
+    try:
+        async with open_session(config, data_dir=root, headless=headless, operation=f"{domain.name}.fetch") as session:
+            page = await _authenticate(session, config, domain)
+            return await _fetch_item(
+                page, row, root=root, out=out, domain=domain, capture=capture, step_error=domain.fetch_error
+            )
+    except Exception as exc:
+        # Step errors above already carry the domain wording; only a session-level failure is adapted here.
+        if isinstance(exc, CampusError) and exc.message.startswith(f"{domain.label} fetch:"):
+            raise
+        raise domain.fetch_error("browser session", exc) from exc
+
+
 async def run_fetch_queue(
     config: dict[str, Any],
     root: Path,
     rows: list[dict[str, Any]],
     *,
     headless: bool,
-    operation: str,
-    domain: str,
-    kind: str,
-    label: str,
+    domain: FetchDomain,
     capture: Capture,
-    fetch_error: ErrorFactory,
 ) -> tuple[list[dict[str, Any]], list[CampusError] | None]:
     """Authenticate once, then capture and publish each selected detail in order."""
-    from campusctl.browser import open_session, settle_sso_popups
-    from campusctl.providers.cnu.login import ensure_logged_in
-    from campusctl.source_package import build_source_package
+    from campusctl.browser import open_session
 
     items: list[dict[str, Any]] = []
     errors: list[CampusError] = []
-    async with open_session(config, data_dir=root, headless=headless, operation=operation) as session:
-        page = session.page
-        try:
-            await ensure_logged_in(page, config)
-        except Exception as exc:
-            raise fetch_error("authentication", exc) from exc
-        try:
-            await settle_sso_popups(session, domain=domain)
-        except Exception as exc:
-            raise fetch_error("SSO settlement", exc) from exc
+    async with open_session(config, data_dir=root, headless=headless, operation=f"{domain.name}.fetch") as session:
+        page = await _authenticate(session, config, domain)
 
         for index, row in enumerate(rows):
             entity_id = row["entity_id"]
             try:
                 try:
-                    snapshot = await capture(page, row)
-                    package = await build_source_package(
-                        page,
-                        snapshot,
-                        entity_id=entity_id,
-                        kind=kind,
-                        course_id=row["course"]["id"],
-                        course_label=row["course"]["label"],
-                        root=root,
+                    package = await _fetch_item(
+                        page, row, root=root, out=None, domain=domain, capture=capture, step_error=None
                     )
                 except Exception as exc:
                     classified, session_level = await classify_item_failure(
-                        page, exc, label=label, fetch_error=fetch_error
+                        page, exc, label=domain.label, fetch_error=domain.fetch_error
                     )
                     items.append(_failed_item(entity_id, classified))
                     errors.append(classified)
@@ -195,13 +321,7 @@ async def run_fetch_queue(
                         break
                 else:
                     if package.get("completeness") == "partial":
-                        errors.append(
-                            CampusError(
-                                "resource-omitted",
-                                f"{label} fetch packaging: some resources are unsupported.",
-                                status="user-action",
-                            )
-                        )
+                        errors.append(_omitted_error(domain.label))
                         items.append(
                             {
                                 "entity_id": entity_id,
@@ -215,3 +335,118 @@ async def run_fetch_queue(
             finally:
                 await _release_item_state(page)
     return items, errors or None
+
+
+def _selected_ids(args: argparse.Namespace, domain: FetchDomain) -> list[str]:
+    """Return the requested IDs in first-seen order; IDs are not trimmed or otherwise normalized."""
+    raw = getattr(args, "entity_ids", None)
+    if raw is None:
+        single = getattr(args, "entity_id", None)
+        raw = None if single is None else [single]
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list) or not raw or any(not isinstance(item, str) or not item.strip() for item in raw):
+        raise UsageError(f"{domain.label} fetch selection: an entity ID is required")
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        if item not in seen:
+            seen.add(item)
+            ordered.append(item)
+    return ordered
+
+
+def _matching_rows(catalog: dict[str, Any], domain: FetchDomain, entity_ids: list[str]) -> list[dict[str, Any]]:
+    records = catalog.get(domain.name, [])
+    rows: list[dict[str, Any]] = []
+    for entity_id in entity_ids:
+        matching = [row for row in records if row.get("entity_id") == entity_id]
+        if len(matching) != 1:
+            raise CampusError(
+                "entity-unknown",
+                f"{domain.label} fetch selection: selected ID is not in the catalog.",
+                f"Select one full ID from 'campusctl {domain.name} list'.",
+                "user-action",
+            )
+        rows.append(matching[0])
+    return rows
+
+
+def _selected_rows(domain: FetchDomain, root: Path, entity_ids: list[str]) -> list[dict[str, Any]]:
+    cat_path = domain_catalog_path(domain.name, root)
+    if not cat_path.exists():
+        raise CampusError(
+            "catalog-missing",
+            f"{domain.label} fetch catalog lookup: catalog is missing.",
+            f"Run 'campusctl sync --only {domain.name}' to create it.",
+            "user-action",
+        )
+    try:
+        catalog = read_domain_catalog(domain.name, cat_path)
+    except Exception as exc:
+        raise domain.fetch_error("catalog load", exc) from exc
+    return _matching_rows(catalog, domain, entity_ids)
+
+
+def _check_output(domain: FetchDomain, out_path: Path | None, rows: list[dict[str, Any]]) -> None:
+    if out_path is not None and len(rows) > 1:
+        raise UsageError(f"{domain.label} fetch selection: --out applies to one selected ID.")
+    if out_path is not None:
+        destination = Path(out_path)
+        if destination.exists() or destination.is_symlink():
+            raise CampusError(
+                "output-path-conflict",
+                f"{domain.label} fetch output selection: output path already exists.",
+                "Choose a nonexistent destination path with --out.",
+                "user-action",
+            )
+
+
+def _batch_status(items: list[dict[str, Any]], errors: list[CampusError]) -> str:
+    """Return the multi-ID envelope status from published packages and ordered failures."""
+    published = any(item.get("outcome") in {"completed", "partial"} for item in items)
+    unsuccessful = any(item.get("outcome") in {"partial", "failed", "not-started"} for item in items)
+    if published and unsuccessful:
+        return "partial"
+    if not published and errors:
+        return errors[0].status
+    return "ok"
+
+
+def dispatch_fetch(
+    args: argparse.Namespace,
+    domain: FetchDomain,
+    *,
+    fetch_one: Callable[..., Awaitable[dict[str, Any]]],
+    fetch_many: Callable[..., Awaitable[tuple[list[dict[str, Any]], list[CampusError] | None]]],
+) -> CommandResult:
+    """Validate the selection, then fetch one detail or an ordered batch.
+
+    Everything that can fail before a browser session opens runs first, in a fixed order.
+    """
+    from campusctl.browser_options import preflight_browser_mode
+    from campusctl.config import load_config
+
+    root = data_dir()
+    entity_ids = _selected_ids(args, domain)
+    rows = _selected_rows(domain, root, entity_ids)
+    out_path = getattr(args, "out", None)
+    _check_output(domain, out_path, rows)
+    try:
+        config = load_config()
+    except Exception as exc:
+        raise domain.fetch_error("configuration load", exc) from exc
+    try:
+        mode = preflight_browser_mode(config, f"{domain.name}.fetch", override=getattr(args, "headless_override", None))
+    except CampusError as exc:
+        raise CampusError(
+            exc.code, f"{domain.label} fetch browser preflight: {exc.message}", exc.remediation, exc.status
+        ) from exc
+    if len(rows) == 1:
+        package = asyncio.run(fetch_one(config, root, rows[0], out=out_path, headless=mode))
+        omitted = [_omitted_error(domain.label)] if package.get("completeness") == "partial" else None
+        return command_result({"source_package": package}, omitted)
+    items, errors = asyncio.run(fetch_many(config, root, rows, headless=mode))
+    if errors is None:
+        return command_result({"items": items})
+    return CommandResult({"items": items}, _batch_status(items, errors), tuple(error_item(error) for error in errors))

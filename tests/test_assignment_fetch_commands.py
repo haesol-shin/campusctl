@@ -10,8 +10,14 @@ from typing import Any
 
 import pytest
 
-from campusctl.commands import assignments, notices
+from campusctl import composition
+from campusctl.command_types import CommandContext, CommandResult
+from campusctl.commands import assignments, fetch_queue, notices
 from campusctl.envelope import CampusError, error_item
+
+
+def _dispatch(command: Any, args: Any) -> CommandResult:
+    return command.dispatch(args, composition.bind(), CommandContext("json", False))
 
 
 def _setup_catalog(root: Path) -> dict[str, Any]:
@@ -41,7 +47,7 @@ def _setup_catalog(root: Path) -> dict[str, Any]:
 
 
 def test_assignment_fetch_json_and_human(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(assignments, "data_dir", lambda: tmp_path)
+    monkeypatch.setattr(fetch_queue, "data_dir", lambda: tmp_path)
     monkeypatch.setattr("campusctl.config.load_config", lambda: {})
     _setup_catalog(tmp_path)
 
@@ -92,8 +98,9 @@ def test_assignment_fetch_json_and_human(tmp_path: Path, monkeypatch: pytest.Mon
         out=None,
         headless_override=None,
     )
-    result, errors = assignments.dispatch(args)
-    assert errors is None
+    record = _dispatch(assignments, args)
+    result = record.result
+    assert record.errors == ()
     assert result["source_package"]["completeness"] == "complete"
     assert result["source_package"]["entity_id"] == "cnu_assignment:course-1:task-101"
 
@@ -121,11 +128,11 @@ def test_assignment_fetch_json_and_human(tmp_path: Path, monkeypatch: pytest.Mon
         return fake_pkg_partial
 
     monkeypatch.setattr(assignments, "_fetch_assignment", mock_fetch_partial)
-    result_p, errors_p = assignments.dispatch(args)
-    assert errors_p is not None
-    assert len(errors_p) == 1
-    assert errors_p[0].code == "resource-omitted"
-    assert "Assignments fetch packaging" in errors_p[0].message
+    record_p = _dispatch(assignments, args)
+    result_p = record_p.result
+    assert len(record_p.errors) == 1
+    assert record_p.errors[0]["code"] == "resource-omitted"
+    assert "Assignments fetch packaging" in record_p.errors[0]["message"]
     assert result_p["source_package"]["completeness"] == "partial"
 
     # Human render of partial
@@ -134,26 +141,26 @@ def test_assignment_fetch_json_and_human(tmp_path: Path, monkeypatch: pytest.Mon
     assert any("Omitted: unsupported-media-type — lecture.mp4" in line for line in human_lines_p)
 
     # Missing catalog
-    monkeypatch.setattr(assignments, "data_dir", lambda: tmp_path / "nonexistent")
+    monkeypatch.setattr(fetch_queue, "data_dir", lambda: tmp_path / "nonexistent")
     with pytest.raises(CampusError) as exc_cat:
-        assignments.dispatch(args)
+        _dispatch(assignments, args)
     assert exc_cat.value.code == "catalog-missing"
     assert "Assignments fetch catalog lookup" in exc_cat.value.message
-    monkeypatch.setattr(assignments, "data_dir", lambda: tmp_path)
+    monkeypatch.setattr(fetch_queue, "data_dir", lambda: tmp_path)
 
     # Unknown ID, including numeric material selection
     args_unknown = SimpleNamespace(
         assignments_command="fetch", entity_id="cnu_assignment:course-1:task-999", out=None, headless_override=None
     )
     with pytest.raises(CampusError) as exc_unk:
-        assignments.dispatch(args_unknown)
+        _dispatch(assignments, args_unknown)
     assert exc_unk.value.code == "entity-unknown"
     assert "Assignments fetch selection" in exc_unk.value.message
     assert "task-999" not in exc_unk.value.message
 
     args_num = SimpleNamespace(assignments_command="fetch", entity_id="1", out=None, headless_override=None)
     with pytest.raises(CampusError) as exc_num:
-        assignments.dispatch(args_num)
+        _dispatch(assignments, args_num)
     assert exc_num.value.code == "entity-unknown"
 
     # Existing output path
@@ -166,7 +173,7 @@ def test_assignment_fetch_json_and_human(tmp_path: Path, monkeypatch: pytest.Mon
         headless_override=None,
     )
     with pytest.raises(CampusError) as exc_conf:
-        assignments.dispatch(args_conflict)
+        _dispatch(assignments, args_conflict)
     assert exc_conf.value.code == "output-path-conflict"
     assert "Assignments fetch output selection" in exc_conf.value.message
     assert str(existing_file) not in exc_conf.value.message
@@ -180,7 +187,7 @@ def test_assignment_fetch_json_and_human(tmp_path: Path, monkeypatch: pytest.Mon
         assignments_command="fetch", entity_id="cnu_assignment:course-1:task-101", out=None, headless_override=True
     )
     with pytest.raises(CampusError) as exc_hl:
-        assignments.dispatch(args_headless)
+        _dispatch(assignments, args_headless)
     assert exc_hl.value.code == "headless-unavailable"
     assert "Assignments fetch browser preflight" in exc_hl.value.message
     monkeypatch.setattr("campusctl.config.load_config", lambda: {})
@@ -191,7 +198,7 @@ def test_assignment_fetch_json_and_human(tmp_path: Path, monkeypatch: pytest.Mon
 
     monkeypatch.setattr(assignments, "_fetch_assignment", mock_fetch_busy)
     with pytest.raises(CampusError) as exc_busy:
-        assignments.dispatch(args)
+        _dispatch(assignments, args)
     assert exc_busy.value.code == "session-busy"
     assert exc_busy.value.status == "busy"
 
@@ -262,14 +269,14 @@ def test_fetch_timeout_keeps_only_known_detail_step() -> None:
         "Private provider URL contains TB_L_BOARDITEM123.",
         "error",
     )
-    safe = notices._fetch_error("detail capture", known)
+    safe = notices._DOMAIN.fetch_error("detail capture", known)
     assert error_item(safe)["message"] == "Notices fetch: opening course notice board timed out."
     assert "TB_L_BOARDITEM123" not in str(error_item(safe))
 
     unknown = CampusError(
         "browser-timeout", "Timed out while opening notice board?no=TB_L_BOARDITEM123.", status="error"
     )
-    masked = notices._fetch_error("detail capture", unknown)
+    masked = notices._DOMAIN.fetch_error("detail capture", unknown)
     assert error_item(masked)["message"] == "Notices fetch: detail capture failed."
     assert "TB_L_BOARDITEM123" not in str(error_item(masked))
 
@@ -286,7 +293,7 @@ def test_fetch_preflight_failure_names_safe_stage(
     catalog = tmp_path / "catalog" / f"{domain}.json"
     catalog.parent.mkdir(parents=True)
     catalog.write_text("{}")
-    monkeypatch.setattr(command, "data_dir", lambda: tmp_path)
+    monkeypatch.setattr(fetch_queue, "data_dir", lambda: tmp_path)
     row = {"entity_id": secret, "course": {"id": "course-a", "label": "Example course"}}
     origin = CampusError("catalog-corrupt", f"Private provider ID {secret}", f"Do not expose {secret}", "user-action")
 
@@ -298,7 +305,7 @@ def test_fetch_preflight_failure_names_safe_stage(
     def load_config() -> dict[str, Any]:
         raise origin
 
-    monkeypatch.setattr(command, "read_domain_catalog", read_catalog)
+    monkeypatch.setattr(fetch_queue, "read_domain_catalog", read_catalog)
     monkeypatch.setattr("campusctl.config.load_config", load_config)
     args = SimpleNamespace(
         **{f"{domain}_command": "fetch"},
@@ -307,7 +314,7 @@ def test_fetch_preflight_failure_names_safe_stage(
         headless_override=None,
     )
     with pytest.raises(CampusError) as failure:
-        command.dispatch(args)
+        _dispatch(command, args)
     item = error_item(failure.value)
     assert item["code"] == "catalog-corrupt"
     assert item["message"] == f"{domain.title()} fetch: {stage} failed."

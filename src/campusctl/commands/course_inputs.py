@@ -5,12 +5,11 @@ from __future__ import annotations
 import argparse
 from collections.abc import Callable
 from pathlib import Path
-from types import ModuleType
 from typing import Any
 
 from campusctl.browser_options import preflight_browser_mode
 from campusctl.catalog_view import course_roster, read_course_snapshot
-from campusctl.command_types import CommandBindings
+from campusctl.command_types import CommandBindings, CommandContext, CommandResult, command_result
 from campusctl.config import load_config
 from campusctl.course_selection import resolve_course
 from campusctl.envelope import CampusError, error_item
@@ -134,39 +133,41 @@ def list_refresh_scope(args: argparse.Namespace, scope: tuple[str, ...]) -> tupl
     return None
 
 
-def dispatch_coursework(
-    module: ModuleType, args: argparse.Namespace, bindings: CommandBindings
-) -> tuple[Any, CampusError | list[CampusError] | None]:
+def list_with_refresh(
+    domain: str,
+    args: argparse.Namespace,
+    bindings: CommandBindings,
+    context: CommandContext,
+    read: Callable[[str | None], CommandResult],
+) -> CommandResult:
+    """Resolve the course, optionally refresh the domain catalog, then list it with `read`.
+
+    A failed read still reports a refresh that failed first.
+    """
     root = data_dir()
-    ids_only = args._output_mode == "json"
-    if getattr(args, f"{args.command}_command", None) == "list":
-        if args.refresh:
-            config = load_config()
-            mode = preflight_browser_mode(config, f"{args.command}.sync", override=args.headless_override)
-            args.course, snapshot = network_course(
-                args.course,
-                root,
-                config,
-                args.command,
-                ids_only=ids_only,
-                mode=mode,
-                discover_courses=bindings.discover_courses,
-            )
-        else:
-            args.course, snapshot = select_course(args.course, root, ids_only=ids_only)
-        refreshed = (
-            refresh(args.command, root, args.course, args, snapshot, profile=getattr(args, "_profile", None))
-            if args.refresh
-            else None
+    ids_only = context.output_mode == "json"
+    if args.refresh:
+        config = load_config()
+        mode = preflight_browser_mode(config, f"{domain}.sync", override=args.headless_override)
+        course, snapshot = network_course(
+            args.course,
+            root,
+            config,
+            domain,
+            ids_only=ids_only,
+            mode=mode,
+            discover_courses=bindings.discover_courses,
         )
-        try:
-            result, error = module.dispatch(args)
-        except CampusError:
-            if refreshed is None or not refreshed[1]:
-                raise
-            return {"refresh": refresh_result(refreshed)}, refreshed[1]
-        if refreshed is not None:
-            result["refresh"] = refresh_result(refreshed)
-            return result, refreshed[1]
-        return result, error
-    return module.dispatch(args)
+    else:
+        course, snapshot = select_course(args.course, root, ids_only=ids_only)
+    refreshed = refresh(domain, root, course, args, snapshot, profile=context.profile) if args.refresh else None
+    try:
+        listed = read(course)
+    except CampusError:
+        if refreshed is None or not refreshed[1]:
+            raise
+        return command_result({"refresh": refresh_result(refreshed)}, refreshed[1])
+    if refreshed is None:
+        return listed
+    listed.result["refresh"] = refresh_result(refreshed)
+    return command_result(listed.result, refreshed[1], publish=listed.publish)

@@ -390,6 +390,49 @@ def test_material_list_refuses_catalog_rewrite_before_snapshot_publication(
     assert not (tmp_path / "selection" / "materials-last-list.json").exists()
 
 
+def test_material_list_publishes_numbers_only_after_human_output_is_flushed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _catalog(tmp_path)
+    monkeypatch.setenv("CAMPUSCTL_DATA_DIR", str(tmp_path))
+    events: list[str] = []
+    real = materials.publish_material_snapshot
+
+    def publish(*args: Any, **kwargs: Any) -> None:
+        events.append("publish")
+        real(*args, **kwargs)
+
+    class Spy:
+        def __init__(self, inner: Any) -> None:
+            self.inner = inner
+
+        def write(self, text: str) -> int:
+            events.append("write")
+            return self.inner.write(text)
+
+        def flush(self) -> None:
+            events.append("flush")
+            self.inner.flush()
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self.inner, name)
+
+    monkeypatch.setattr(materials, "publish_material_snapshot", publish)
+    monkeypatch.setattr("sys.stdout", Spy(__import__("sys").stdout))
+    monkeypatch.setenv("CAMPUSCTL_OUTPUT", "human")
+    assert cli.main(["materials", "list"]) == 0
+    assert events.index("publish") > max(index for index, event in enumerate(events) if event == "write")
+    assert events[events.index("publish") - 1] == "flush"
+    snapshot = tmp_path / "selection" / "materials-last-list.json"
+    assert snapshot.exists()
+
+    snapshot.unlink()
+    events.clear()
+    assert cli.main(["materials", "list", "--json"]) == 0
+    assert "publish" not in events and not snapshot.exists()
+    capsys.readouterr()
+
+
 @pytest.mark.skipif(os.name == "nt", reason="Windows adoption fails closed without pinned reparse-point checks")
 def test_configured_adoption_receipt_and_override(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]

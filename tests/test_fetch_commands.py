@@ -9,8 +9,9 @@ from typing import Any
 import pytest
 
 from campusctl import cli, composition
-from campusctl.commands import assignments, notices
-from campusctl.envelope import CampusError, make_envelope
+from campusctl.command_types import CommandContext, CommandResult
+from campusctl.commands import assignments, fetch_queue, notices
+from campusctl.envelope import CampusError, error_item, make_envelope
 from campusctl.presentation import render_human
 
 
@@ -130,12 +131,12 @@ def test_fetch_released_surface(
     for num_id in ("1", "2", "42"):
         args_num_a = SimpleNamespace(assignments_command="fetch", entity_id=num_id, out=None, headless_override=None)
         with pytest.raises(CampusError) as exc_a:
-            assignments.dispatch(args_num_a)
+            _dispatch("assignments", args_num_a)
         assert exc_a.value.code == "entity-unknown"
 
         args_num_n = SimpleNamespace(notices_command="fetch", entity_id=num_id, out=None, headless_override=None)
         with pytest.raises(CampusError) as exc_n:
-            notices.dispatch(args_num_n)
+            _dispatch("notices", args_num_n)
         assert exc_n.value.code == "entity-unknown"
 
     # Full selected IDs retain course binding
@@ -171,8 +172,9 @@ def test_fetch_released_surface(
         out=None,
         headless_override=None,
     )
-    res_a, err_a = assignments.dispatch(args_a)
-    assert err_a is None
+    record_a = _dispatch("assignments", args_a)
+    res_a = record_a.result
+    assert record_a.errors == ()
     assert captured_assignment_course == ["course-xyz"]
     assert res_a["source_package"]["provenance"]["course_id"] == "course-xyz"
 
@@ -208,8 +210,9 @@ def test_fetch_released_surface(
         out=None,
         headless_override=None,
     )
-    res_n, err_n = notices.dispatch(args_n)
-    assert err_n is None
+    record_n = _dispatch("notices", args_n)
+    res_n = record_n.result
+    assert record_n.errors == ()
     assert captured_notice_course == ["course-xyz"]
     assert res_n["source_package"]["provenance"]["course_id"] == "course-xyz"
 
@@ -222,14 +225,14 @@ def test_fetch_released_surface(
         assignments_command="fetch", entity_id="cnu_assignment:course-xyz:task-999", out=None, headless_override=True
     )
     with pytest.raises(CampusError) as exc_hl_a:
-        assignments.dispatch(args_hl_a)
+        _dispatch("assignments", args_hl_a)
     assert exc_hl_a.value.code == "headless-unavailable"
 
     args_hl_n = SimpleNamespace(
         notices_command="fetch", entity_id="cnu_notice:course-xyz:2026-09-25:10", out=None, headless_override=True
     )
     with pytest.raises(CampusError) as exc_hl_n:
-        notices.dispatch(args_hl_n)
+        _dispatch("notices", args_hl_n)
     assert exc_hl_n.value.code == "headless-unavailable"
     monkeypatch.setattr("campusctl.config.load_config", lambda: {})
 
@@ -266,7 +269,7 @@ def test_fetch_released_surface(
 
     monkeypatch.setattr(assignments, "_fetch_assignment", mock_busy)
     with pytest.raises(CampusError) as exc_busy:
-        assignments.dispatch(args_a)
+        _dispatch("assignments", args_a)
     assert exc_busy.value.code == "session-busy"
     assert exc_busy.value.status == "busy"
 
@@ -348,8 +351,7 @@ def _write_domain_catalog(root: Path, domain: str, entity_ids: list[str]) -> Non
 
 
 def _install_queue(monkeypatch: pytest.MonkeyPatch, script: _Script, domain: str, root: Path) -> None:
-    command = assignments if domain == "assignments" else notices
-    monkeypatch.setattr(command, "data_dir", lambda: root)
+    monkeypatch.setattr(fetch_queue, "data_dir", lambda: root)
     monkeypatch.setattr("campusctl.config.load_config", lambda: {})
 
     @contextlib.asynccontextmanager
@@ -429,9 +431,9 @@ def _fetch_args(domain: str, entity_ids: list[str], **extra: Any) -> SimpleNames
     return SimpleNamespace(**values)
 
 
-def _dispatch(domain: str, args: SimpleNamespace) -> tuple[dict[str, Any], CampusError | list[CampusError] | None]:
+def _dispatch(domain: str, args: SimpleNamespace) -> CommandResult:
     command = assignments if domain == "assignments" else notices
-    return command.dispatch(args)
+    return command.dispatch(args, composition.bind(), CommandContext("json", False))
 
 
 @pytest.mark.parametrize("domain", ["assignments", "notices"])
@@ -444,18 +446,19 @@ def test_multi_fetch_queue_publishes_in_order_and_continues(
     script.fail_at[ids[1]] = "partial"
     _install_queue(monkeypatch, script, domain, tmp_path)
 
-    result, errors = _dispatch(domain, _fetch_args(domain, [ids[0], ids[0], ids[1], ids[2]]))
+    record = _dispatch(domain, _fetch_args(domain, [ids[0], ids[0], ids[1], ids[2]]))
+    result, errors = record.result, record.errors
     assert script.opened == 1
     assert script.authenticated == 1
     assert script.captured == ids[:3]
     assert script.built == ids[:3]
     assert script.page.cleared == 3
-    assert errors is not None
+    assert errors
     assert [item["outcome"] for item in result["items"]] == ["completed", "partial", "completed"]
     assert [item["entity_id"] for item in result["items"]] == ids[:3]
     assert "reason_code" not in result["items"][0]
     assert result["items"][1]["reason_code"] == "resource-omitted"
-    assert errors[0].code == "resource-omitted"
+    assert errors[0]["code"] == "resource-omitted"
     published = tmp_path / "published"
     assert (published / ids[0].replace(":", "_") / "content.md").read_text(encoding="utf-8") == ids[0]
     assert (published / ids[2].replace(":", "_") / "content.md").read_text(encoding="utf-8") == ids[2]
@@ -491,14 +494,15 @@ def test_item_failure_preserves_neighbors(
         script.fail_at[ids[1]] = CampusError(code, message, status=status)
     _install_queue(monkeypatch, script, domain, tmp_path)
 
-    result, errors = _dispatch(domain, _fetch_args(domain, ids[:3]))
+    record = _dispatch(domain, _fetch_args(domain, ids[:3]))
+    result, errors = record.result, record.errors
     assert script.captured == ids[:3]
     assert script.captured.count(ids[1]) == 1
     assert script.built == [ids[0], ids[2]]
     assert [item["outcome"] for item in result["items"]] == ["completed", "failed", "completed"]
     assert "source_package" not in result["items"][1]
     assert result["items"][1]["reason_code"] == code
-    assert errors is not None and errors[0].code == code and errors[0].status == status
+    assert errors and errors[0]["code"] == code and record.status == "partial"
     published = tmp_path / "published"
     assert (published / ids[0].replace(":", "_")).is_dir()
     assert not (published / ids[1].replace(":", "_")).exists()
@@ -539,7 +543,8 @@ def test_session_failure_stops_queue_without_retry(
         script.fail_at[ids[1]] = CampusError("lms-unavailable", "The LMS could not be reached.", status="error")
     _install_queue(monkeypatch, script, domain, tmp_path)
 
-    result, errors = _dispatch(domain, _fetch_args(domain, ids))
+    record = _dispatch(domain, _fetch_args(domain, ids))
+    result, errors = record.result, record.errors
     assert script.captured == ids[:2]
     assert script.captured.count(ids[1]) == 1
     assert ids[2] not in script.captured and ids[3] not in script.captured
@@ -547,9 +552,9 @@ def test_session_failure_stops_queue_without_retry(
     assert result["items"][1]["reason_code"] == code
     assert "source_package" not in result["items"][1]
     assert "reason_code" not in result["items"][2]
-    assert errors is not None and errors[-1].code == code
+    assert errors and errors[-1]["code"] == code
     if kind == "login-failed":
-        assert "rejected" not in errors[-1].message
+        assert "rejected" not in errors[-1]["message"]
     assert (tmp_path / "published" / ids[0].replace(":", "_") / "content.md").is_file()
 
 
@@ -572,15 +577,16 @@ def test_visible_login_form_stops_queue_after_detail_error(
     script.fail_at[ids[1]] = ("login-form", CampusError(code, message, status=status))
     _install_queue(monkeypatch, script, domain, tmp_path)
 
-    result, errors = _dispatch(domain, _fetch_args(domain, ids[:3]))
+    record = _dispatch(domain, _fetch_args(domain, ids[:3]))
+    result, errors = record.result, record.errors
     assert script.captured == ids[:2]
     assert script.captured.count(ids[1]) == 1
     assert ids[2] not in script.captured
     assert [item["outcome"] for item in result["items"]] == ["completed", "failed", "not-started"]
     assert result["items"][1]["reason_code"] == "lms-unavailable"
     assert "source_package" not in result["items"][1]
-    assert errors is not None and errors[-1].code == "lms-unavailable"
-    assert "rejected" not in errors[-1].message
+    assert errors and errors[-1]["code"] == "lms-unavailable"
+    assert "rejected" not in errors[-1]["message"]
     assert (tmp_path / "published" / ids[0].replace(":", "_") / "content.md").is_file()
     assert not (tmp_path / "published" / ids[1].replace(":", "_")).exists()
 
@@ -619,7 +625,7 @@ def test_fetch_preflight_rejections_do_not_open_a_browser(
         **{f"{domain}_command": "fetch", "entity_ids": [ids[0]], "out": None, "headless_override": None}
     )
     with pytest.raises(CampusError) as headless:
-        command.dispatch(args)
+        command.dispatch(args, composition.bind(), CommandContext("json", False))
     assert headless.value.code == "headless-unavailable"
     assert script.opened == 0
 
@@ -631,8 +637,9 @@ def test_duplicate_fetch_id_opens_once(tmp_path: Path, monkeypatch: pytest.Monke
     script = _Script()
     _install_queue(monkeypatch, script, domain, tmp_path)
 
-    result, errors = _dispatch(domain, _fetch_args(domain, [ids[0], ids[0]]))
-    assert errors is None
+    record = _dispatch(domain, _fetch_args(domain, [ids[0], ids[0]]))
+    result = record.result
+    assert record.errors == ()
     assert "items" not in result
     assert result["source_package"]["entity_id"] == ids[0]
     assert script.opened == 1
@@ -778,3 +785,88 @@ def test_local_headless_fetch_modes(
     rejected = json.loads(capsys.readouterr().out)
     assert rejected["errors"][0]["code"] == "headless-unavailable"
     assert seen == [True, True, False]
+
+
+_TIMEOUT_STEP = {"assignments": "opening the selected CNU task", "notices": "opening notice board"}
+
+
+def _step_failures(domain: str) -> dict[str, Exception]:
+    return {
+        "timeout": CampusError("browser-timeout", f"Timed out while {_TIMEOUT_STEP[domain]}.", "private", "error"),
+        "capture": RuntimeError("provider detail"),
+        "package": CampusError("unsupported-media-type", "private attachment", "private", "error"),
+    }
+
+
+@pytest.mark.parametrize("domain", ["assignments", "notices"])
+@pytest.mark.parametrize("step", ["timeout", "capture", "package"])
+def test_single_and_batch_fetch_report_identical_item_errors_and_steps(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, domain: str, step: str
+) -> None:
+    ids = _ids(domain)
+    _write_domain_catalog(tmp_path, domain, ids)
+    script = _Script()
+    script.fail_at[ids[0]] = _step_failures(domain)[step]
+    _install_queue(monkeypatch, script, domain, tmp_path)
+
+    with pytest.raises(CampusError) as single:
+        _dispatch(domain, _fetch_args(domain, [ids[0]]))
+    single_steps = (script.opened, script.authenticated, list(script.captured), list(script.built))
+
+    script.opened = script.authenticated = 0
+    script.captured.clear()
+    script.built.clear()
+    batch = _dispatch(domain, _fetch_args(domain, [ids[0], ids[1]]))
+
+    assert batch.errors[0] == error_item(single.value)
+    assert batch.errors[0]["message"].startswith(f"{domain.title()} fetch: ")
+    assert single_steps[:2] == (1, 1)
+    assert single_steps[2] == [ids[0]]
+    assert (script.opened, script.authenticated) == (1, 1)
+    assert script.captured == ids[:2]
+    # Package creation fails after capture for the failing ID only; the single run never built.
+    assert single_steps[3] == []
+    assert script.built == [ids[1]]
+
+
+@pytest.mark.parametrize("domain", ["assignments", "notices"])
+def test_session_level_failures_raise_the_same_error_for_single_and_batch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, domain: str
+) -> None:
+    ids = _ids(domain)
+    _write_domain_catalog(tmp_path, domain, ids)
+    script = _Script()
+    script.auth_error = RuntimeError("private provider failure")
+    _install_queue(monkeypatch, script, domain, tmp_path)
+
+    with pytest.raises(CampusError) as single:
+        _dispatch(domain, _fetch_args(domain, [ids[0]]))
+    with pytest.raises(CampusError) as batch:
+        _dispatch(domain, _fetch_args(domain, ids[:2]))
+    assert error_item(batch.value) == error_item(single.value)
+    assert error_item(single.value)["message"] == f"{domain.title()} fetch: authentication failed."
+    assert script.captured == []
+
+
+@pytest.mark.parametrize("domain", ["assignments", "notices"])
+def test_fetch_ids_keep_first_seen_order_and_are_never_trimmed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, domain: str
+) -> None:
+    ids = _ids(domain)
+    _write_domain_catalog(tmp_path, domain, ids)
+    script = _Script()
+    _install_queue(monkeypatch, script, domain, tmp_path)
+
+    record = _dispatch(domain, _fetch_args(domain, [ids[2], ids[0], ids[2], ids[1], ids[0]]))
+    assert [item["entity_id"] for item in record.result["items"]] == [ids[2], ids[0], ids[1]]
+    assert script.captured == [ids[2], ids[0], ids[1]]
+
+    # A padded ID is a different, unknown ID; validation fails before any session opens.
+    script.opened = 0
+    with pytest.raises(CampusError) as padded:
+        _dispatch(domain, _fetch_args(domain, [ids[0], f" {ids[1]}"]))
+    assert padded.value.code == "entity-unknown"
+    with pytest.raises(CampusError) as blank:
+        _dispatch(domain, _fetch_args(domain, [ids[0], "  "]))
+    assert blank.value.code == "usage-error"
+    assert script.opened == 0

@@ -7,9 +7,16 @@ from typing import Any
 import pytest
 from config_patch import patch_load_config
 
-from campusctl import cli
+from campusctl import cli, composition
+from campusctl.command_types import CommandContext
 from campusctl.commands import notices
 from campusctl.domain_catalog import write_domain_catalog
+
+
+def _list(argv: list[str]) -> dict[str, Any]:
+    args = cli.build_parser().parse_args(argv)
+    return notices.dispatch(args, composition.bind(), CommandContext("json", False)).result
+
 
 STAMP = "2026-09-25T03:04:05Z"
 FULL_ID = "cnu_notice:course-a:2026-09-01 12%3A00:12345678901234567890"
@@ -160,7 +167,7 @@ def test_notice_human_full_ids_and_staleness(
     failed = [{"course_id": "course-b", "label": "Other Course", "reason": "course-sync-failed"}]
     _catalog(tmp_path, state="unknown", failed=failed)
     monkeypatch.setenv("CAMPUSCTL_DATA_DIR", str(tmp_path))
-    lines = notices.render("notices.list", notices.dispatch(cli.build_parser().parse_args(["notices", "list"]))[0], 40)
+    lines = notices.render("notices.list", _list(["notices", "list"]), 40)
     text = "\n".join(lines)
     readable = " ".join(text.split())
     assert "Enrollment unknown" in text
@@ -170,7 +177,7 @@ def test_notice_human_full_ids_and_staleness(
     assert "읽지않음" in readable and "unread" in readable
     assert "Author: unknown" in readable and "Views: unknown" in readable and "Attachments: unknown" in readable
     assert "Author: Example Author" in readable and "Views: 14" in readable and "Attachments: no" in readable
-    filtered = notices.dispatch(cli.build_parser().parse_args(["notices", "list", "--course", "missing"]))[0]
+    filtered = notices._list("missing").result
     empty_text = "\n".join(notices.render("notices.list", filtered, 40))
     assert "0 notices" in empty_text and "Enrollment unknown" in empty_text
     assert "Other Course" in " ".join(empty_text.split())

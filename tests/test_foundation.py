@@ -136,17 +136,18 @@ def test_cli_json_stdout_is_utf8_through_a_redirected_pipe(
         """\
         import sys
         from campusctl import cli
+        from campusctl.command_types import command_result
         from campusctl.envelope import CampusError
 
         mode = sys.argv[1]
         if mode == "ok":
-            cli._dispatch = lambda _args, _context: ({"title": "강의"}, None)
+            cli._dispatch = lambda _args, _context: command_result({"title": "강의"})
             args = ["courses", "list", "--json"]
         elif mode == "error":
-            cli._dispatch = lambda _args, _context: (None, CampusError("smoke", "테스트", None, "error"))
+            cli._dispatch = lambda _args, _context: command_result(None, CampusError("smoke", "테스트", None, "error"))
             args = ["courses", "list", "--json"]
         else:
-            cli._dispatch = lambda _args, _context: ({"title": "강의"}, [CampusError("smoke", "테스트")])
+            cli._dispatch = lambda _args, _context: command_result({"title": "강의"}, [CampusError("smoke", "테스트")])
             args = ["sync", "--json"]
         raise SystemExit(cli.main(args))
         """

@@ -19,6 +19,8 @@ class Case(TypedDict):
     input: NotRequired[str]
     stdin_tty: NotRequired[bool]
     stdout_tty: NotRequired[bool]
+    trace_publication: NotRequired[bool]
+    fetch_fake: NotRequired[dict]
 
 
 def _lecture_row(entity_id: str, title: str, course_id: str, label: str) -> dict:
@@ -242,6 +244,7 @@ _P3_FIXTURES = {
     "p3-sync": ("keyring", "ready", "all"),
     "p3-sync-failure": ("keyring", "ready", "all"),
     "p3-sync-uncached": ("keyring", "ready", "none"),
+    "p3-fetch": ("keyring", "ready", "fetch"),
 }
 _P3_HELPER_FIXTURES = {"p3-helper"}
 _P3_COURSE = {"course_id": "course.invalid", "label": "Synthetic course", "class_no": None}
@@ -279,27 +282,29 @@ def _write_p3_files(root: Path, fixture: str, executable: Path) -> None:
     data = root / "data"
     _write_catalogs(root, "progress-catalog")
     course = {"id": _P3_COURSE["course_id"], "label": _P3_COURSE["label"]}
-    notice = {
-        "entity_id": "cnu_notice:course.invalid:n1",
-        "course": course,
-        "title": "Synthetic notice",
-        "date": "2026-01-02",
-        "author": "Synthetic author",
-        "view_count": 1,
-        "has_attachments": False,
-        "is_unread": True,
-    }
+    count = 3 if catalogs == "fetch" else 1
+    notices = [
+        {
+            "entity_id": f"cnu_notice:course.invalid:n{index}",
+            "course": course,
+            "title": "Synthetic notice",
+            "date": "2026-01-02",
+            "author": "Synthetic author",
+            "view_count": 1,
+            "has_attachments": False,
+            "is_unread": True,
+        }
+        for index in range(1, count + 1)
+    ]
     write_domain_catalog(
         "notices",
-        {"generated_at": "2026-01-02T03:04:05Z", "courses": [_P3_COURSE], "notices": [notice]},
+        {"generated_at": "2026-01-02T03:04:05Z", "courses": [_P3_COURSE], "notices": notices},
         data / "catalog" / "notices.json",
     )
     if catalogs == "partial":
         return
-    rows = parse_assignment_rows(
-        [{"task_id": "TB_L_REPORT1", "title": "Synthetic assignment"}],
-        {"course_id": _P3_COURSE["course_id"], "label": _P3_COURSE["label"]},
-    )
+    tasks = [{"task_id": f"TB_L_REPORT{index}", "title": "Synthetic assignment"} for index in range(1, count + 1)]
+    rows = parse_assignment_rows(tasks, {"course_id": _P3_COURSE["course_id"], "label": _P3_COURSE["label"]})
     write_domain_catalog(
         "assignments",
         {"generated_at": "2026-01-02T03:04:05Z", "courses": [_P3_COURSE], "assignments": rows},
@@ -388,6 +393,167 @@ def _install_p3_fakes(stack: ExitStack, actions: list, fixture: str, state: dict
     stack.enter_context(patch.object(courses_module, "discover_courses", fake_discover))
     stack.enter_context(patch.object(sync_module, "sync_all", fake_sync_all))
     state["keyring"] = keyring_state
+
+
+def _fetch_error(spec: dict) -> Exception:
+    from campusctl.envelope import CampusError
+
+    if "plain" in spec:
+        return RuntimeError(spec["plain"])
+    return CampusError(spec["code"], spec["message"], spec["remediation"], spec["status"])
+
+
+def _install_fetch_fakes(stack: ExitStack, actions: list, plan: dict) -> None:
+    """Fake only the browser session, login, detail readers and the download network; the real packager runs."""
+    from contextlib import asynccontextmanager
+
+    import campusctl.browser as browser_module
+    from campusctl.providers.cnu import assignment_detail, login, notice_detail
+    from campusctl.source_package import DetailSnapshot, ResourceReference
+
+    class Response:
+        status = 200
+        url = "https://lms.invalid/big.png"
+        headers = {"Content-Type": "image/png", "Content-Length": str(10**12)}
+
+        async def dispose(self) -> None:
+            actions.append(["network", "dispose"])
+
+    class Request:
+        async def get(self, url: str, **kwargs: object) -> Response:
+            actions.append(["network", "get", url])
+            return Response()
+
+    class Page:
+        context = SimpleNamespace(request=Request())
+
+        def is_closed(self) -> bool:
+            actions.append(["page", "is-closed"])
+            return False
+
+        async def is_visible(self, selector: str) -> bool:
+            actions.append(["page", "login-form-check"])
+            return False
+
+        async def unroute_all(self, behavior: str | None = None) -> None:
+            actions.append(["page", "unroute-all"])
+
+    @asynccontextmanager
+    async def fake_open_session(config, **kwargs):
+        operation = kwargs["operation"]
+        actions.append(["session", "open", operation, kwargs["headless"]])
+        if plan.get("open"):
+            raise _fetch_error(plan["open"])
+        try:
+            yield SimpleNamespace(page=Page())
+        finally:
+            actions.append(["session", "close", operation])
+
+    async def fake_login(page, config, **kwargs):
+        actions.append(["login", "ensure"])
+        if plan.get("login"):
+            raise _fetch_error(plan["login"])
+
+    async def fake_settle(session, *, domain=None, timeout=8.0):
+        actions.append(["sso", "settle", domain])
+
+    async def capture(domain: str, row: dict) -> DetailSnapshot:
+        entity_id = row["entity_id"]
+        actions.append(["capture", domain, entity_id])
+        if entity_id in plan.get("capture", {}):
+            raise _fetch_error(plan["capture"][entity_id])
+        parts: list = ["Synthetic body\n"]
+        if entity_id in plan.get("partial", []):
+            # A resource kind the packager does not support is recorded as omitted, making the package partial.
+            parts.append(ResourceReference("video", "https://lms.invalid/video", "clip.bin", None, "Clip", None, None))
+        if entity_id in plan.get("package", {}):
+            # The image download (network boundary) answers with an oversized length, which the real packager rejects.
+            parts.append(ResourceReference("image", "https://lms.invalid/big.png", "big.png", None, "Big", None, None))
+        return DetailSnapshot(f"https://lms.invalid/{entity_id}", entity_id, tuple(parts))
+
+    async def fake_assignment_detail(page, config, row):
+        return await capture("assignments", row)
+
+    async def fake_notice_detail(page, row):
+        return await capture("notices", row)
+
+    stack.enter_context(patch.object(browser_module, "open_session", fake_open_session))
+    stack.enter_context(patch.object(browser_module, "settle_sso_popups", fake_settle))
+    stack.enter_context(patch.object(login, "ensure_logged_in", fake_login))
+    stack.enter_context(patch.object(assignment_detail, "capture_assignment_detail", fake_assignment_detail))
+    stack.enter_context(patch.object(notice_detail, "capture_notice_detail", fake_notice_detail))
+
+
+def _fetch_cases() -> list[Case]:
+    """Fetch, replay consent and materials publication through the one command pipeline."""
+
+    def spec(code: str, message: str, status: str = "error") -> dict:
+        return {"code": code, "message": message, "remediation": "Retry.", "status": status}
+
+    unknown = spec("entity-unknown", "Synthetic unknown.", "user-action")
+    plain = {"plain": "synthetic capture failure"}
+    session = spec("browser-session-failed", "Synthetic session failure.")
+    launch = spec("browser-launch-failed", "Synthetic launch failure.")
+    login = spec("login-action-required", "Synthetic login action.", "user-action")
+    oversized = True  # the download answers with an oversized length; the real packager raises file-too-large
+    domains = {
+        "notices": ("cnu_notice:course.invalid:n", "Timed out while opening notice board."),
+        "assignments": ("cnu_assignment:course.invalid:TB_L_REPORT", "Timed out while opening a CNU course."),
+    }
+    result: list[Case] = []
+
+    def add(name: str, argv: list[str], expected: int, mode: str, plan: dict | None = None, **extra) -> None:
+        case: Case = {
+            "name": f"p4a-{name}-{mode}",
+            "argv": argv,
+            "fixture": extra.pop("fixture", "p3-fetch"),
+            "width": 80,
+            "env": {"CAMPUSCTL_OUTPUT": mode},
+            "expected": expected,
+        }
+        if plan is not None:
+            case["fetch_fake"] = plan
+        case.update(extra)
+        result.append(case)
+
+    for domain, (prefix, timeout_message) in domains.items():
+        first, second, third = (f"{prefix}{index}" for index in (1, 2, 3))
+        timeout = spec("browser-timeout", timeout_message)
+        for mode in ("json", "human"):
+
+            def fetch(name: str, ids: list[str], expected: int, plan: dict | None = None, **extra) -> None:
+                add(f"{domain}-fetch-{name}", [domain, "fetch", *ids], expected, mode, plan or {}, **extra)  # noqa: B023
+
+            fetch("single", [first], 0)
+            fetch("batch", [second, first, second], 0)
+            fetch("batch-untrimmed-id", [first, f" {second} "], 2)
+            fetch("single-item-unknown", [first], 2, {"capture": {first: unknown}})
+            fetch("batch-item-unknown", [first, second, third], 1, {"capture": {second: unknown}})
+            fetch("single-item-plain", [first], 1, {"capture": {first: plain}})
+            fetch("batch-item-plain", [first, second, third], 1, {"capture": {second: plain}})
+            fetch("single-package-failure", [first], 2, {"package": {first: oversized}})
+            fetch("batch-package-failure", [first, second, third], 1, {"package": {second: oversized}})
+            fetch("single-partial", [first], 1, {"partial": [first]})
+            fetch("batch-partial", [first, second], 1, {"partial": [second]})
+            fetch("single-timeout", [first], 1, {"capture": {first: timeout}})
+            fetch("batch-timeout", [first, second], 1, {"capture": {second: timeout}})
+            fetch("single-open-failure", [first], 1, {"open": launch})
+            fetch("batch-open-failure", [first, second], 1, {"open": launch})
+            fetch("single-login-failure", [first], 2, {"login": login})
+            fetch("batch-login-failure", [first, second], 2, {"login": login})
+            fetch("single-session-error", [first], 1, {"capture": {first: session}})
+            fetch("batch-session-error", [first, second, third], 1, {"capture": {second: session}})
+            fetch("invalid-id-before-session", [first, f"{prefix}missing", second], 2)
+            fetch("blank-id-before-session", [first, " "], 2)
+    row = "cnu_lecture:course.invalid:row-1"
+    for mode in ("json", "human"):
+        add("materials-list", ["materials", "list"], 0, mode, fixture="p3-healthy", trace_publication=True)
+    tty = {"stdin_tty": True, "stdout_tty": True}
+    replay = ["lectures", "play", row, "--replay", "--speed", "1.0"]
+    for name, answer, expected in (("yes", "y\n", 0), ("yes-word", "YES\n", 0), ("no", "n\n", 2), ("eof", "", 2)):
+        add(f"replay-consent-{name}", replay, expected, "human", fixture="progress-success", input=answer, **tty)
+    add("replay-consent-json", replay, 0, "json", fixture="progress-success")
+    return result
 
 
 def _command_owner_cases() -> list[Case]:
@@ -531,6 +697,13 @@ def _command_owner_cases() -> list[Case]:
     unresolvable = {"env": {"CAMPUSCTL_DATA_DIR": "~nonexistent-campusctl-review.invalid"}}
     add("bare-courses-unresolvable-data", ["courses"], "p3-healthy", 1, **unresolvable)
     add("bare-lectures-unresolvable-data", ["lectures"], "p3-healthy", 1, **unresolvable)
+    # Coursework resolves data_dir() before subcommand and fetch ID checks; --profile refusal precedes both.
+    for family in ("assignments", "notices", "materials"):
+        add(f"bare-{family}-unresolvable-data", [family], "p3-healthy", 1, **unresolvable)
+    for family in ("assignments", "notices"):
+        add(f"{family}-fetch-blank-id-unresolvable-data", [family, "fetch", " "], "p3-healthy", 1, **unresolvable)
+    add("materials-download-bare-unresolvable-data", ["materials", "download"], "p3-healthy", 1, **unresolvable)
+    add("profile-refused-unresolvable-data", ["--profile", "assignments", "list"], "p3-healthy", 2, **unresolvable)
     add("usage-no-command", [], "p3-healthy", 2)
     add("usage-unknown-command", ["bogus"], "p3-healthy", 2)
     add("usage-abbreviated-subcommand", ["lectures", "li"], "p3-healthy", 2)
@@ -688,7 +861,7 @@ def cases() -> list[Case]:
                 "expected": expected,
             }
         )
-    return [*result, *_command_owner_cases()]
+    return [*result, *_command_owner_cases(), *_fetch_cases()]
 
 
 @contextmanager
@@ -735,7 +908,7 @@ def prepare(root: Path, case: Case, actions: list):
         actions.append(["browser-probe", "open"])
         return SimpleNamespace(chromium=SimpleNamespace(executable_path=str(executable)), stop=stop_browser)
 
-    def _trace_course_publication() -> None:
+    def _trace_publication() -> None:
         # Record flush-then-publish order without stubbing the publication owner.
         import os
         import sys
@@ -748,8 +921,9 @@ def prepare(root: Path, case: Case, actions: list):
             original_flush()
 
         def replace(src, dst, *args, **kwargs):
-            if os.fspath(dst).endswith("courses-last-list.json"):
-                actions.append(["selection", "publish", "courses"])
+            for suffix, name in (("courses-last-list.json", "courses"), ("materials-last-list.json", "materials")):
+                if os.fspath(dst).endswith(suffix):
+                    actions.append(["selection", "publish", name])
             return original_replace(src, dst, *args, **kwargs)
 
         sys.stdout.flush = flush
@@ -768,6 +942,8 @@ def prepare(root: Path, case: Case, actions: list):
                 stack.enter_context(patch.object(subprocess, "Popen", fail_helper))
         elif fixture.startswith("progress-"):
             _install_progress_fakes(stack, actions, fixture)
-        if case["name"] == "owner-courses-list-human":
-            _trace_course_publication()
+        if "fetch_fake" in case:
+            _install_fetch_fakes(stack, actions, case["fetch_fake"])
+        if case["name"] == "owner-courses-list-human" or case.get("trace_publication"):
+            _trace_publication()
         yield state

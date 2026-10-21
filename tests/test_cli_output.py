@@ -9,6 +9,8 @@ from typing import Any
 import pytest
 
 from campusctl import cli, config_init, credentials, setup
+from campusctl.command_types import CommandResult, command_result
+from campusctl.commands.fetch_queue import _batch_status
 from campusctl.envelope import CampusError, error_item, make_envelope, write_json
 
 
@@ -75,7 +77,7 @@ def test_json_bytes_match_direct_envelope_writer(
         status = "partial"
         expected_exit = 1
 
-    monkeypatch.setattr(cli, "_dispatch", lambda _args, _context: (result, error))
+    monkeypatch.setattr(cli, "_dispatch", lambda _args, _context: command_result(result, error))
 
     assert cli.main(argv) == expected_exit
     expected_text = io.StringIO()
@@ -151,9 +153,9 @@ def test_human_stdout_is_prepared_before_dispatch(monkeypatch: pytest.MonkeyPatc
     events: list[str] = []
     monkeypatch.setattr(cli, "prepare_stdout_for_text", lambda: events.append("prepare"))
 
-    def dispatch(_args: Any, _context: Any) -> tuple[dict[str, str], None]:
+    def dispatch(_args: Any, _context: Any) -> CommandResult:
         events.append("dispatch")
-        return {"title": "ready"}, None
+        return command_result({"title": "ready"})
 
     monkeypatch.setattr(cli, "_dispatch", dispatch)
 
@@ -291,7 +293,7 @@ def test_partial_result_and_error_use_human_renderer(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(
         cli,
         "_dispatch",
-        lambda _args, _context: (
+        lambda _args, _context: command_result(
             {"courses": 1, "lectures": 2, "incomplete": 1, "failed_courses": []},
             [CampusError("course-sync-failed", "One course could not be synced.")],
         ),
@@ -394,9 +396,10 @@ def test_fetch_batch_emitter_keeps_first_failure_status(
     ]
     for errors, items, status, exit_code in cases:
         _, stdout = _streams(monkeypatch, stdin_tty=False, stdout_tty=output == "human")
-        monkeypatch.setattr(
-            cli, "_dispatch", lambda _args, _context, items=items, errors=errors: ({"items": items}, errors)
+        batch = CommandResult(
+            {"items": items}, _batch_status(items, errors), tuple(error_item(item) for item in errors)
         )
+        monkeypatch.setattr(cli, "_dispatch", lambda _args, _context, batch=batch: batch)
         argv = [command, "fetch", "one", "two"]
         if output == "json":
             argv.append("--json")
@@ -417,7 +420,9 @@ def test_fetch_batch_emitter_keeps_first_failure_status(
     monkeypatch.setattr(
         cli,
         "_dispatch",
-        lambda _args, _context: ({"courses": 1, "lectures": 0, "incomplete": 0, "failed_courses": []}, ordinary),
+        lambda _args, _context: command_result(
+            {"courses": 1, "lectures": 0, "incomplete": 0, "failed_courses": []}, ordinary
+        ),
     )
     assert cli.main(["sync", "--json"]) == 1
     preserved = json.loads(stdout.getvalue())

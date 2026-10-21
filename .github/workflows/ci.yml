@@ -278,16 +278,17 @@ jobs:
           driver = r"""
           import sys
           from campusctl import cli
+          from campusctl.command_types import command_result
           from campusctl.envelope import CampusError
           mode = sys.argv[1]
           if mode == "ok":
-              cli._dispatch = lambda _args, _context: ({"title": "\uac15\uc758"}, None)
+              cli._dispatch = lambda _args, _context: command_result({"title": "\uac15\uc758"})
               args = ["courses", "list", "--json"]
           elif mode == "error":
-              cli._dispatch = lambda _args, _context: (None, CampusError("smoke", "\ud14c\uc2a4\ud2b8", None, "error"))
+              cli._dispatch = lambda _args, _context: command_result(None, CampusError("smoke", "\ud14c\uc2a4\ud2b8", None, "error"))
               args = ["courses", "list", "--json"]
           else:
-              cli._dispatch = lambda _args, _context: ({"title": "\uac15\uc758"}, [CampusError("smoke", "\ud14c\uc2a4\ud2b8")])
+              cli._dispatch = lambda _args, _context: command_result({"title": "\uac15\uc758"}, [CampusError("smoke", "\ud14c\uc2a4\ud2b8")])
               args = ["sync", "--json"]
           raise SystemExit(cli.main(args))
           """
