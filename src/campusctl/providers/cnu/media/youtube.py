@@ -16,10 +16,10 @@ from ..player_types import (
     PLAYER_POLL_INTERVAL_SECONDS,
     PLAYER_STALL_SECONDS,
     PLAYER_WATCH_SLACK_SECONDS,
-    POSITION_PROGRESS_INTERVAL_SECONDS,
     _frame_kind,
     _PlaybackFailure,
     _PlayDiagnostic,
+    _position_event_due,
     _video_number,
     _visible_locator,
     _watch_time,
@@ -28,6 +28,9 @@ from ..player_types import (
 YOUTUBE_AUTOPLAY_WAIT_SECONDS = 30.0
 YOUTUBE_POLL_INTERVAL_SECONDS = 30.0
 YOUTUBE_AFTER_END_SECONDS = 60.0
+# One tick of the player clock: a start position this close to 0 is still the start,
+# and a later position this much ahead means the video moved.
+YOUTUBE_MOVEMENT_SECONDS = 0.05
 
 READ_YOUTUBE_JS = r"""/* campusctl-read-youtube-video-state */() => {
     const video = document.querySelector('video');
@@ -80,9 +83,18 @@ async def _read_youtube_state(frame: Any, timeout: float = PROTOCOL_TIMEOUT_SECO
     return value if isinstance(value, dict) else {"exists": False}
 
 
+def _is_number(value: object) -> bool:
+    """A JSON number. Unlike Panopto's readers, a Boolean is not one."""
+    return isinstance(value, int | float) and not isinstance(value, bool)
+
+
 def _youtube_plays_at_one(status: dict[str, Any]) -> bool:
     rate = status.get("playbackRate")
-    return isinstance(rate, int | float) and not isinstance(rate, bool) and float(rate) == 1.0
+    return _is_number(rate) and float(rate) == 1.0
+
+
+def _youtube_off_native_rate(status: dict[str, Any]) -> bool:
+    return status.get("exists") is True and not _youtube_plays_at_one(status)
 
 
 def _youtube_in_start_state(status: dict[str, Any]) -> bool:
@@ -91,10 +103,41 @@ def _youtube_in_start_state(status: dict[str, Any]) -> bool:
         status.get("exists") is True
         and status.get("paused") is True
         and status.get("ended") is False
-        and isinstance(position, int | float)
-        and not isinstance(position, bool)
+        and _is_number(position)
         and math.isfinite(position)
-        and 0 <= position <= 0.05
+        and 0 <= position <= YOUTUBE_MOVEMENT_SECONDS
+    )
+
+
+def _youtube_started(status: dict[str, Any], current_time: float, initial_time: float) -> bool:
+    return (
+        status.get("exists") is True
+        and status.get("paused") is False
+        and current_time > initial_time + YOUTUBE_MOVEMENT_SECONDS
+    )
+
+
+def _youtube_finished(status: dict[str, Any], current_time: float, duration: float, replay: bool) -> bool:
+    return bool(status.get("ended")) or (not replay and duration > 0 and current_time >= duration - 1.0)
+
+
+def _youtube_watch_limit(duration: float) -> float:
+    return min(PLAYER_MAX_SECONDS, duration + PLAYER_WATCH_SLACK_SECONDS) if duration > 0 else PLAYER_MAX_SECONDS
+
+
+def _native_speed_failure(elapsed_seconds: float = 0.0) -> _PlaybackFailure:
+    return _PlaybackFailure(
+        elapsed_seconds,
+        code="playback-speed-unavailable",
+        message="YouTube playback must remain at the native 1.0 speed.",
+    )
+
+
+def _stalled_failure(elapsed_seconds: float) -> _PlaybackFailure:
+    return _PlaybackFailure(
+        elapsed_seconds,
+        code="playback-stalled",
+        message="YouTube playback stopped making progress.",
     )
 
 
@@ -125,17 +168,14 @@ async def _wait_for_youtube_start(frame: Any) -> float:
         first = await _read_youtube_state(frame, min(PROTOCOL_TIMEOUT_SECONDS, YOUTUBE_AUTOPLAY_WAIT_SECONDS))
     except Exception:
         raise failure() from None
-    if first.get("exists") is True and not _youtube_plays_at_one(first):
-        raise _PlaybackFailure(
-            code="playback-speed-unavailable",
-            message="YouTube playback must remain at the native 1.0 speed.",
-        )
+    if _youtube_off_native_rate(first):
+        raise _native_speed_failure()
     initial_time = _video_number(first, "currentTime")
     status = first
     current_time = initial_time
     clicked = False
     diagnostic = "player is not in its start state"
-    while not (status.get("exists") is True and status.get("paused") is False and current_time > initial_time + 0.05):
+    while not _youtube_started(status, current_time, initial_time):
         remaining = deadline - clock.monotonic()
         if remaining <= 0:
             raise failure()
@@ -160,11 +200,8 @@ async def _wait_for_youtube_start(frame: Any) -> float:
             status = await _read_youtube_state(frame, min(PROTOCOL_TIMEOUT_SECONDS, remaining))
         except Exception:
             raise failure() from None
-        if status.get("exists") is True and not _youtube_plays_at_one(status):
-            raise _PlaybackFailure(
-                code="playback-speed-unavailable",
-                message="YouTube playback must remain at the native 1.0 speed.",
-            )
+        if _youtube_off_native_rate(status):
+            raise _native_speed_failure()
         current_time = _video_number(status, "currentTime")
 
     return current_time
@@ -195,41 +232,25 @@ async def _play_youtube_video(
         if status.get("exists") is not True:
             raise _PlaybackFailure(elapsed)
         if not _youtube_plays_at_one(status):
-            raise _PlaybackFailure(
-                elapsed,
-                code="playback-speed-unavailable",
-                message="YouTube playback must remain at the native 1.0 speed.",
-            )
-        if on_position is not None and (
-            last_position_event_at is None or now - last_position_event_at >= POSITION_PROGRESS_INTERVAL_SECONDS
-        ):
+            raise _native_speed_failure(elapsed)
+        if on_position is not None and _position_event_due(last_position_event_at, now):
             on_position(current_time, duration)
             last_position_event_at = now
-        if status.get("ended") or (not replay and duration > 0 and current_time >= duration - 1.0):
+        if _youtube_finished(status, current_time, duration, replay):
             await clock.sleep(YOUTUBE_AFTER_END_SECONDS)
             return elapsed, _watch_time(elapsed)
         if status.get("paused"):
             paused_since = now if paused_since is None else paused_since
             if now - paused_since >= PLAYER_STALL_SECONDS:
-                raise _PlaybackFailure(
-                    elapsed,
-                    code="playback-stalled",
-                    message="YouTube playback stopped making progress.",
-                )
+                raise _stalled_failure(elapsed)
         else:
             paused_since = None
-        if current_time > previous_time + 0.05:
+        if current_time > previous_time + YOUTUBE_MOVEMENT_SECONDS:
             previous_time = current_time
             last_progress_at = now
         elif now - last_progress_at >= PLAYER_STALL_SECONDS:
-            raise _PlaybackFailure(
-                elapsed,
-                code="playback-stalled",
-                message="YouTube playback stopped making progress.",
-            )
-        watch_limit = (
-            min(PLAYER_MAX_SECONDS, duration + PLAYER_WATCH_SLACK_SECONDS) if duration > 0 else PLAYER_MAX_SECONDS
-        )
+            raise _stalled_failure(elapsed)
+        watch_limit = _youtube_watch_limit(duration)
         if elapsed >= watch_limit:
             raise _PlaybackFailure(
                 elapsed,
@@ -239,14 +260,18 @@ async def _play_youtube_video(
         await clock.sleep(YOUTUBE_POLL_INTERVAL_SECONDS)
 
 
+def _requests_native_speed(speed: float) -> bool:
+    return math.isclose(speed, 1.0)
+
+
 def queue_speed_rejection(speed: float, replay: bool) -> bool:
     """Queue-wide replay rule. The queue decides when this runs, before authentication."""
-    return replay and not math.isclose(speed, 1.0)
+    return replay and not _requests_native_speed(speed)
 
 
 def item_speed_rejection(speed: float) -> _PlaybackFailure | None:
     """Item-level native-speed rule. Preview raises it at the original pre-modal point."""
-    if math.isclose(speed, 1.0):
+    if _requests_native_speed(speed):
         return None
     return _PlaybackFailure(
         code="playback-speed-unavailable",

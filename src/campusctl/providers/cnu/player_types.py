@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import math
 from contextlib import suppress
+from enum import StrEnum
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -43,6 +44,14 @@ CLASSIFY_PLAYER_PAGE_JS = r"""/* campusctl-classify-player-page */(splashSelecto
     }
     return {page_state: 'unknown', video_count: videoCount};
 }"""
+
+
+class MediaKind(StrEnum):
+    """Catalog media values that have a playback path. Catalog JSON stays plain strings."""
+
+    VIDEO = "video"  # the Panopto path
+    YOUTUBE = "youtube"
+
 
 PAGE_STATES = frozenset({"ready", "auth", "processing", "splash", "unknown"})
 PLAY_STAGES = frozenset({"start", "room", "row", "preview", "frame", "video", "playback", "verify", "close"})
@@ -166,6 +175,10 @@ def _watch_time(elapsed_seconds: float) -> str:
 def _video_number(status: dict[str, Any], key: str) -> float:
     value = status.get(key)
     return float(value) if isinstance(value, int | float) and math.isfinite(float(value)) else 0.0
+
+
+def _position_event_due(last_event_at: float | None, now: float) -> bool:
+    return last_event_at is None or now - last_event_at >= POSITION_PROGRESS_INTERVAL_SECONDS
 
 
 async def _visible_locator(page: Any, selector: str, what: str) -> Any | None:
