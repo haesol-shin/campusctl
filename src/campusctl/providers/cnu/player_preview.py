@@ -363,75 +363,12 @@ async def _wait_for_speed(frame: Any, speed: float) -> bool:
         await clock.sleep(min(PLAYER_POLL_INTERVAL_SECONDS, remaining))
 
 
-class _PreviewLifetime:
-    """What cleanup must know about one preview: whether the modal opened and when playback began."""
-
-    __slots__ = ("modal_open", "started_at")
-
-    def __init__(self) -> None:
-        self.modal_open = False
-        self.started_at: float | None = None
-
-    def mark_started(self, on_started: Callable[[], None] | None) -> float:
-        self.started_at = current_clock().monotonic()
-        if on_started is not None:
-            on_started()
-        return self.started_at
-
-    def elapsed(self) -> float:
-        return current_clock().monotonic() - self.started_at if self.started_at is not None else 0.0
-
-
 def _reject_item_speed(handler: MediaHandler | None, speed: float) -> None:
     if handler is None or handler.item_speed_rejected is None:
         return
     rejected = handler.item_speed_rejected(speed)
     if rejected is not None:
         raise rejected
-
-
-async def _open_preview(page: Any, row_id: str, lifetime: _PreviewLifetime, diagnostic: _PlayDiagnostic) -> None:
-    diagnostic.stage = "row"
-    await _expand_row_through_ui(page, row_id)
-    diagnostic.stage = "preview"
-    row_selector = f"[id={_css_string(row_id)}] [data-act='titleDetailContents']"
-    title = page.locator(row_selector)
-    await bounded(
-        title.scroll_into_view_if_needed(timeout=7000),
-        PROTOCOL_TIMEOUT_SECONDS,
-        "scrolling to the lecture",
-    )
-    await bounded(title.click(timeout=7000), PROTOCOL_TIMEOUT_SECONDS, "opening the lecture preview")
-    lifetime.modal_open = True
-    await bounded(
-        page.wait_for_selector(PREVIEW_MODAL_SELECTOR, timeout=15000),
-        16.0,
-        "waiting for the lecture preview",
-    )
-    diagnostic.stage = "frame"
-
-
-async def _close_preview(
-    page: Any,
-    diagnostic: _PlayDiagnostic,
-    lifetime: _PreviewLifetime,
-    primary_error: BaseException | None,
-) -> None:
-    """Close the modal once. A close failure only surfaces when playback had no error of its own."""
-    with suppress(BaseException):
-        await diagnostic.refresh()
-    if primary_error is None:
-        diagnostic.stage = "close"
-    if not lifetime.modal_open:
-        return
-    try:
-        await _close_player(page)
-    except asyncio.CancelledError:
-        if primary_error is None:
-            raise
-    except BaseException:
-        if primary_error is None:
-            raise _PlaybackFailure(lifetime.elapsed()) from None
 
 
 def _panopto_rate_matches(rate: object, speed: float) -> bool:
@@ -455,104 +392,7 @@ def _panopto_watch_limit(duration: float, speed: float) -> float:
     return PLAYER_MAX_SECONDS
 
 
-async def _select_panopto_speed(frame: Any, speed: float) -> dict[str, Any]:
-    speed_selector = f'div.item[data-speed="{speed:g}"], [data-speed="{speed:g}"]'
-    speed_option = frame.locator(speed_selector).first
-    count = await bounded(speed_option.count(), PROTOCOL_TIMEOUT_SECONDS, "finding the Panopto speed option")
-    if not count:
-        raise _PlaybackFailure(code="playback-speed-unavailable")
-    try:
-        await bounded(
-            speed_option.click(force=True, timeout=7000),
-            PROTOCOL_TIMEOUT_SECONDS,
-            "selecting the Panopto speed option",
-        )
-    except Exception:
-        raise _PlaybackFailure(code="playback-speed-unavailable") from None
-    if not await _wait_for_speed(frame, speed):
-        raise _PlaybackFailure(code="playback-speed-unavailable")
-    return await _read_video_state(frame)
-
-
-async def _start_panopto_playback(frame: Any, status: dict[str, Any], replay: bool) -> None:
-    already_ended = replay and bool(status.get("ended"))
-    if not (status.get("paused") or already_ended):
-        return
-    play_button = await _visible_locator(frame, PLAY_BUTTON_SELECTOR, "finding a visible Panopto play button")
-    if play_button is None:
-        raise _PlaybackFailure()
-    await bounded(play_button.click(timeout=7000), PROTOCOL_TIMEOUT_SECONDS, "starting the Panopto video")
-    if already_ended and (await _read_video_state(frame)).get("ended"):
-        raise _PlaybackFailure(message="The official player did not restart playback.")
-
-
-async def _watch_panopto(
-    frame: Any,
-    speed: float,
-    started_at: float,
-    replay: bool,
-    on_position: Callable[[float, float], None] | None,
-) -> tuple[float, str]:
-    last_progress_at = started_at
-    previous_time = -1.0
-    last_position_event_at: float | None = None
-    while True:
-        status = await _read_video_state(frame)
-        now = current_clock().monotonic()
-        current_time = _video_number(status, "currentTime")
-        duration = _video_number(status, "duration")
-        elapsed = now - started_at
-        if on_position is not None and _position_event_due(last_position_event_at, now):
-            on_position(current_time, duration)
-            last_position_event_at = now
-        if _panopto_finished(status, current_time, duration, replay):
-            return elapsed, _watch_time(elapsed)
-        if status.get("paused"):
-            play_button = await _visible_locator(
-                frame,
-                PLAY_BUTTON_SELECTOR,
-                "finding a visible Panopto play button",
-            )
-            if play_button is not None:
-                await bounded(
-                    play_button.click(timeout=7000),
-                    PROTOCOL_TIMEOUT_SECONDS,
-                    "resuming the Panopto video",
-                )
-        if current_time > previous_time + 0.5:
-            previous_time = current_time
-            last_progress_at = now
-        elif now - last_progress_at >= PLAYER_STALL_SECONDS:
-            raise _PlaybackFailure(elapsed, code="playback-stalled")
-        if elapsed >= _panopto_watch_limit(duration, speed):
-            raise _PlaybackFailure(elapsed, code="playback-timeout")
-        await current_clock().sleep(PLAYER_POLL_INTERVAL_SECONDS)
-
-
-async def _play_panopto_video(
-    page: Any,
-    speed: float,
-    lifetime: _PreviewLifetime,
-    diagnostic: _PlayDiagnostic,
-    *,
-    replay: bool,
-    on_opened: Callable[[], None] | None,
-    on_started: Callable[[], None] | None,
-    on_position: Callable[[float, float], None] | None,
-) -> tuple[float, str]:
-    frame = await _player_frame(page, diagnostic)
-    diagnostic.stage = "playback"
-    if on_opened is not None:
-        on_opened()
-    status = await _read_video_state(frame)
-    if not _panopto_rate_matches(status.get("playbackRate"), speed):
-        status = await _select_panopto_speed(frame, speed)
-    await _start_panopto_playback(frame, status, replay)
-    started_at = lifetime.mark_started(on_started)
-    return await _watch_panopto(frame, speed, started_at, replay, on_position)
-
-
-async def _play_visible_lecture(
+async def _play_visible_lecture(  # noqa: C901 - ordered LMS step sequence
     page: Any,
     row_id: str,
     speed: float,
@@ -564,41 +404,139 @@ async def _play_visible_lecture(
     on_position: Callable[[float, float], None] | None = None,
     diagnostic: _PlayDiagnostic | None = None,
 ) -> tuple[float, str]:
-    """One preview lifetime: open the modal, hand playback to the media handler, close it once."""
     diagnostic = diagnostic if diagnostic is not None else _PlayDiagnostic()
-    lifetime = _PreviewLifetime()
+    started_at: float | None = None
+    modal_open = False
     primary_error: BaseException | None = None
     try:
         handler = MEDIA_HANDLERS.get(media)
         _reject_item_speed(handler, speed)
-        await _open_preview(page, row_id, lifetime, diagnostic)
+        diagnostic.stage = "row"
+        await _expand_row_through_ui(page, row_id)
+        diagnostic.stage = "preview"
+        row_selector = f"[id={_css_string(row_id)}] [data-act='titleDetailContents']"
+        title = page.locator(row_selector)
+        await bounded(
+            title.scroll_into_view_if_needed(timeout=7000),
+            PROTOCOL_TIMEOUT_SECONDS,
+            "scrolling to the lecture",
+        )
+        await bounded(title.click(timeout=7000), PROTOCOL_TIMEOUT_SECONDS, "opening the lecture preview")
+        modal_open = True
+        await bounded(
+            page.wait_for_selector(PREVIEW_MODAL_SELECTOR, timeout=15000),
+            16.0,
+            "waiting for the lecture preview",
+        )
+        diagnostic.stage = "frame"
         if handler is not None and handler.play is not None:
+
+            def on_media_started() -> None:
+                nonlocal started_at
+                started_at = current_clock().monotonic()
+                if on_started is not None:
+                    on_started()
+
             return await handler.play(
                 page,
                 diagnostic,
                 replay=replay,
                 on_opened=on_opened,
-                on_started=lambda: lifetime.mark_started(on_started),
+                on_started=on_media_started,
                 on_position=on_position,
             )
-        return await _play_panopto_video(
-            page,
-            speed,
-            lifetime,
-            diagnostic,
-            replay=replay,
-            on_opened=on_opened,
-            on_started=on_started,
-            on_position=on_position,
-        )
+        frame = await _player_frame(page, diagnostic)
+        diagnostic.stage = "playback"
+        if on_opened is not None:
+            on_opened()
+        status = await _read_video_state(frame)
+
+        if not _panopto_rate_matches(status.get("playbackRate"), speed):
+            speed_selector = f'div.item[data-speed="{speed:g}"], [data-speed="{speed:g}"]'
+            speed_option = frame.locator(speed_selector).first
+            count = await bounded(speed_option.count(), PROTOCOL_TIMEOUT_SECONDS, "finding the Panopto speed option")
+            if not count:
+                raise _PlaybackFailure(code="playback-speed-unavailable")
+            try:
+                await bounded(
+                    speed_option.click(force=True, timeout=7000),
+                    PROTOCOL_TIMEOUT_SECONDS,
+                    "selecting the Panopto speed option",
+                )
+            except Exception:
+                raise _PlaybackFailure(code="playback-speed-unavailable") from None
+            if not await _wait_for_speed(frame, speed):
+                raise _PlaybackFailure(code="playback-speed-unavailable")
+            status = await _read_video_state(frame)
+        already_ended = replay and bool(status.get("ended"))
+
+        if status.get("paused") or already_ended:
+            play_button = await _visible_locator(frame, PLAY_BUTTON_SELECTOR, "finding a visible Panopto play button")
+            if play_button is None:
+                raise _PlaybackFailure()
+            await bounded(play_button.click(timeout=7000), PROTOCOL_TIMEOUT_SECONDS, "starting the Panopto video")
+            if already_ended and (await _read_video_state(frame)).get("ended"):
+                raise _PlaybackFailure(message="The official player did not restart playback.")
+
+        started_at = current_clock().monotonic()
+        if on_started is not None:
+            on_started()
+        last_progress_at = started_at
+        previous_time = -1.0
+        last_position_event_at: float | None = None
+        while True:
+            status = await _read_video_state(frame)
+            now = current_clock().monotonic()
+            current_time = _video_number(status, "currentTime")
+            duration = _video_number(status, "duration")
+            elapsed = now - started_at
+            if on_position is not None and _position_event_due(last_position_event_at, now):
+                on_position(current_time, duration)
+                last_position_event_at = now
+            if _panopto_finished(status, current_time, duration, replay):
+                return elapsed, _watch_time(elapsed)
+            if status.get("paused"):
+                play_button = await _visible_locator(
+                    frame,
+                    PLAY_BUTTON_SELECTOR,
+                    "finding a visible Panopto play button",
+                )
+                if play_button is not None:
+                    await bounded(
+                        play_button.click(timeout=7000),
+                        PROTOCOL_TIMEOUT_SECONDS,
+                        "resuming the Panopto video",
+                    )
+            if current_time > previous_time + 0.5:
+                previous_time = current_time
+                last_progress_at = now
+            elif now - last_progress_at >= PLAYER_STALL_SECONDS:
+                raise _PlaybackFailure(elapsed, code="playback-stalled")
+            if elapsed >= _panopto_watch_limit(duration, speed):
+                raise _PlaybackFailure(elapsed, code="playback-timeout")
+            await current_clock().sleep(PLAYER_POLL_INTERVAL_SECONDS)
     except _PlaybackFailure as error:
         primary_error = error
         raise
     except Exception:
-        primary_error = _PlaybackFailure(lifetime.elapsed())
+        elapsed = current_clock().monotonic() - started_at if started_at is not None else 0.0
+        primary_error = _PlaybackFailure(elapsed)
         raise primary_error from None
     except BaseException as error:
         primary_error = error
         raise
     finally:
-        await _close_preview(page, diagnostic, lifetime, primary_error)
+        with suppress(BaseException):
+            await diagnostic.refresh()
+        if primary_error is None:
+            diagnostic.stage = "close"
+        if modal_open:
+            try:
+                await _close_player(page)
+            except asyncio.CancelledError:
+                if primary_error is None:
+                    raise
+            except BaseException:
+                if primary_error is None:
+                    elapsed = current_clock().monotonic() - started_at if started_at is not None else 0.0
+                    raise _PlaybackFailure(elapsed) from None
