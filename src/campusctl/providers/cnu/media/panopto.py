@@ -110,7 +110,32 @@ async def prepare(page: Any, config: dict[str, Any]) -> None:
     await ensure_logged_in(page, config, target_url=MY_LECTURE_URL, expected_selector=COURSE_LINK_SELECTOR)
 
 
-async def _player_frame(page: Any, diagnostic: _PlayDiagnostic | None = None) -> Any:  # noqa: C901
+def _is_recognized_player(kind: str, frame_url: str) -> bool:
+    return kind == "panopto" and "Embed.aspx" in frame_url
+
+
+def _splash_click_due(splash_clicks: int, first_click_at: float | None, now: float) -> bool:
+    """The first splash click is always due; a retry waits for the retry interval, up to the click cap."""
+    if splash_clicks >= PLAYER_MAX_SPLASH_CLICKS:
+        return False
+    return splash_clicks == 0 or (first_click_at is not None and now - first_click_at >= PLAYER_SPLASH_RETRY_SECONDS)
+
+
+def _video_check_failure(elapsed: float, recognized_player: bool) -> _PlaybackFailure:
+    if recognized_player:
+        return _PlaybackFailure(
+            elapsed,
+            code="player-video-unavailable",
+            message="The Panopto player frame loaded without an accessible video element.",
+        )
+    return _PlaybackFailure(
+        elapsed, code="player-frame-unavailable", message="The Panopto player frame was unavailable."
+    )
+
+
+async def _player_frame(  # noqa: C901 - ordered frame, video and splash wait
+    page: Any, diagnostic: _PlayDiagnostic | None = None
+) -> Any:
     clock = current_clock()
     started_at = clock.monotonic()
     frame_deadline = started_at + PLAYER_FRAME_WAIT_SECONDS
@@ -146,7 +171,7 @@ async def _player_frame(page: Any, diagnostic: _PlayDiagnostic | None = None) ->
             if candidate is not None:
                 frame_url = str(getattr(candidate, "url", "") or "")
                 kind = _frame_kind(frame_url, str(getattr(page, "url", "") or ""))
-                recognized_player = kind == "panopto" and "Embed.aspx" in frame_url
+                recognized_player = _is_recognized_player(kind, frame_url)
                 if diagnostic is not None:
                     diagnostic.frame = candidate
                     diagnostic.frame_kind = kind
@@ -160,15 +185,7 @@ async def _player_frame(page: Any, diagnostic: _PlayDiagnostic | None = None) ->
                 except (CampusError, PlaywrightError):
                     if diagnostic is not None and recognized_player:
                         diagnostic.stage = "video"
-                    raise _PlaybackFailure(
-                        current_clock().monotonic() - started_at,
-                        code="player-video-unavailable" if recognized_player else "player-frame-unavailable",
-                        message=(
-                            "The Panopto player frame loaded without an accessible video element."
-                            if recognized_player
-                            else "The Panopto player frame was unavailable."
-                        ),
-                    ) from None
+                    raise _video_check_failure(current_clock().monotonic() - started_at, recognized_player) from None
                 if "Embed.aspx" in frame_url or video is not None:
                     frame = candidate
         else:
@@ -189,23 +206,17 @@ async def _player_frame(page: Any, diagnostic: _PlayDiagnostic | None = None) ->
             )
             if diagnostic is not None:
                 diagnostic.splash_visible = play_button is not None
-            if play_button is not None and splash_clicks < PLAYER_MAX_SPLASH_CLICKS:
-                retry_due = (
-                    splash_clicks > 0
-                    and first_click_at is not None
-                    and now - first_click_at >= PLAYER_SPLASH_RETRY_SECONDS
+            if play_button is not None and _splash_click_due(splash_clicks, first_click_at, now):
+                await bounded(
+                    play_button.click(timeout=7000),
+                    PROTOCOL_TIMEOUT_SECONDS,
+                    "starting the Panopto player",
                 )
-                if splash_clicks == 0 or retry_due:
-                    await bounded(
-                        play_button.click(timeout=7000),
-                        PROTOCOL_TIMEOUT_SECONDS,
-                        "starting the Panopto player",
-                    )
-                    splash_clicks += 1
-                    if first_click_at is None:
-                        first_click_at = now
-                    if diagnostic is not None:
-                        diagnostic.splash_clicks = splash_clicks
+                splash_clicks += 1
+                if first_click_at is None:
+                    first_click_at = now
+                if diagnostic is not None:
+                    diagnostic.splash_clicks = splash_clicks
         await current_clock().sleep(
             min(PLAYER_POLL_INTERVAL_SECONDS, max(0.0, video_deadline - current_clock().monotonic()))
         )
@@ -301,6 +312,19 @@ def _panopto_watch_limit(duration: float, speed: float) -> float:
     return PLAYER_MAX_SECONDS
 
 
+def _watch_abort_code(idle_seconds: float, elapsed: float, limit: float) -> str | None:
+    """Failure code for a watch loop that made no progress for too long or ran past its limit."""
+    if idle_seconds >= PLAYER_STALL_SECONDS:
+        return "playback-stalled"
+    if elapsed >= limit:
+        return "playback-timeout"
+    return None
+
+
+def _speed_selector(speed: float) -> str:
+    return f'div.item[data-speed="{speed:g}"], [data-speed="{speed:g}"]'
+
+
 async def play(  # noqa: C901 - ordered LMS step sequence
     page: Any,
     diagnostic: _PlayDiagnostic,
@@ -318,7 +342,7 @@ async def play(  # noqa: C901 - ordered LMS step sequence
     status = await _read_video_state(frame)
 
     if not _panopto_rate_matches(status.get("playbackRate"), speed):
-        speed_selector = f'div.item[data-speed="{speed:g}"], [data-speed="{speed:g}"]'
+        speed_selector = _speed_selector(speed)
         speed_option = frame.locator(speed_selector).first
         count = await bounded(speed_option.count(), PROTOCOL_TIMEOUT_SECONDS, "finding the Panopto speed option")
         if not count:
@@ -376,8 +400,7 @@ async def play(  # noqa: C901 - ordered LMS step sequence
         if current_time > previous_time + 0.5:
             previous_time = current_time
             last_progress_at = now
-        elif now - last_progress_at >= PLAYER_STALL_SECONDS:
-            raise _PlaybackFailure(elapsed, code="playback-stalled")
-        if elapsed >= _panopto_watch_limit(duration, speed):
-            raise _PlaybackFailure(elapsed, code="playback-timeout")
+        abort_code = _watch_abort_code(now - last_progress_at, elapsed, _panopto_watch_limit(duration, speed))
+        if abort_code is not None:
+            raise _PlaybackFailure(elapsed, code=abort_code)
         await current_clock().sleep(PLAYER_POLL_INTERVAL_SECONDS)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 from campusctl.browser import PROTOCOL_TIMEOUT_SECONDS, bounded
@@ -41,16 +42,37 @@ def _emit_play_diagnostic(diagnostic: _PlayDiagnostic, index: int, reason_code: 
     print(diagnostic.record(index + 1, reason_code), file=sys.stderr)
 
 
-def _not_started(entity_id: str, replay: bool = False) -> dict[str, Any]:
-    return {
-        "entity_id": entity_id,
-        "outcome": "not-started",
-        "elapsed_seconds": 0.0,
-        "watch_time": None,
-        "provider_state": None,
-        "replay_requested": replay,
-        "player_opened": False,
-    }
+@dataclass(frozen=True, slots=True)
+class _LectureItem:
+    """One queue item's result. `to_json` is the only conversion to the envelope's dict item."""
+
+    entity_id: str
+    outcome: str
+    elapsed_seconds: float = 0.0
+    watch_time: str | None = None
+    provider_state: str | None = None
+    replay_requested: bool = False
+    player_opened: bool = False
+    reason_code: str | None = None
+    # Handler failures list the reason right after the outcome; queue-level failures append it.
+    reason_after_outcome: bool = False
+
+    def to_json(self) -> dict[str, Any]:
+        item: dict[str, Any] = {"entity_id": self.entity_id, "outcome": self.outcome}
+        if self.reason_after_outcome and self.reason_code is not None:
+            item["reason_code"] = self.reason_code
+        item["elapsed_seconds"] = self.elapsed_seconds
+        item["watch_time"] = self.watch_time
+        item["provider_state"] = self.provider_state
+        item["replay_requested"] = self.replay_requested
+        item["player_opened"] = self.player_opened
+        if not self.reason_after_outcome and self.reason_code is not None:
+            item["reason_code"] = self.reason_code
+        return item
+
+
+def _not_started(entity_id: str, replay: bool) -> _LectureItem:
+    return _LectureItem(entity_id, "not-started", replay_requested=replay)
 
 
 def _row_parts(entity_id: str) -> tuple[str, str] | None:
@@ -213,24 +235,56 @@ def _mark_catalog_completion(entity_id: str, row: dict[str, Any], completion: st
     )
 
 
-def _completed_item(
+def _settled_item(
     entity_id: str,
+    outcome: str,
     state: str | None,
+    replay: bool,
+    *,
     elapsed: float = 0.0,
     watch_time: str | None = None,
-    *,
-    replay: bool = False,
     opened: bool = False,
-) -> dict[str, Any]:
-    return {
-        "entity_id": entity_id,
-        "outcome": "completed",
-        "elapsed_seconds": round(elapsed, 1),
-        "watch_time": watch_time,
-        "provider_state": state,
-        "replay_requested": replay,
-        "player_opened": opened,
-    }
+) -> _LectureItem:
+    """An item the queue reached a provider verdict for: completed, recorded, unverified or already complete."""
+    return _LectureItem(entity_id, outcome, round(elapsed, 1), watch_time, state, replay, opened)
+
+
+def _queue_failed_item(entity_id: str, replay: bool, state: str | None = None, opened: bool = False) -> _LectureItem:
+    """Failure with no handler code: an unusable ID, a catalog or LMS error, or an unexpected exception."""
+    return _LectureItem(entity_id, "failed", 0.0, None, state, replay, opened, "playback-failed")
+
+
+def _playback_failure_item(
+    entity_id: str, failure: _PlaybackFailure, state: str | None, replay: bool, opened: bool
+) -> _LectureItem:
+    elapsed = failure.elapsed_seconds
+    watch_time = _watch_time(elapsed) if opened and elapsed else None
+    return _LectureItem(
+        entity_id,
+        "failed",
+        round(elapsed, 1),
+        watch_time,
+        state,
+        replay,
+        opened,
+        failure.code,
+        reason_after_outcome=True,
+    )
+
+
+def _attendance_recorded(row: dict[str, Any] | None) -> bool:
+    """The LMS counted full progress but not attendance: watched, not credited."""
+    return row is not None and row.get("attendance_counted") is False and progress_is_full(row.get("progress_text"))
+
+
+def _playback_outcome(state: str | None, provider_row: dict[str, Any] | None) -> str:
+    if state == "F":
+        return "completed"
+    return "recorded" if _attendance_recorded(provider_row) else "unverified"
+
+
+def _queue_result(items: list[_LectureItem]) -> dict[str, Any]:
+    return {"items": [item.to_json() for item in items]}
 
 
 async def _poll_completion(page: Any, row_id: str) -> dict[str, Any] | None:
@@ -248,11 +302,7 @@ async def _poll_completion(page: Any, row_id: str) -> dict[str, Any] | None:
                 return last_row
             raise
         last_row = row
-        if row is not None and (
-            row.get("state") == "F"
-            or row.get("attendance_counted") is False
-            and progress_is_full(row.get("progress_text"))
-        ):
+        if row is not None and (row.get("state") == "F" or _attendance_recorded(row)):
             return row
         remaining = deadline - clock.monotonic()
         if remaining <= 0:
@@ -264,7 +314,46 @@ def _partial_error(code: str, message: str, remediation: str) -> CampusError:
     return CampusError(code, message, remediation, "error")
 
 
-async def play_lectures(  # noqa: C901
+def _playback_failed_error(message: str) -> CampusError:
+    return _partial_error("playback-failed", message, "Check the LMS session and lecture availability, then retry.")
+
+
+def _speed_rejected_error() -> CampusError:
+    return _partial_error(
+        "playback-speed-unavailable",
+        "YouTube lectures support only 1.0 playback speed.",
+        "Use 1.0 speed for YouTube or retry at a speed supported by the selected player.",
+    )
+
+
+def _unverified_error() -> CampusError:
+    return _partial_error(
+        "playback-unverified",
+        "The LMS did not report the lecture as complete after playback.",
+        "Check the lecture status in the LMS before trying again.",
+    )
+
+
+def _failure_error(failure: _PlaybackFailure) -> CampusError:
+    """Map a handler failure code to the partial-status error shown for it."""
+    code = failure.code
+    message = failure.message or "A requested lecture could not be played."
+    remediation = "Check the LMS session and lecture availability, then retry."
+    if code == "player-frame-unavailable":
+        remediation = (
+            "Another session for the same account can replace the player page. "
+            "Close other LMS sessions for that account and retry."
+        )
+    if code == "playback-speed-unavailable":
+        message = failure.message or "The requested playback speed is unavailable in the player."
+        remediation = "Use 1.0 speed for YouTube or retry at a speed supported by the selected player."
+    elif code == "youtube-autoplay-blocked":
+        message = failure.message or "YouTube did not start automatically or through its official start button."
+        remediation = "Check whether the visible YouTube player can start playback, then retry."
+    return _partial_error(code, message, remediation)
+
+
+async def play_lectures(  # noqa: C901 - ordered LMS step sequence
     page: Any,
     config: dict[str, Any],
     lectures: list[dict[str, Any]],
@@ -275,6 +364,7 @@ async def play_lectures(  # noqa: C901
 ) -> tuple[dict[str, Any], CampusError | list[CampusError] | None]:
     """Play selected lecture records serially and report provider-confirmed state."""
     progress_enabled = progress is not None
+    results: list[_LectureItem] = []
 
     def _emit(event: dict[str, Any]) -> None:
         nonlocal progress_enabled
@@ -287,48 +377,41 @@ async def play_lectures(  # noqa: C901
     def _finished(entity_id: str, outcome: str) -> None:
         _emit({"type": "finished", "entity_id": entity_id, "outcome": outcome})
 
-    def _not_started_from(start: int) -> list[dict[str, Any]]:
+    def _not_started_from(start: int) -> list[_LectureItem]:
         remaining = [_not_started(item["entity_id"], replay) for item in lectures[start:]]
         for item in remaining:
-            _finished(item["entity_id"], item["outcome"])
+            _finished(item.entity_id, item.outcome)
         return remaining
+
+    def _record(item: _LectureItem) -> None:
+        results.append(item)
+        _finished(item.entity_id, item.outcome)
+
+    def _stop(index: int, errors: list[CampusError]) -> tuple[dict[str, Any], list[CampusError]]:
+        """End the queue after item `index`: report every later item as not started."""
+        results.extend(_not_started_from(index + 1))
+        return _queue_result(results), errors
 
     selected_speed = float(config.get("playback", {}).get("default_speed", 1.0) if speed is None else speed)
     if _queue_speed_rejected(lectures, selected_speed, replay):
-        return {"items": _not_started_from(0)}, [
-            _partial_error(
-                "playback-speed-unavailable",
-                "YouTube lectures support only 1.0 playback speed.",
-                "Use 1.0 speed for YouTube or retry at a speed supported by the selected player.",
-            )
-        ]
+        return _queue_result(_not_started_from(0)), [_speed_rejected_error()]
     try:
         await ensure_logged_in(page, config, target_url=MY_LECTURE_URL, expected_selector=COURSE_LINK_SELECTOR)
     except CampusError as error:
-        return {"items": _not_started_from(0)}, error
+        return _queue_result(_not_started_from(0)), error
     try:
         await _prepare_media(page, config, lectures)
     except CampusError as error:
-        return {"items": _not_started_from(0)}, error
+        return _queue_result(_not_started_from(0)), error
 
-    results: list[dict[str, Any]] = []
     for index, lecture in enumerate(lectures):
         entity_id = lecture["entity_id"]
         diagnostic = _PlayDiagnostic()
         parts = _row_parts(entity_id)
         if parts is None:
-            result = {**_not_started(entity_id, replay), "outcome": "failed", "reason_code": "playback-failed"}
-            results.append(result)
-            _finished(entity_id, result["outcome"])
+            _record(_queue_failed_item(entity_id, replay))
             _emit_play_diagnostic(diagnostic, index, "playback-failed")
-            results.extend(_not_started_from(index + 1))
-            return {"items": results}, [
-                _partial_error(
-                    "playback-failed",
-                    "A requested lecture could not be opened in its course room.",
-                    "Check the LMS session and lecture availability, then retry.",
-                )
-            ]
+            return _stop(index, [_playback_failed_error("A requested lecture could not be opened in its course room.")])
         course_id, row_id = parts
         state: str | None = None
         opened = False
@@ -348,44 +431,22 @@ async def play_lectures(  # noqa: C901
                 raise _PlaybackFailure(code="lecture-row-unavailable")
             state = row.get("state") if isinstance(row.get("state"), str) else None
             if state == "F" and not replay:
-                result = {
-                    "entity_id": entity_id,
-                    "outcome": "already-complete",
-                    "elapsed_seconds": 0.0,
-                    "watch_time": None,
-                    "provider_state": state,
-                    "replay_requested": replay,
-                    "player_opened": False,
-                }
+                item = _settled_item(entity_id, "already-complete", state, replay)
                 try:
                     _mark_catalog_completion(entity_id, row, "complete")
                 except CampusError as error:
-                    results.append(result)
-                    _finished(entity_id, result["outcome"])
-                    results.extend(_not_started_from(index + 1))
-                    return {"items": results}, [error]
-                results.append(result)
-                _finished(entity_id, result["outcome"])
+                    _record(item)
+                    return _stop(index, [error])
+                _record(item)
                 continue
-            if not replay and row.get("attendance_counted") is False and progress_is_full(row.get("progress_text")):
-                result = {
-                    "entity_id": entity_id,
-                    "outcome": "recorded",
-                    "elapsed_seconds": 0.0,
-                    "watch_time": None,
-                    "provider_state": state,
-                    "replay_requested": replay,
-                    "player_opened": False,
-                }
+            if not replay and _attendance_recorded(row):
+                item = _settled_item(entity_id, "recorded", state, replay)
                 try:
                     _mark_catalog_completion(entity_id, row, "recorded")
                 except CampusError as error:
-                    results.append(result)
-                    _finished(entity_id, result["outcome"])
-                    results.extend(_not_started_from(index + 1))
-                    return {"items": results}, [error]
-                results.append(result)
-                _finished(entity_id, result["outcome"])
+                    _record(item)
+                    return _stop(index, [error])
+                _record(item)
                 continue
             if row.get("openyn") == "N":
                 raise _PlaybackFailure(code="lecture-row-unavailable")
@@ -424,127 +485,29 @@ async def play_lectures(  # noqa: C901
             except Exception:
                 raise _PlaybackFailure(elapsed) from None
             state = provider_row.get("state") if provider_row is not None else None
-            if state != "F":
-                if (
-                    provider_row is not None
-                    and provider_row.get("attendance_counted") is False
-                    and progress_is_full(provider_row.get("progress_text"))
-                ):
-                    result = {
-                        "entity_id": entity_id,
-                        "outcome": "recorded",
-                        "elapsed_seconds": round(elapsed, 1),
-                        "watch_time": watch_time,
-                        "provider_state": state,
-                        "replay_requested": replay,
-                        "player_opened": opened,
-                    }
-                    try:
-                        _mark_catalog_completion(entity_id, provider_row, "recorded")
-                    except CampusError as error:
-                        results.append(result)
-                        _finished(entity_id, result["outcome"])
-                        results.extend(_not_started_from(index + 1))
-                        return {"items": results}, [error]
-                    results.append(result)
-                    _finished(entity_id, result["outcome"])
-                    continue
-                result = {
-                    "entity_id": entity_id,
-                    "outcome": "unverified",
-                    "elapsed_seconds": round(elapsed, 1),
-                    "watch_time": watch_time,
-                    "provider_state": state,
-                    "replay_requested": replay,
-                    "player_opened": opened,
-                }
-                results.append(result)
-                _finished(entity_id, result["outcome"])
-                results.extend(_not_started_from(index + 1))
-                return {"items": results}, [
-                    _partial_error(
-                        "playback-unverified",
-                        "The LMS did not report the lecture as complete after playback.",
-                        "Check the lecture status in the LMS before trying again.",
-                    )
-                ]
-            result = _completed_item(entity_id, state, elapsed, watch_time, replay=replay, opened=opened)
+            outcome = _playback_outcome(state, provider_row)
+            item = _settled_item(
+                entity_id, outcome, state, replay, elapsed=elapsed, watch_time=watch_time, opened=opened
+            )
+            if outcome == "unverified":
+                _record(item)
+                return _stop(index, [_unverified_error()])
             try:
-                _mark_catalog_completion(entity_id, provider_row or {"state": state}, "complete")
+                _mark_catalog_completion(
+                    entity_id,
+                    provider_row or {"state": state},
+                    "complete" if outcome == "completed" else "recorded",
+                )
             except CampusError as error:
-                results.append(result)
-                _finished(entity_id, result["outcome"])
-                results.extend(_not_started_from(index + 1))
-                return {"items": results}, [error]
-            results.append(result)
-            _finished(entity_id, result["outcome"])
-        except CampusError:
-            result = {
-                **_not_started(entity_id, replay),
-                "outcome": "failed",
-                "reason_code": "playback-failed",
-                "provider_state": state,
-                "player_opened": opened,
-            }
-            results.append(result)
-            _finished(entity_id, result["outcome"])
-            _emit_play_diagnostic(diagnostic, index, "playback-failed")
-            results.extend(_not_started_from(index + 1))
-            return {"items": results}, [
-                _partial_error(
-                    "playback-failed",
-                    "A requested lecture could not be played.",
-                    "Check the LMS session and lecture availability, then retry.",
-                )
-            ]
+                _record(item)
+                return _stop(index, [error])
+            _record(item)
         except _PlaybackFailure as error:
-            elapsed = error.elapsed_seconds
-            result = {
-                "entity_id": entity_id,
-                "outcome": "failed",
-                "reason_code": error.code,
-                "elapsed_seconds": round(elapsed, 1),
-                "watch_time": _watch_time(elapsed) if opened and elapsed else None,
-                "provider_state": state,
-                "replay_requested": replay,
-                "player_opened": opened,
-            }
-            results.append(result)
-            _finished(entity_id, result["outcome"])
+            _record(_playback_failure_item(entity_id, error, state, replay, opened))
             _emit_play_diagnostic(diagnostic, index, error.code)
-            results.extend(_not_started_from(index + 1))
-            code = error.code
-            message = error.message or "A requested lecture could not be played."
-            remediation = "Check the LMS session and lecture availability, then retry."
-            if code == "player-frame-unavailable":
-                remediation = (
-                    "Another session for the same account can replace the player page. "
-                    "Close other LMS sessions for that account and retry."
-                )
-            if code == "playback-speed-unavailable":
-                message = error.message or "The requested playback speed is unavailable in the player."
-                remediation = "Use 1.0 speed for YouTube or retry at a speed supported by the selected player."
-            elif code == "youtube-autoplay-blocked":
-                message = error.message or "YouTube did not start automatically or through its official start button."
-                remediation = "Check whether the visible YouTube player can start playback, then retry."
-            return {"items": results}, [_partial_error(code, message, remediation)]
-        except Exception:
-            result = {
-                **_not_started(entity_id, replay),
-                "outcome": "failed",
-                "reason_code": "playback-failed",
-                "provider_state": state,
-                "player_opened": opened,
-            }
-            results.append(result)
-            _finished(entity_id, result["outcome"])
+            return _stop(index, [_failure_error(error)])
+        except Exception:  # CampusError included: both report an unclassified failure
+            _record(_queue_failed_item(entity_id, replay, state, opened))
             _emit_play_diagnostic(diagnostic, index, "playback-failed")
-            results.extend(_not_started_from(index + 1))
-            return {"items": results}, [
-                _partial_error(
-                    "playback-failed",
-                    "A requested lecture could not be played.",
-                    "Check the LMS session and lecture availability, then retry.",
-                )
-            ]
-    return {"items": results}, None
+            return _stop(index, [_playback_failed_error("A requested lecture could not be played.")])
+    return _queue_result(results), None
