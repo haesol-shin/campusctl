@@ -5,9 +5,8 @@ import importlib
 import os
 import platform
 import re
-import shutil
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
@@ -26,6 +25,14 @@ from campusctl.catalog_view import (
     publish_material_snapshot,
     read_course_snapshot,
 )
+from campusctl.cli_args import (
+    _OUTPUT_NOTE,
+    EnvelopeArgumentParser,
+    RootArgumentParser,
+    RootHelpFormatter,
+    _HelpRequested,
+    _with_json,
+)
 from campusctl.commands import discover_domain_modules
 from campusctl.config import SUPPORTED_SPEEDS, load_config
 from campusctl.config_init import run_config_init
@@ -41,8 +48,9 @@ from campusctl.envelope import (
     write_json,
 )
 from campusctl.paths import config_path, data_dir
-from campusctl.presentation import render_human, render_progress
+from campusctl.presentation import render_human
 from campusctl.profiling import SpanRecorder
+from campusctl.progress import _progress_output
 from campusctl.sync import parse_domains, run_sync
 
 _DOMAIN_MODULES: dict[str, ModuleType] = discover_domain_modules()
@@ -52,75 +60,6 @@ CAPABILITIES = {
     "status": ["local"],
     **{name: list(module.CAPABILITY["commands"]) for name, module in _DOMAIN_MODULES.items()},
 }
-
-
-_HELP_GROUPS = (
-    ("Get started", ("setup", "doctor")),
-    ("Everyday", ("status", "sync", "lectures", "assignments", "notices", "materials", "courses")),
-    ("Settings", ("config", "auth")),
-)
-_OUTPUT_NOTE = (
-    "Terminal stdout defaults to human output; redirected stdout defaults to JSON.\n"
-    "--json forces the JSON envelope; CAMPUSCTL_OUTPUT=human|json overrides auto mode\n"
-    "unless --json is set."
-)
-
-
-class RootHelpFormatter(argparse.RawDescriptionHelpFormatter):
-    def _format_action(self, action: argparse.Action) -> str:
-        if not isinstance(action, argparse._SubParsersAction):
-            return super()._format_action(action)
-        choices = {choice.dest: choice for choice in action._get_subactions()}
-        lines = []
-        for heading, names in _HELP_GROUPS:
-            lines.append(f"  {heading}:\n")
-            for name in names:
-                lines.append("  " + super()._format_action(choices[name]))
-        return "".join(lines)
-
-
-class _HelpRequested(Exception):
-    pass
-
-
-class EnvelopeArgumentParser(argparse.ArgumentParser):
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        kwargs.setdefault("allow_abbrev", False)
-        super().__init__(*args, **kwargs)
-
-    def error(self, message: str) -> None:
-        del message
-        raise UsageError("Invalid command-line usage.")
-
-    def exit(self, status: int = 0, message: str | None = None) -> None:
-        if status == 0:
-            if message:
-                self._print_message(message, sys.stdout)
-            raise _HelpRequested
-        raise UsageError("Invalid command-line usage.")
-
-
-class RootArgumentParser(EnvelopeArgumentParser):
-    def format_help(self) -> str:
-        self.epilog = (
-            "Examples:\n  campusctl setup\n  campusctl sync\n  campusctl status\n\n"
-            f"Config: {config_path().resolve()}\nData: {data_dir().resolve()}\n"
-            "Docs: https://github.com/haesol-shin/campusctl/blob/main/docs/usage.md\n\n"
-            + _OUTPUT_NOTE
-            + "\n\nAre you an AI agent? Read these only when your task asks for it:\n"
-            "  Help a user install or set up campusctl:\n"
-            "    https://raw.githubusercontent.com/haesol-shin/campusctl/main/docs/agent-guide.md\n"
-            "  Use campusctl for the user:\n"
-            "    SKIP if the campusctl skill is already loaded. Otherwise read\n"
-            "    https://raw.githubusercontent.com/haesol-shin/campusctl/main/skills/campusctl/SKILL.md\n"
-            "  Never run `campusctl setup` (with any flags, including `--json`), `campusctl config init`,\n"
-            "  or `campusctl auth set` yourself. The user runs `campusctl setup` in their own terminal."
-        )
-        return super().format_help()
-
-
-def _with_json(parser: argparse.ArgumentParser, *, default: Any = argparse.SUPPRESS) -> None:
-    parser.add_argument("--json", action="store_true", default=default, help="emit the JSON response envelope")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -611,43 +550,6 @@ def _command_key(args: argparse.Namespace | None) -> str:
 
 def _confirm_setup(prompt: str) -> bool:
     return input(f"{prompt} ").strip().lower() not in {"n", "no"}
-
-
-def _progress_output() -> tuple[Callable[[dict[str, Any]], None], Callable[[], None]]:
-    is_tty = sys.stdout.isatty()
-    width = shutil.get_terminal_size(fallback=(80, 24)).columns
-    position_open = False
-    previous_position = ""
-
-    def finish() -> None:
-        nonlocal position_open
-        if position_open:
-            position_open = False
-            sys.stdout.write("\n")
-            sys.stdout.flush()
-
-    def report(event: dict[str, Any]) -> None:
-        nonlocal position_open, previous_position
-        if position_open:
-            if is_tty and event.get("type") == "position":
-                sys.stdout.write("\r")
-                line = render_progress(event, sys.stdout, width)
-                sys.stdout.write(" " * max(0, len(previous_position) - len(line)))
-                previous_position = line
-                sys.stdout.flush()
-                return
-            finish()
-        if event.get("type") == "position" and is_tty:
-            sys.stdout.write("\r")
-            previous_position = render_progress(event, sys.stdout, width)
-            position_open = True
-            sys.stdout.flush()
-        else:
-            render_progress(event, sys.stdout, width)
-            sys.stdout.write("\n")
-            sys.stdout.flush()
-
-    return report, finish
 
 
 def _dispatch(args: argparse.Namespace) -> tuple[Any, CampusError | list[CampusError] | None]:  # noqa: C901
