@@ -403,7 +403,8 @@ def test_ordinary_progress_callback_failure_keeps_today_result(
     assert [item["entity_id"] for item in result["items"]] == [item["entity_id"] for item in control_result["items"]]
     assert [item["outcome"] for item in result["items"]] == [item["outcome"] for item in control_result["items"]]
     assert experiment_completions == _completions(tmp_path)
-    assert calls[-1]["type"] == ("finished" if point == "not-started" else point)
+    # The failing event must be the last callback: progress stays off afterwards.
+    assert next(i for i, event in enumerate(calls) if _is_emit(event, point)) == len(calls) - 1
     assert len(_close_attempts(page)) == len(_close_attempts(control))
     if point == "not-started":
         assert [event["entity_id"] for event in calls if event.get("outcome") == "not-started"] == [SECOND_ID]
