@@ -10,7 +10,7 @@ import pytest
 
 from campusctl import cli, config_init, credentials, setup
 from campusctl.command_types import CommandResult, command_result
-from campusctl.commands.fetch_queue import _batch_status
+from campusctl.commands.fetch_queue import FetchItem, _batch_status
 from campusctl.envelope import CampusError, error_item, make_envelope, write_json
 
 
@@ -335,21 +335,21 @@ def test_auth_set_prompts_with_tty_stdin_in_json_mode(tmp_path: Path, monkeypatc
     assert stored == [("student-id", "test-password")]
 
 
-def _batch_items(*outcomes: str) -> list[dict[str, Any]]:
+def _batch_items(*outcomes: str) -> list[FetchItem]:
     items = []
     for index, outcome in enumerate(outcomes, start=1):
-        item: dict[str, Any] = {"entity_id": f"cnu_assignment:course-1:task-{index}", "outcome": outcome}
+        entity_id = f"cnu_assignment:course-1:task-{index}"
+        package = None
         if outcome in {"completed", "partial"}:
-            item["source_package"] = {
-                "entity_id": item["entity_id"],
+            package = {
+                "entity_id": entity_id,
                 "completeness": "partial" if outcome == "partial" else "complete",
-                "path": f"/data/sources/{item['entity_id']}",
-                "content_path": f"/data/sources/{item['entity_id']}/content.md",
+                "path": f"/data/sources/{entity_id}",
+                "content_path": f"/data/sources/{entity_id}/content.md",
                 "omitted_resources": [],
             }
-        if outcome in {"partial", "failed"}:
-            item["reason_code"] = "fetch-failed"
-        items.append(item)
+        reason = "fetch-failed" if outcome in {"partial", "failed"} else None
+        items.append(FetchItem(entity_id, outcome, package, reason))
     return items
 
 
@@ -396,8 +396,9 @@ def test_fetch_batch_emitter_keeps_first_failure_status(
     ]
     for errors, items, status, exit_code in cases:
         _, stdout = _streams(monkeypatch, stdin_tty=False, stdout_tty=output == "human")
+        payload = [item.to_json() for item in items]
         batch = CommandResult(
-            {"items": items}, _batch_status(items, errors), tuple(error_item(item) for item in errors)
+            {"items": payload}, _batch_status(items, errors), tuple(error_item(item) for item in errors)
         )
         monkeypatch.setattr(cli, "_dispatch", lambda _args, _context, batch=batch: batch)
         argv = [command, "fetch", "one", "two"]
@@ -409,11 +410,11 @@ def test_fetch_batch_emitter_keeps_first_failure_status(
             envelope = json.loads(text)
             assert envelope["status"] == status
             assert [item["code"] for item in envelope["errors"]] == [error.code for error in errors]
-            assert envelope["result"]["items"] == items
+            assert envelope["result"]["items"] == payload
         else:
             assert not text.startswith("{")
             assert errors[0].code in text
-            assert items[-1]["entity_id"] in text
+            assert items[-1].entity_id in text
 
     _, stdout = _streams(monkeypatch, stdin_tty=False, stdout_tty=False)
     ordinary = [CampusError("course-sync-failed", "One course failed.", status="user-action")]

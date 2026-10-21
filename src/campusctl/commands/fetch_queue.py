@@ -8,12 +8,12 @@ from collections.abc import Awaitable, Callable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from campusctl.browser import PROTOCOL_TIMEOUT_SECONDS
 from campusctl.command_types import CommandResult, command_result
 from campusctl.domain_catalog import domain_catalog_path, read_domain_catalog
-from campusctl.envelope import CampusError, UsageError, error_item
+from campusctl.envelope import CampusError, Status, UsageError, error_item
 from campusctl.paths import data_dir
 from campusctl.providers.cnu.login import LOGIN_FORM_SELECTOR
 
@@ -21,6 +21,28 @@ Capture = Callable[[Any, dict[str, Any]], Awaitable[Any]]
 ErrorFactory = Callable[[str, Exception], CampusError]
 # Adapts a provider's typed entity-unknown error; None leaves it to the generic wording.
 EntityUnknownAdapter = Callable[[CampusError], CampusError | None]
+
+
+FetchOutcome = Literal["completed", "partial", "failed", "not-started"]
+
+
+@dataclass(frozen=True, slots=True)
+class FetchItem:
+    """One selected ID's result in a multi-ID fetch."""
+
+    entity_id: str
+    outcome: FetchOutcome
+    source_package: dict[str, Any] | None = None
+    reason_code: str | None = None
+
+    def to_json(self) -> dict[str, Any]:
+        """Keys in envelope order; a package or reason the item lacks is omitted."""
+        item: dict[str, Any] = {"entity_id": self.entity_id, "outcome": self.outcome}
+        if self.source_package is not None:
+            item["source_package"] = self.source_package
+        if self.reason_code is not None:
+            item["reason_code"] = self.reason_code
+        return item
 
 
 @dataclass(frozen=True, slots=True)
@@ -187,14 +209,6 @@ def _closed_error() -> CampusError:
     )
 
 
-def _failed_item(entity_id: str, error: CampusError) -> dict[str, Any]:
-    return {"entity_id": entity_id, "outcome": "failed", "reason_code": error.code}
-
-
-def _not_started(entity_id: str) -> dict[str, Any]:
-    return {"entity_id": entity_id, "outcome": "not-started"}
-
-
 def _omitted_error(label: str) -> CampusError:
     return CampusError(
         "resource-omitted",
@@ -294,11 +308,11 @@ async def run_fetch_queue(
     headless: bool,
     domain: FetchDomain,
     capture: Capture,
-) -> tuple[list[dict[str, Any]], list[CampusError] | None]:
+) -> tuple[list[FetchItem], list[CampusError] | None]:
     """Authenticate once, then capture and publish each selected detail in order."""
     from campusctl.browser import open_session
 
-    items: list[dict[str, Any]] = []
+    items: list[FetchItem] = []
     errors: list[CampusError] = []
     async with open_session(config, data_dir=root, headless=headless, operation=f"{domain.name}.fetch") as session:
         page = await _authenticate(session, config, domain)
@@ -314,24 +328,17 @@ async def run_fetch_queue(
                     classified, session_level = await classify_item_failure(
                         page, exc, label=domain.label, fetch_error=domain.fetch_error
                     )
-                    items.append(_failed_item(entity_id, classified))
+                    items.append(FetchItem(entity_id, "failed", reason_code=classified.code))
                     errors.append(classified)
                     if session_level:
-                        items.extend(_not_started(later["entity_id"]) for later in rows[index + 1 :])
+                        items.extend(FetchItem(later["entity_id"], "not-started") for later in rows[index + 1 :])
                         break
                 else:
                     if package.get("completeness") == "partial":
                         errors.append(_omitted_error(domain.label))
-                        items.append(
-                            {
-                                "entity_id": entity_id,
-                                "outcome": "partial",
-                                "source_package": package,
-                                "reason_code": "resource-omitted",
-                            }
-                        )
+                        items.append(FetchItem(entity_id, "partial", package, "resource-omitted"))
                     else:
-                        items.append({"entity_id": entity_id, "outcome": "completed", "source_package": package})
+                        items.append(FetchItem(entity_id, "completed", package))
             finally:
                 await _release_item_state(page)
     return items, errors or None
@@ -402,15 +409,15 @@ def _check_output(domain: FetchDomain, out_path: Path | None, rows: list[dict[st
             )
 
 
-def _batch_status(items: list[dict[str, Any]], errors: list[CampusError]) -> str:
+def _batch_status(items: list[FetchItem], errors: list[CampusError]) -> str:
     """Return the multi-ID envelope status from published packages and ordered failures."""
-    published = any(item.get("outcome") in {"completed", "partial"} for item in items)
-    unsuccessful = any(item.get("outcome") in {"partial", "failed", "not-started"} for item in items)
+    published = any(item.outcome in {"completed", "partial"} for item in items)
+    unsuccessful = any(item.outcome in {"partial", "failed", "not-started"} for item in items)
     if published and unsuccessful:
-        return "partial"
+        return Status.PARTIAL
     if not published and errors:
         return errors[0].status
-    return "ok"
+    return Status.OK
 
 
 def dispatch_fetch(
@@ -418,7 +425,7 @@ def dispatch_fetch(
     domain: FetchDomain,
     *,
     fetch_one: Callable[..., Awaitable[dict[str, Any]]],
-    fetch_many: Callable[..., Awaitable[tuple[list[dict[str, Any]], list[CampusError] | None]]],
+    fetch_many: Callable[..., Awaitable[tuple[list[FetchItem], list[CampusError] | None]]],
 ) -> CommandResult:
     """Validate the selection, then fetch one detail or an ordered batch.
 
@@ -447,6 +454,7 @@ def dispatch_fetch(
         omitted = [_omitted_error(domain.label)] if package.get("completeness") == "partial" else None
         return command_result({"source_package": package}, omitted)
     items, errors = asyncio.run(fetch_many(config, root, rows, headless=mode))
+    result = {"items": [item.to_json() for item in items]}
     if errors is None:
-        return command_result({"items": items})
-    return CommandResult({"items": items}, _batch_status(items, errors), tuple(error_item(error) for error in errors))
+        return command_result(result)
+    return CommandResult(result, _batch_status(items, errors), tuple(error_item(error) for error in errors))

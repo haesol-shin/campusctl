@@ -12,7 +12,7 @@ from campusctl.catalog_view import course_roster, read_course_snapshot
 from campusctl.command_types import CommandBindings, CommandContext, CommandResult, command_result
 from campusctl.config import load_config
 from campusctl.course_selection import resolve_course
-from campusctl.envelope import CampusError, error_item
+from campusctl.envelope import CampusError, error_item, resolve_status
 from campusctl.paths import data_dir
 from campusctl.profiling import SpanRecorder
 from campusctl.sync import run_sync
@@ -122,8 +122,11 @@ def refresh_result(
 ) -> dict[str, Any]:
     result, errors = refresh
     failures = errors if isinstance(errors, list) else [errors] if errors else []
-    status = "partial" if result and failures else failures[0].status if failures else "ok"
-    return {"status": status, "result": result, "errors": [error_item(error) for error in failures]}
+    return {
+        "status": resolve_status(bool(result), failures),
+        "result": result,
+        "errors": [error_item(error) for error in failures],
+    }
 
 
 def list_refresh_scope(args: argparse.Namespace, scope: tuple[str, ...]) -> tuple[str, ...] | None:

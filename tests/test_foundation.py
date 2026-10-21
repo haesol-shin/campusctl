@@ -17,7 +17,7 @@ from campusctl import __version__, catalog, cli, composition, credentials, docto
 from campusctl.commands import auth
 from campusctl.commands import doctor as doctor_command
 from campusctl.config import ConfigError, load_config
-from campusctl.envelope import CampusError, emit, make_envelope
+from campusctl.envelope import CampusError, Status, emit, make_envelope, resolve_status
 from campusctl.paths import config_dir, config_path, data_dir
 
 SENTINEL = "SENTINEL_SECRET_DO_NOT_LEAK"
@@ -96,6 +96,27 @@ def test_envelope_has_utc_timestamp_and_status_exit_codes() -> None:
         "user-action": 2,
         "busy": 75,
     }
+
+
+def test_status_set_accepts_plain_strings_and_serializes_as_text() -> None:
+    assert CampusError("code", "message", status="busy").status == Status.BUSY
+    assert CampusError("code", "message").status == "user-action"
+    for whole_result in ("ok", "partial", "bogus"):
+        with pytest.raises(ValueError, match="Invalid CampusError status"):
+            CampusError("code", "message", status=whole_result)
+    stream = io.StringIO()
+    emit(status=Status.PARTIAL, stream=stream)
+    assert json.loads(stream.getvalue())["status"] == "partial"
+    assert '"status":"partial"' in stream.getvalue()
+
+
+def test_resolve_status_prefers_partial_then_first_failure() -> None:
+    first = CampusError("first", "First.", status="busy")
+    second = CampusError("second", "Second.", status="error")
+    assert resolve_status(False, []) == resolve_status(True, []) == "ok"
+    assert resolve_status(True, [first, second]) == "partial"
+    assert resolve_status(False, [first, second]) == "busy"
+    assert resolve_status(False, [second, first]) == "error"
 
 
 def test_usage_error_is_enveloped_without_echoing_invalid_argument(capsys: pytest.CaptureFixture[str]) -> None:

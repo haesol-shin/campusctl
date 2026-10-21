@@ -51,6 +51,12 @@ def _write_catalogs(root: Path, fixture: str) -> None:
     if fixture == "layout":
         _write_layout_catalogs(root)
         return
+    if fixture.startswith("l4-lectures"):
+        _write_l4_lectures(catalog, fixture)
+        return
+    if fixture.startswith("l4-warn-"):
+        _write_l4_warning_catalogs(root, fixture.removeprefix("l4-warn-"))
+        return
     if fixture.startswith("progress-"):
         _write_progress_catalog(catalog)
         return
@@ -63,6 +69,122 @@ def _write_catalogs(root: Path, fixture: str) -> None:
                 "generation_id": "synthetic-generation",
                 "courses": courses if fixture == "filled" else [],
                 "lectures": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+_L4_FAILED = {"course_id": "wide.invalid", "label": "\ud569\uc131 \uacfc\ubaa9", "reason": "course-sync-failed"}
+# Cache warning inputs: (enrollment_state, failed_courses). "sparse" leaves fields out and adds a non-object entry.
+_L4_WARNINGS: dict[str, tuple[str, list]] = {
+    "none": ("known", []),
+    "unknown": ("unknown", []),
+    "failed": ("known", [_L4_FAILED]),
+    "sparse": (
+        "known",
+        [
+            {"course_id": "only-id.invalid"},
+            {"label": "label-only"},
+            {},
+            "not-an-object",
+            {"course_id": "blank.invalid", "label": "", "reason": ""},
+        ],
+    ),
+    "many": (
+        "unknown",
+        [
+            {
+                "course_id": f"missing-{index}.invalid",
+                "label": "\ub204\ub77d" + ("\uacfc\uc815" * (8 * index)),
+                "reason": "course-sync-failed" if index != 2 else "course-not-found",
+            }
+            for index in (1, 2, 3)
+        ],
+    ),
+}
+
+
+def _write_l4_warning_catalogs(root: Path, kind: str) -> None:
+    from campusctl.domain_catalog import write_domain_catalog
+
+    state, failed = _L4_WARNINGS[kind]
+    course = {"course_id": "s", "label": "\uc790\ub8cc", "class_no": None}
+    notice = {
+        "entity_id": "n1",
+        "course": {"id": "s", "label": course["label"]},
+        "title": "\uacf5\uc9c0",
+        "date": "2026-01-02",
+        "author": "\uad50\uc218",
+        "view_count": 1,
+        "has_attachments": False,
+        "is_unread": True,
+    }
+    material = {
+        "entity_id": "cnu_lms_material:s:file-1",
+        "course": {"id": "s", "label": course["label"]},
+        "archive_entry": {"board_item_id": "board-1", "title": "\uc790\ub8cc"},
+        "file_id": "file-1",
+        "display_name": "a.pdf",
+        "filename": "a.pdf",
+        "media_type": None,
+        "size_bytes": None,
+        "downloadable": True,
+        "unavailable_reason": None,
+    }
+    data = root / "data" / "catalog"
+    for domain, rows in (("notices", [notice]), ("materials", [material])):
+        payload = {
+            "generated_at": "2026-01-02T03:04:05Z",
+            "enrollment_state": state,
+            "courses": [course],
+            "failed_courses": failed,
+            domain: rows,
+        }
+        write_domain_catalog(domain, payload, data / f"{domain}.json")
+
+
+def _l4_lecture(number: int, title: str | None, course: tuple[str, str], **fields: object) -> dict:
+    row = _lecture_row(f"cnu_lecture:{course[0]}:r{number}", title or "", course[0], course[1])
+    if title is None:
+        row.pop("title")
+    row.update(fields)
+    return row
+
+
+def _write_l4_lectures(catalog: Path, fixture: str) -> None:
+    """Lecture rows covering every status, due format, media label and next-step hint."""
+    first = ("c-a.invalid", "\uc790\ub8cc")
+    second = ("c-b.invalid", "\uc790\u0301" + ("\uad6c\uc870" * 12))
+    if fixture == "l4-lectures":
+        rows = [
+            _l4_lecture(1, "\uc9e7\uc740", first),
+            _l4_lecture(2, "\uac15\u0301\uc758" + ("\uc601\uc0c1" * 20), first, due_date=None),
+            _l4_lecture(3, "In progress", first, progress_text="3\ubd84 20\ucd08 / 50\ubd84", due_date="2026-03-04"),
+            _l4_lecture(4, "Not started", first, progress_text="0\ubd84 0\ucd08 / 50\ubd84", media="youtube"),
+            _l4_lecture(5, None, first, due_date="2026-03-04T05:06:07.5", media="ebook"),
+            _l4_lecture(6, "Done", second, completion="complete"),
+            _l4_lecture(7, "Watched", second, completion="recorded", due_date="soon"),
+            _l4_lecture(8, "Opens later", second, open=False, available_from="2026-03-09T00:00:00"),
+            _l4_lecture(9, "Closed", second, open=False),
+            _l4_lecture(10, "Unknown state", second, completion=None, media="youtube"),
+        ]
+    else:
+        # Every incomplete lecture is closed: the hint names the earliest opening date or says none is published.
+        dates = ["2026-04-20", "2026-03-09T00:00:00"] if fixture == "l4-lectures-upcoming" else [None]
+        rows = [
+            _l4_lecture(index, f"Closed {index}", first, open=False, available_from=date)
+            for index, date in enumerate(dates, 1)
+        ]
+        rows.append(_l4_lecture(9, "Finished", first, completion="complete"))
+    catalog.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "generated_at": "2026-01-02T03:04:05Z",
+                "generation_id": "synthetic-l4",
+                "courses": [{"course_id": c, "label": label, "class_no": None} for c, label in (first, second)],
+                "lectures": rows,
             }
         ),
         encoding="utf-8",
@@ -413,6 +535,25 @@ def _write_p3_files(root: Path, fixture: str, executable: Path) -> None:
     )
 
 
+def _l4_status_outcome(sync_module, shape: str, domain: str):
+    """Outcomes whose status is left unset, so the shared status rule decides it."""
+    from campusctl.envelope import CampusError
+
+    def failure(status: str) -> CampusError:
+        return CampusError("course-sync-failed", "Synthetic course failed.", "Retry the course.", status)
+
+    counts = {"courses": 1, domain: 1}
+    outcome = sync_module.DomainOutcome
+    return {
+        "status-ok": lambda: outcome(result=counts),
+        "status-partial": lambda: outcome(result=counts, errors=[failure("error")]),
+        "status-error": lambda: outcome(errors=[failure("error")]),
+        "status-user-action": lambda: outcome(errors=[failure("user-action")]),
+        "status-busy": lambda: outcome(errors=[failure("busy")]),
+        "status-first": lambda: outcome(errors=[failure("user-action"), failure("error")]),
+    }[shape]()
+
+
 def _install_p3_fakes(
     stack: ExitStack, actions: list, fixture: str, state: dict, sync_shape: str | None = None
 ) -> None:
@@ -473,6 +614,17 @@ def _install_p3_fakes(
         if sync_shape is None:
             counts = {"courses": 1, domains[0]: 1}
             return {domain: sync_module.DomainOutcome(result=dict(counts)) for domain in domains}
+        if sync_shape.startswith("status-"):
+            return {domain: _l4_status_outcome(sync_module, sync_shape, domain) for domain in domains}
+        if sync_shape.startswith("warn-"):
+            state, failed = _L4_WARNINGS[sync_shape.removeprefix("warn-")]
+            catalog = {"enrollment_state": state, "generated_at": "2026-01-02T03:04:05Z"}
+            return {
+                domain: sync_module.DomainOutcome(
+                    result={"courses": 1, domain: 1, "failed_courses": failed, "catalog": catalog}
+                )
+                for domain in domains
+            }
         failed = [{"course_id": "wide.invalid", "label": "\ud569\uc131 \uacfc\ubaa9", "reason": "course-sync-failed"}]
         outcomes = {}
         for index, domain in enumerate(domains):
@@ -848,6 +1000,72 @@ def _command_owner_cases() -> list[Case]:
     return result
 
 
+def _l4_cases() -> list[Case]:
+    """Warnings, envelope status resolution and lecture list layout."""
+    result: list[Case] = []
+
+    def add(name: str, argv: list[str], fixture: str, expected: int, mode: str, width: int = 80, **extra) -> None:
+        case: Case = {
+            "name": f"l4-{name}-{width}-{mode}",
+            "argv": argv,
+            "fixture": fixture,
+            "width": width,
+            "env": {"CAMPUSCTL_OUTPUT": mode},
+            "expected": expected,
+        }
+        case.update(extra)
+        result.append(case)
+
+    for kind in _L4_WARNINGS:
+        for domain in ("notices", "materials"):
+            for width in (48, 100):
+                for mode in ("human", "json"):
+                    add(f"warn-{domain}-list-{kind}", [domain, "list"], f"l4-warn-{kind}", 0, mode, width)
+                    add(
+                        f"warn-{domain}-sync-{kind}",
+                        ["sync", "--only", domain],
+                        "p3-sync",
+                        0,
+                        mode,
+                        width,
+                        sync_shape=f"warn-{kind}",
+                    )
+    exits = {"ok": 0, "partial": 1, "error": 1, "user-action": 2, "busy": 75, "first": 2}
+    for shape, expected in exits.items():
+        for mode in ("human", "json"):
+            for only in ("lectures", "notices", "materials"):
+                add(
+                    f"status-sync-{only}-{shape}",
+                    ["sync", "--only", only],
+                    "p3-sync",
+                    expected,
+                    mode,
+                    sync_shape=f"status-{shape}",
+                )
+            add(f"status-sync-all-{shape}", ["sync"], "p3-sync", expected, mode, sync_shape=f"status-{shape}")
+            for domain in ("lectures", "assignments", "notices", "materials"):
+                add(
+                    f"status-list-refresh-{domain}-{shape}",
+                    [domain, "list", "--refresh"],
+                    "p3-sync",
+                    expected,
+                    mode,
+                    sync_shape=f"status-{shape}",
+                )
+    listings = (
+        ("mixed", ["lectures", "list", "--all"], "l4-lectures"),
+        ("unfinished", ["lectures", "list"], "l4-lectures"),
+        ("upcoming", ["lectures", "list"], "l4-lectures-upcoming"),
+        ("no-dates", ["lectures", "list"], "l4-lectures-nodates"),
+        ("empty-all", ["lectures", "list", "--all"], "empty"),
+    )
+    for name, argv, fixture in listings:
+        for width in (20, 48, 59, 60, 100):
+            add(f"lectures-{name}", argv, fixture, 0, "human", width)
+        add(f"lectures-{name}", argv, fixture, 0, "json", 100)
+    return result
+
+
 def _p4b_cases() -> list[Case]:
     """Human renderer bytes at widths 48 and 100: lists, sync, doctor, status, picker."""
     specs = (
@@ -1054,7 +1272,7 @@ def cases() -> list[Case]:
                 "expected": expected,
             }
         )
-    return [*result, *_command_owner_cases(), *_fetch_cases(), *_p4b_cases()]
+    return [*result, *_command_owner_cases(), *_fetch_cases(), *_p4b_cases(), *_l4_cases()]
 
 
 @contextmanager

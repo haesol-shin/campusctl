@@ -22,11 +22,11 @@ from campusctl.catalog_view import (
 )
 from campusctl.cli_args import _OUTPUT_NOTE, EnvelopeArgumentParser
 from campusctl.command_types import CommandBindings, CommandContext, CommandResult, command_result
+from campusctl.commands.cache_warnings import cache_warning_lines
 from campusctl.commands.course_inputs import list_refresh_scope, list_with_refresh
 from campusctl.envelope import CampusError, UsageError
 from campusctl.paths import data_dir
-from campusctl.text_layout import _cells
-from campusctl.text_layout import _wrap as wrap_cells
+from campusctl.text_layout import _wrap_indented
 
 CAPABILITY: dict[str, Any] = {"commands": ["list", "download"]}
 
@@ -364,25 +364,19 @@ async def _download(
         return _result(row, str(published.path), fetched.size_bytes, fetched.sha256, published.outcome)
 
 
-def _wrap(message: str, width: int, *, indent: str = "") -> list[str]:
-    return [f"{indent}{line}" for line in wrap_cells(message, max(1, width - _cells(indent)))]
+def _stale_course(course: dict[str, Any]) -> str:
+    # Missing fields print as None: this is the wording the cache warnings always had.
+    return (
+        f"Warning: Material cache stale for {course.get('label') or course.get('course_id')} "
+        f"({course.get('course_id')}): {course.get('reason')}."
+    )
 
 
-def _warnings(state: object, failed: object, width: int) -> list[str]:
-    lines: list[str] = []
-    if state == "unknown":
-        lines.extend(_wrap("Warning: Enrollment unknown; materials may be stale.", width))
-    if isinstance(failed, list):
-        for course in failed:
-            if isinstance(course, dict):
-                lines.extend(
-                    _wrap(
-                        f"Warning: Material cache stale for {course.get('label') or course.get('course_id')} "
-                        f"({course.get('course_id')}): {course.get('reason')}.",
-                        width,
-                    )
-                )
-    return lines
+_warnings = partial(
+    cache_warning_lines,
+    unknown_enrollment="Warning: Enrollment unknown; materials may be stale.",
+    stale_course=_stale_course,
+)
 
 
 def render(command: str, result: dict[str, Any], width: int) -> list[str]:
@@ -390,7 +384,7 @@ def render(command: str, result: dict[str, Any], width: int) -> list[str]:
         if not any(key in result for key in ("courses", "materials", "failed_courses", "catalog")):
             return []
         count, courses = result.get("materials", 0), result.get("courses", 0)
-        lines = _wrap(
+        lines = _wrap_indented(
             f"Synced {courses} {'course' if courses == 1 else 'courses'}, "
             f"{count} {'material' if count == 1 else 'materials'}.",
             width,
@@ -415,19 +409,19 @@ def render(command: str, result: dict[str, Any], width: int) -> list[str]:
     except (KeyError, ValueError, TypeError):
         stamp = "unknown"
     count = len(rows)
-    lines = _wrap(f"{count} {'material' if count == 1 else 'materials'} (updated {stamp})", width)
+    lines = _wrap_indented(f"{count} {'material' if count == 1 else 'materials'} (updated {stamp})", width)
     lines.extend(_warnings(cache.get("enrollment_state"), cache.get("failed_courses"), width))
     if not rows:
-        return lines + _wrap("No cached materials match this selection.", width)
+        return lines + _wrap_indented("No cached materials match this selection.", width)
     last_course = None
     for number, row in enumerate(rows, 1):
         course = row["course"]
         if course["id"] != last_course:
             lines.append("")
-            lines.extend(_wrap(f"Course: {course['label']} ({course['id']})", width))
+            lines.extend(_wrap_indented(f"Course: {course['label']} ({course['id']})", width))
             last_course = course["id"]
-        lines.extend(_wrap(f"Archive: {row['archive_entry']['title']}", width, indent="  "))
-        lines.extend(_wrap(f"File: {row['filename']}", width, indent="  "))
-        lines.extend(_wrap(f"Downloadable: {'yes' if row['downloadable'] else 'no'}", width, indent="  "))
+        lines.extend(_wrap_indented(f"Archive: {row['archive_entry']['title']}", width, indent="  "))
+        lines.extend(_wrap_indented(f"File: {row['filename']}", width, indent="  "))
+        lines.extend(_wrap_indented(f"Downloadable: {'yes' if row['downloadable'] else 'no'}", width, indent="  "))
         lines.append(f"  {number}. {row['entity_id']}")
     return lines

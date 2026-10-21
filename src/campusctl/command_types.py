@@ -11,7 +11,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, NamedTuple, NoReturn, TextIO
 
-from campusctl.envelope import CampusError, error_item
+from campusctl.envelope import CampusError, Status, error_item
 from campusctl.profiling import SpanRecorder
 
 Renderer = Callable[[str, dict[str, Any], int], list[str]]
@@ -64,7 +64,7 @@ class CommandResult:
     """
 
     result: Any
-    status: str = "ok"
+    status: str = Status.OK
     errors: tuple[dict[str, Any], ...] = ()
     publish: Callable[[], None] | None = None
 
@@ -83,12 +83,12 @@ def command_result(
     `errors` unchanged. CampusError values are converted here, once, via `error_item`.
     """
     if errors is not None:
-        return CommandResult(result, status or "ok", tuple(errors), publish)
+        return CommandResult(result, status or Status.OK, tuple(errors), publish)
     if isinstance(error, list):
-        return CommandResult(result, "partial", tuple(error_item(item) for item in error), publish)
+        return CommandResult(result, Status.PARTIAL, tuple(error_item(item) for item in error), publish)
     if error is not None:
         return CommandResult(result, error.status, (error_item(error),), publish)
-    return CommandResult(result, status or "ok", (), publish)
+    return CommandResult(result, status or Status.OK, (), publish)
 
 
 def unchanged_bare_failure() -> NoReturn:

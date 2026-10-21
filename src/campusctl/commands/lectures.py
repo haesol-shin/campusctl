@@ -5,10 +5,11 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+from collections.abc import Iterable
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, NamedTuple
 
 from campusctl.browser_options import preflight_browser_mode
 from campusctl.catalog import read_catalog
@@ -219,13 +220,17 @@ def _lecture_status(lecture: dict[str, Any]) -> str:
     return "unfinished"
 
 
-def _course(lecture: dict[str, Any]) -> tuple[str, str]:
+class _Course(NamedTuple):
+    id: str
+    label: str
+
+
+def _course(lecture: dict[str, Any]) -> _Course:
     course = lecture.get("course")
     if isinstance(course, dict):
         course_id = _text(course.get("id"), "unknown")
-        label = _text(course.get("label"), course_id)
-        return course_id, label
-    return "unknown", "Unknown course"
+        return _Course(course_id, _text(course.get("label"), course_id))
+    return _Course("unknown", "Unknown course")
 
 
 def _due_date(lecture: dict[str, Any]) -> str:
@@ -263,23 +268,118 @@ def _wrap_field(label: str, value: str, width: int) -> list[str]:
     return [prefix + value_lines[0], *(indent + line for line in value_lines[1:])]
 
 
-def _render_list(result: dict[str, Any], width: int) -> list[str]:  # noqa: C901
+def _title(lecture: dict[str, Any]) -> str:
+    return _text(lecture.get("title"), "(untitled lecture)")
+
+
+def _entity_line(lecture: dict[str, Any]) -> str:
+    return f"    {_text(lecture.get('entity_id'), 'unknown-entity')}"
+
+
+@dataclass(slots=True)
+class _CourseGroup:
+    label: str
+    rows: list[dict[str, Any]]
+
+
+@dataclass(frozen=True, slots=True)
+class _Columns:
+    """Column widths of one course's table; `title` is 0 or less when the row has no room."""
+
+    due: int
+    media: int
+    title: int
+
+    @classmethod
+    def measure(cls, rows: list[dict[str, Any]], width: int) -> _Columns:
+        due = max(3, max(_cells(_due_date(lecture)) for lecture in rows))
+        media = max(_cells(_media(lecture)) for lecture in rows)
+        available = width - 6 - due - _STATUS_WIDTH - (2 + media if media else 0)
+        return cls(due, media, min(available, max(_cells(_title(lecture)) for lecture in rows)))
+
+
+def _list_header(rows: list[dict[str, Any]], cache: object, width: int) -> list[str]:
+    generated_at = _cache_timestamp(cache.get("generated_at")) if isinstance(cache, dict) else ""
+    header = f"{len(rows)} {'lecture' if len(rows) == 1 else 'lectures'}"
+    if not generated_at:
+        return _wrap(header, width)
+    updated = f"(updated {generated_at})"
+    if _cells(f"{header} {updated}") <= width:
+        return [f"{header} {updated}"]
+    return _wrap(header, width) + _wrap(updated, width)
+
+
+def _course_groups(rows: list[dict[str, Any]]) -> Iterable[_CourseGroup]:
+    groups: dict[str, _CourseGroup] = {}
+    for lecture in rows:
+        course_id, label = _course(lecture)
+        if course_id not in groups:
+            groups[course_id] = _CourseGroup(label, [])
+        groups[course_id].rows.append(lecture)
+    return groups.values()
+
+
+def _add_table_lines(lines: list[str], rows: list[dict[str, Any]], columns: _Columns) -> None:
+    for lecture in rows:
+        title = _pad(_truncate(_title(lecture), columns.title), columns.title)
+        row = f"  {title}  {_pad(_due_date(lecture), columns.due)}  {_pad(_lecture_status(lecture), _STATUS_WIDTH)}"
+        if columns.media:
+            row += f"  {_media(lecture)}"
+        lines.append(row.rstrip())
+        lines.append(_entity_line(lecture))
+
+
+def _add_card_lines(lines: list[str], rows: list[dict[str, Any]], width: int) -> None:
+    title_width = max(0, width - _cells("  Title: "))
+    for lecture in rows:
+        title = _truncate(_title(lecture), title_width) if title_width else _title(lecture)
+        lines.extend(_wrap_field("Title", title, width))
+        lines.extend(_wrap_field("Due", _due_date(lecture), width))
+        lines.extend(_wrap_field("Status", _lecture_status(lecture), width))
+        media = _media(lecture)
+        if media:
+            lines.extend(_wrap_field("Media", media, width))
+        lines.append(_entity_line(lecture))
+
+
+def _playable_candidate(lecture: dict[str, Any], *, is_open: bool) -> bool:
+    entity_id = lecture.get("entity_id")
+    return (
+        lecture.get("open") is is_open
+        and lecture.get("completion") == "incomplete"
+        and lecture.get("media") in {"video", "youtube"}
+        and isinstance(entity_id, str)
+        and bool(entity_id)
+    )
+
+
+def _add_next_step(lines: list[str], rows: list[dict[str, Any]], width: int) -> None:
+    lines.append("")
+    playable = next((lecture for lecture in rows if _playable_candidate(lecture, is_open=True)), None)
+    if playable is not None:
+        command = f"campusctl lectures play {playable['entity_id']}"
+        lines.extend(_command_hint("To play one:", command, width))
+    else:
+        dates = [
+            date
+            for lecture in rows
+            if _playable_candidate(lecture, is_open=False)
+            and (date := _available_date(lecture.get("available_from"))) is not None
+        ]
+        if dates:
+            message = f"No lectures are open to play yet. Next opens: {min(dates)[5:]}."
+        else:
+            message = "No lectures are open to play yet. Opening dates are not published yet."
+        lines.extend(_wrap(message, width))
+    lines.extend(_command_hint("To refresh:", "campusctl sync", width))
+
+
+def _render_list(result: dict[str, Any], width: int) -> list[str]:
     lectures = result.get("lectures")
     if not isinstance(lectures, list):
         return []
     rows = [lecture for lecture in lectures if isinstance(lecture, dict)]
-    cache = result.get("cache")
-    generated_at = _cache_timestamp(cache.get("generated_at")) if isinstance(cache, dict) else ""
-    count_label = "lecture" if len(rows) == 1 else "lectures"
-    header = f"{len(rows)} {count_label}"
-    if generated_at:
-        updated = f"(updated {generated_at})"
-        if _cells(f"{header} {updated}") <= width:
-            lines = [f"{header} {updated}"]
-        else:
-            lines = _wrap(header, width) + _wrap(updated, width)
-    else:
-        lines = _wrap(header, width)
+    lines = _list_header(rows, result.get("cache"), width)
     if not rows:
         lines.append("")
         lines.extend(_wrap("Nothing unfinished.", width))
@@ -289,86 +389,15 @@ def _render_list(result: dict[str, Any], width: int) -> list[str]:  # noqa: C901
         lines.extend(_command_hint("To refresh:", "campusctl sync", width))
         return lines
 
-    groups: dict[str, tuple[str, list[dict[str, Any]]]] = {}
-    for lecture in rows:
-        course_id, label = _course(lecture)
-        if course_id not in groups:
-            groups[course_id] = (label, [])
-        groups[course_id][1].append(lecture)
-
-    for label, group_rows in groups.values():
+    for group in _course_groups(rows):
         lines.append("")
-        lines.extend(_course_heading(label, width))
-        due_width = max(3, max((_cells(_due_date(lecture)) for lecture in group_rows), default=3))
-        media_width = max((_cells(_media(lecture)) for lecture in group_rows), default=0)
-        has_media = media_width > 0
-        available_title_width = width - 6 - due_width - _STATUS_WIDTH - (2 + media_width if has_media else 0)
-        title_width = min(
-            available_title_width,
-            max((_cells(_text(lecture.get("title"), "(untitled lecture)")) for lecture in group_rows), default=0),
-        )
-        if width >= 60 and title_width > 0:
-            for lecture in group_rows:
-                title = _truncate(_text(lecture.get("title"), "(untitled lecture)"), title_width)
-                due = _due_date(lecture)
-                status = _lecture_status(lecture)
-                row = f"  {_pad(title, title_width)}  {_pad(due, due_width)}  {_pad(status, _STATUS_WIDTH)}"
-                if has_media:
-                    row += f"  {_media(lecture)}"
-                lines.append(row.rstrip())
-                entity_id = _text(lecture.get("entity_id"), "unknown-entity")
-                lines.append(f"    {entity_id}")
+        lines.extend(_course_heading(group.label, width))
+        columns = _Columns.measure(group.rows, width)
+        if width >= 60 and columns.title > 0:
+            _add_table_lines(lines, group.rows, columns)
         else:
-            for lecture in group_rows:
-                title_text = _text(lecture.get("title"), "(untitled lecture)")
-                title_width = max(0, width - _cells("  Title: "))
-                title = _truncate(title_text, title_width) if title_width else title_text
-                lines.extend(_wrap_field("Title", title, width))
-                lines.extend(_wrap_field("Due", _due_date(lecture), width))
-                lines.extend(_wrap_field("Status", _lecture_status(lecture), width))
-                media = _media(lecture)
-                if media:
-                    lines.extend(_wrap_field("Media", media, width))
-                entity_id = _text(lecture.get("entity_id"), "unknown-entity")
-                lines.append(f"    {entity_id}")
-
-    playable = next(
-        (
-            lecture
-            for lecture in rows
-            if lecture.get("open") is True
-            and lecture.get("completion") == "incomplete"
-            and lecture.get("media") in {"video", "youtube"}
-            and isinstance(lecture.get("entity_id"), str)
-            and lecture["entity_id"]
-        ),
-        None,
-    )
-    lines.append("")
-    if playable is not None:
-        entity_id = playable["entity_id"]
-        command = f"campusctl lectures play {entity_id}"
-        lines.extend(_command_hint("To play one:", command, width))
-    else:
-        opening_dates: list[str] = []
-        for lecture in rows:
-            if (
-                lecture.get("open") is False
-                and lecture.get("completion") == "incomplete"
-                and lecture.get("media") in {"video", "youtube"}
-                and isinstance(lecture.get("entity_id"), str)
-                and lecture["entity_id"]
-            ):
-                available_date = _available_date(lecture.get("available_from"))
-                if available_date is not None:
-                    opening_dates.append(available_date)
-        if opening_dates:
-            next_opening = min(opening_dates)
-            message = f"No lectures are open to play yet. Next opens: {next_opening[5:]}."
-        else:
-            message = "No lectures are open to play yet. Opening dates are not published yet."
-        lines.extend(_wrap(message, width))
-    lines.extend(_command_hint("To refresh:", "campusctl sync", width))
+            _add_card_lines(lines, group.rows, width)
+    _add_next_step(lines, rows, width)
     return lines
 
 
