@@ -2222,7 +2222,8 @@ def invoke_play(case: Case) -> int:
         code = [item.code for item in error]
     else:
         code = error.code
-    print(json.dumps({"error": code, "items": result["items"]}, separators=(",", ":"), sort_keys=True))
+    # Keep insertion order: item key order and reason_code position are part of the output contract.
+    print(json.dumps({"error": code, "items": result["items"]}, separators=(",", ":")))
     return 0 if error is None else 1
 
 
