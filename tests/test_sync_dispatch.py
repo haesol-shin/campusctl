@@ -194,7 +194,7 @@ def test_canonical_domain_order_and_shared_bound_collector(
                     "schema_version": 1,
                     "generated_at": "2026-09-25T10:00:00Z",
                     "enrollment_state": "known",
-                    "courses": [{"course_id": "course-a", "label": "Alpha", "class_no": None}],
+                    "courses": [{"course_id": "course-a.invalid", "label": "Synthetic course", "class_no": None}],
                     "failed_courses": [],
                     "lectures": [],
                 },

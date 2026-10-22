@@ -2230,7 +2230,7 @@ def invoke_play(case: Case) -> int:
     return 0 if error is None else 1
 
 
-_P7_ORIGIN = "https://dcs-learning.cnu.ac.kr"
+_P7_ORIGIN = "https://lms.invalid"
 _P7_COURSE = {"course_id": "course.invalid", "label": "Synthetic course", "class_no": "01"}
 
 
@@ -2455,7 +2455,11 @@ def _install_p7_fakes(stack: ExitStack, actions: list, fixture: str) -> None:
     stack.enter_context(patch.object(browser_module, "open_session", fake_open_session))
     stack.enter_context(patch.object(browser_module, "settle_sso_popups", fake_settle))
     stack.enter_context(patch.object(login, "ensure_logged_in", fake_login))
+    stack.enter_context(patch.object(login, "MY_LECTURE_URL", f"{_P7_ORIGIN}/std/myLecture"))
+    stack.enter_context(patch.object(sync_all, "MY_LECTURE_URL", f"{_P7_ORIGIN}/std/myLecture"))
     stack.enter_context(patch.object(sync_all, "ensure_logged_in", fake_login))
+    stack.enter_context(patch.object(notices, "_ORIGIN", _P7_ORIGIN))
+    stack.enter_context(patch.object(notices, "_TODO_URL", f"{_P7_ORIGIN}/std/todo"))
     stack.enter_context(patch.object(sync_all, "collect_lectures_rows", fake_lectures))
 
     async def open_section(_page, action, *, capture=None) -> None:
