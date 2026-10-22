@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,7 @@ from campusctl.commands.fetch_queue import (
 from campusctl.domain_catalog import domain_catalog_path, read_domain_catalog
 from campusctl.envelope import CampusError, UsageError
 from campusctl.paths import data_dir
+from campusctl.source_resources import SourceResolution
 
 CAPABILITY = {"commands": ["list", "fetch"]}
 
@@ -78,7 +80,12 @@ def dispatch(args: argparse.Namespace, bindings: CommandBindings, context: Comma
     if command == "list":
         return list_with_refresh("assignments", args, bindings, context, _list)
     if command == "fetch":
-        return dispatch_fetch(args, _DOMAIN, fetch_one=_fetch_assignment, fetch_many=_fetch_assignment_queue)
+        return dispatch_fetch(
+            args,
+            _DOMAIN,
+            fetch_one=partial(_fetch_assignment, resolution=bindings.source_resolution),
+            fetch_many=partial(_fetch_assignment_queue, resolution=bindings.source_resolution),
+        )
     raise UsageError("an assignments command is required")
 
 
@@ -111,8 +118,11 @@ async def _fetch_assignment(
     *,
     out: Path | None = None,
     headless: bool = False,
+    resolution: SourceResolution,
 ) -> dict[str, Any]:
-    return await fetch_single(config, root, row, out=out, headless=headless, domain=_DOMAIN, capture=_capture(config))
+    return await fetch_single(
+        config, root, row, out=out, headless=headless, domain=_DOMAIN, capture=_capture(config), resolution=resolution
+    )
 
 
 async def _fetch_assignment_queue(
@@ -121,8 +131,11 @@ async def _fetch_assignment_queue(
     rows: list[dict[str, Any]],
     *,
     headless: bool,
+    resolution: SourceResolution,
 ) -> tuple[list[FetchItem], list[CampusError] | None]:
-    return await run_fetch_queue(config, root, rows, headless=headless, domain=_DOMAIN, capture=_capture(config))
+    return await run_fetch_queue(
+        config, root, rows, headless=headless, domain=_DOMAIN, capture=_capture(config), resolution=resolution
+    )
 
 
 async def sync(

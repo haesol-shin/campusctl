@@ -6,13 +6,13 @@ import re
 from typing import Any
 from urllib.parse import urlsplit
 
+from campusctl.attachment_policy import OfficialAttachmentTarget
 from campusctl.browser import PROTOCOL_TIMEOUT_SECONDS, bounded, finish_response
 from campusctl.envelope import CampusError
 from campusctl.identity import assignment_entity_id
-from campusctl.source_package import DetailSnapshot, ResourceReference
+from campusctl.source_resources import DetailSnapshot, ResourceReference
 
 from .assignments import EXTRACT_COURSE_CONTEXT_JS
-from .attachment_transfer import OfficialAttachmentTarget
 from .course_context import SECTION_RESPONSE_TIMEOUT_MS, _css_string, open_course_section, prepare_course_section
 from .login import MY_LECTURE_URL
 from .readiness import wait_page_ready

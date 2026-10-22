@@ -6,18 +6,19 @@ import asyncio
 import hashlib
 import os
 import tempfile
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 from urllib.parse import quote, urlsplit
 
-from campusctl.envelope import CampusError
-from campusctl.providers.cnu.request_policy import (
+from campusctl.attachment_policy import (
     MAX_ATTACHMENT_BYTES,
+    FetchedAttachment,
+    OfficialAttachmentTarget,
     RequestPolicy,
     ResponseValidator,
     guard_response,
 )
+from campusctl.envelope import CampusError
 from campusctl.providers.cnu.selected_file_policy import (
     FILE_TEMPLATES,
     SelectedFileDenied,
@@ -25,22 +26,8 @@ from campusctl.providers.cnu.selected_file_policy import (
     match_selected_file_path,
 )
 
-
-@dataclass(frozen=True, slots=True)
-class OfficialAttachmentTarget:
-    file_id: str
-    parent_kind: Literal["archive", "assignment", "notice"]
-    parent_id: str
-    control_locator: str
-    candidate_url: str | None
-
-
-@dataclass(frozen=True, slots=True)
-class FetchedAttachment:
-    temp_path: Path
-    sha256: str
-    media_type: str | None
-    size_bytes: int
+# Public package provenance supplied by this provider's resolution binding.
+PACKAGE_PROVENANCE = "cnu"
 
 
 def _blocked() -> CampusError:

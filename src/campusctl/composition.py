@@ -21,9 +21,11 @@ from campusctl.commands import (
     sync,
 )
 from campusctl.presentation import render_human
+from campusctl.providers.cnu import attachment_transfer as cnu_attachment_transfer
 from campusctl.providers.cnu import courses as cnu_courses
 from campusctl.providers.cnu import player as cnu_player
 from campusctl.providers.cnu import sync_all as cnu_sync_all
+from campusctl.source_resources import SourceResolution
 
 # Registration order is parser and help order.
 COMMANDS = (config, doctor, auth, setup, sync, status, courses, lectures, assignments, materials, notices)
@@ -58,6 +60,10 @@ def bind() -> CommandBindings:
         play_lectures=cnu_player.play_lectures,
         sync_all=cnu_sync_all.sync_all,
         validate_requested_lectures=cnu_player.validate_requested_lectures,
+        source_resolution=SourceResolution(
+            cnu_attachment_transfer.fetch_official_attachment,
+            cnu_attachment_transfer.PACKAGE_PROVENANCE,
+        ),
     )
 
 

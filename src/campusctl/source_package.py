@@ -8,33 +8,13 @@ import os
 import shutil
 import tempfile
 import unicodedata
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from campusctl.envelope import CampusError
 from campusctl.material_files import safe_component
-from campusctl.providers.cnu.attachment_transfer import OfficialAttachmentTarget, fetch_official_attachment
-from campusctl.providers.cnu.request_policy import ALLOWED_EXTENSIONS, MAX_ATTACHMENT_BYTES, RequestPolicy
-
-
-@dataclass(frozen=True, slots=True)
-class ResourceReference:
-    kind: str
-    source_url: str
-    original_name: str | None
-    media_type_hint: str | None
-    label: str
-    provider_file_id: str | None
-    official_target: OfficialAttachmentTarget | None
-
-
-@dataclass(frozen=True, slots=True)
-class DetailSnapshot:
-    source_url: str
-    provider_native_id: str | None
-    parts: tuple[str | ResourceReference, ...]
+from campusctl.source_resources import DetailSnapshot, ResourceReference, SourceResolution, resolve_source_resource
 
 
 def canonical_json(value: object) -> bytes:
@@ -62,10 +42,6 @@ def source_ref(url: str, provider_native_id: str | None = None) -> dict[str, str
 
 def _failed() -> CampusError:
     return CampusError("fetch-failed", "Selected source could not be packaged safely.", status="error")
-
-
-def _blocked() -> CampusError:
-    return CampusError("fetch-failed", "Selected attachment does not match its official file control.", status="error")
 
 
 def _name(reference: ResourceReference) -> str:
@@ -139,7 +115,7 @@ def _verified_existing(path: Path, expected_digest: str) -> dict | None:
         return None
 
 
-def _result(path: Path, manifest: dict) -> dict:
+def _result(path: Path, manifest: dict, provenance: str) -> dict:
     resources = [{**record, "path": str(path / record["path"])} for record in manifest["resources"]]
     return {
         "entity_id": manifest["entity_id"],
@@ -150,7 +126,7 @@ def _result(path: Path, manifest: dict) -> dict:
         "resources": resources,
         "omitted_resources": manifest["omitted_resources"],
         "provenance": {
-            "provider": "cnu",
+            "provider": provenance,
             "course_id": manifest["course"]["id"],
             "source_ref": manifest["source_ref"],
             "retrieved_at": manifest["retrieved_at"],
@@ -162,47 +138,7 @@ def _escape(value: str) -> str:
     return value.replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]").replace("\n", " ")
 
 
-def _image_allowed(reference: ResourceReference) -> bool:
-    parsed = urlsplit(reference.source_url)
-    return reference.kind == "image" and parsed.path.lower().endswith((".png", ".jpg", ".jpeg"))
-
-
-async def _image_bytes(page: object, reference: ResourceReference) -> tuple[bytes, str]:
-    url = reference.source_url
-    response = await page.context.request.get(url, max_redirects=0)
-    try:
-        if response.status != 200 or response.url != url:
-            raise _blocked()
-        headers = {key.casefold(): value for key, value in response.headers.items()}
-        length = headers.get("content-length")
-        if length is not None and (
-            not length.isascii() or not length.isdecimal() or int(length) > MAX_ATTACHMENT_BYTES
-        ):
-            raise CampusError("file-too-large", "Selected image exceeds the approved byte limit.")
-        mime = (headers.get("content-type") or "").split(";", 1)[0].casefold()
-        extension = urlsplit(url).path.rsplit(".", 1)[-1].lower()
-        signatures = {
-            "png": ("image/png", b"\x89PNG\r\n\x1a\n"),
-            "jpg": ("image/jpeg", b"\xff\xd8\xff"),
-            "jpeg": ("image/jpeg", b"\xff\xd8\xff"),
-        }
-        expected_mime, signature = signatures[extension]
-        if mime != expected_mime:
-            raise CampusError("unsupported-media-type", "Selected image type is not approved.")
-        body = await response.body()
-        if (
-            not body.startswith(signature)
-            or not body
-            or len(body) > MAX_ATTACHMENT_BYTES
-            or (length is not None and len(body) != int(length))
-        ):
-            raise CampusError("unsupported-media-type", "Selected image content is not approved.")
-        return body, mime
-    finally:
-        await response.dispose()
-
-
-async def build_source_package(  # noqa: C901
+async def build_source_package(
     page: object,
     snapshot: DetailSnapshot,
     *,
@@ -211,6 +147,7 @@ async def build_source_package(  # noqa: C901
     course_id: str,
     course_label: str,
     root: Path,
+    resolution: SourceResolution,
     out: Path | None = None,
 ) -> dict:
     """Package only already-bound selected detail; the caller holds the session lock."""
@@ -251,48 +188,17 @@ async def build_source_package(  # noqa: C901
                 _, _, _, previous_path, reason = prior
                 fragments.append(_link(part, previous_path, reason))
                 continue
-            reason = None
-            contents = None
-            media_type = None
             name = _name(part)
-            if part.kind == "image":
-                if not _image_allowed(part):
-                    reason = "unsupported-media-type"
-                else:
-                    contents, media_type = await _image_bytes(page, part)
-            elif part.kind == "attachment":
-                if kind == "notice":
-                    reason = "unverified-notice-attachment"
-                elif name.rsplit(".", 1)[-1].casefold() not in ALLOWED_EXTENSIONS:
-                    reason = "unsupported-media-type"
-                else:
-                    target = part.official_target
-                    if (
-                        target is None
-                        or part.provider_file_id != target.file_id
-                        or target.parent_kind != kind
-                        or target.parent_id != snapshot.provider_native_id
-                    ):
-                        raise _blocked()
-                    fetched = await fetch_official_attachment(
-                        page,
-                        target,
-                        RequestPolicy(name),
-                        staging,
-                        max_bytes=MAX_ATTACHMENT_BYTES,
-                    )
-                    try:
-                        contents = fetched.temp_path.read_bytes()
-                        if (
-                            len(contents) != fetched.size_bytes
-                            or hashlib.sha256(contents).hexdigest() != fetched.sha256
-                        ):
-                            raise _failed()
-                        media_type = fetched.media_type
-                    finally:
-                        fetched.temp_path.unlink(missing_ok=True)
-            else:
-                reason = "unsupported-media-type"
+            # Staging already exists; resolve at this traversal point, not as an eager batch.
+            contents, media_type, reason = await resolve_source_resource(
+                page,
+                part,
+                kind=kind,
+                provider_native_id=snapshot.provider_native_id,
+                name=name,
+                staging=staging,
+                transfer=resolution.transfer,
+            )
             path = None
             if reason is not None:
                 omitted.append(
@@ -345,7 +251,7 @@ async def build_source_package(  # noqa: C901
                 key: val for key, val in manifest.items() if key != "retrieved_at"
             }:
                 raise CampusError("output-path-conflict", "Selected output path already exists.")
-            return _result(destination, previous)
+            return _result(destination, previous, resolution.provenance)
         (staging / "content.md").write_bytes(content)
         for name, contents in files.items():
             member = staging / name
@@ -353,7 +259,7 @@ async def build_source_package(  # noqa: C901
             member.write_bytes(contents)
         (staging / "package.json").write_bytes(canonical_json(manifest) + b"\n")
         os.replace(staging, destination)
-        return _result(destination, manifest)
+        return _result(destination, manifest, resolution.provenance)
     except (OSError, ValueError) as exc:
         raise _failed() from exc
     finally:

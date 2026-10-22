@@ -8,9 +8,9 @@ from types import SimpleNamespace
 import pytest
 from test_cnu_request_policy import FIXTURE
 
+from campusctl.attachment_policy import OfficialAttachmentTarget, RequestPolicy
 from campusctl.envelope import CampusError
-from campusctl.providers.cnu.attachment_transfer import OfficialAttachmentTarget, fetch_official_attachment
-from campusctl.providers.cnu.request_policy import RequestPolicy
+from campusctl.providers.cnu.attachment_transfer import fetch_official_attachment
 from campusctl.providers.cnu.selected_file_policy import SelectedFileDenied, bind_selected_file_request
 
 URL = "https://dcs-lcms.cnu.ac.kr/upload/storage-1/example.pdf"

@@ -7,13 +7,13 @@ from pathlib import Path
 
 import pytest
 
-from campusctl.envelope import CampusError
-from campusctl.providers.cnu.request_policy import (
+from campusctl.attachment_policy import (
     MAX_ATTACHMENT_BYTES,
     RequestPolicy,
     ResponseValidator,
     guard_response,
 )
+from campusctl.envelope import CampusError
 
 FIXTURE = json.loads((Path(__file__).parent / "fixtures/lms_sources/materials_responses.json").read_text())
 

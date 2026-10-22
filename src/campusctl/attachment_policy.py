@@ -1,4 +1,4 @@
-"""Selected attachment response metadata and incremental content validation."""
+"""Shared attachment validation and official transfer records."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import codecs
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from campusctl.envelope import CampusError
 
@@ -165,3 +166,20 @@ class ResponseValidator:
                         raise _unsupported()
             except (zipfile.BadZipFile, OSError, RuntimeError, ValueError) as exc:
                 raise _unsupported() from exc
+
+
+@dataclass(frozen=True, slots=True)
+class OfficialAttachmentTarget:
+    file_id: str
+    parent_kind: Literal["archive", "assignment", "notice"]
+    parent_id: str
+    control_locator: str
+    candidate_url: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class FetchedAttachment:
+    temp_path: Path
+    sha256: str
+    media_type: str | None
+    size_bytes: int

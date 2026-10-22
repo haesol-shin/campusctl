@@ -73,7 +73,7 @@ def test_notice_fetch_detail_entity_unknown_names_failing_check(
     monkeypatch.setattr(login, "ensure_logged_in", logged_in)
     monkeypatch.setattr(notice_detail, "capture_notice_detail", detail)
     with pytest.raises(CampusError) as caught:
-        asyncio.run(notices._fetch_notice({}, tmp_path, {}))
+        asyncio.run(notices._fetch_notice({}, tmp_path, {}, resolution=object()))
     assert caught.value.code == "entity-unknown"
     assert caught.value.message == (
         "Notices fetch: detail capture: Notice detail: notice info course_id does not match the selected course."

@@ -143,8 +143,10 @@ def test_headless_fetch_publishes_synthetic_details_without_display(
 
     from campusctl.providers.cnu import assignment_detail, login, notice_detail
     from campusctl.providers.cnu.assignment_detail import capture_assignment_detail
+    from campusctl.providers.cnu.attachment_transfer import PACKAGE_PROVENANCE, fetch_official_attachment
     from campusctl.providers.cnu.notice_detail import capture_notice_detail
     from campusctl.source_package import build_source_package
+    from campusctl.source_resources import SourceResolution
 
     with sync_playwright() as manager:
         if not Path(manager.chromium.executable_path).is_file():
@@ -284,6 +286,7 @@ def test_headless_fetch_publishes_synthetic_details_without_display(
                 course_id="course-1",
                 course_label="Synthetic Course",
                 root=tmp_path / "assignment",
+                resolution=SourceResolution(fetch_official_attachment, PACKAGE_PROVENANCE),
             )
         content = Path(package["content_path"]).read_text(encoding="utf-8")
         assert package["entity_id"] == assignment["entity_id"]
@@ -304,6 +307,7 @@ def test_headless_fetch_publishes_synthetic_details_without_display(
                 course_id="course-1",
                 course_label="Synthetic Course",
                 root=tmp_path / "notice",
+                resolution=SourceResolution(fetch_official_attachment, PACKAGE_PROVENANCE),
             )
         content = Path(package["content_path"]).read_text(encoding="utf-8")
         assert package["entity_id"] == notice["entity_id"]
