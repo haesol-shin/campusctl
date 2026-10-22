@@ -478,7 +478,9 @@ def test_assignment_sync_ignores_outstanding_unrelated_request(tmp_path: Path, m
         server.background_request = True
         config = _install_fixture(monkeypatch, server)
         try:
-            result, errors = run_sync(config, tmp_path, ("assignments",), IDS[0], headless=True)
+            result, errors = run_sync(
+                config, tmp_path, ("assignments",), IDS[0], collector=sync_all.sync_all, headless=True
+            )
             assert errors is None
             assert result["assignments"] == 1
             assert server.background_started.is_set()
@@ -496,7 +498,7 @@ def test_seven_courses_one_session_and_full_normalized_catalogs(
 
     with fixture_server() as server:
         config = _install_fixture(monkeypatch, server)
-        result, errors = run_sync(config, tmp_path, DOMAINS, None, headless=True)
+        result, errors = run_sync(config, tmp_path, DOMAINS, None, collector=sync_all.sync_all, headless=True)
         assert errors is None, (getattr(errors, "reason_code", None), server.requests, result)
         assert list(result["domains"]) == list(DOMAINS)
         assert all(result["domains"][domain]["status"] == "ok" for domain in DOMAINS)
@@ -569,7 +571,7 @@ def test_seven_course_sync_loads_external_assets_and_survives_dead_loopback_tele
             "http://127.0.0.1:1",
         )
         config = _install_fixture(monkeypatch, server)
-        result, errors = run_sync(config, tmp_path, DOMAINS, None, headless=True)
+        result, errors = run_sync(config, tmp_path, DOMAINS, None, collector=sync_all.sync_all, headless=True)
         assert errors is None, (getattr(errors, "reason_code", None), server.requests, result)
         assert all(result["domains"][domain]["status"] == "ok" for domain in DOMAINS)
         assert ("GET", "/fixture.js", None) in cdn.requests
@@ -589,7 +591,9 @@ def test_delayed_entry_and_section_topbars_still_bind_the_selected_course(
     with fixture_server() as server:
         server.delayed_topbar = True
         config = _install_fixture(monkeypatch, server)
-        result, errors = run_sync(config, tmp_path, ("lectures", "assignments"), IDS[0], headless=True)
+        result, errors = run_sync(
+            config, tmp_path, ("lectures", "assignments"), IDS[0], collector=sync_all.sync_all, headless=True
+        )
         assert errors is None, (errors, server.requests, result)
         assert all(result["domains"][domain]["status"] == "ok" for domain in ("lectures", "assignments"))
         assert read_catalog(catalog_path(tmp_path))["lectures"] == [_expected_row("lectures", IDS[0], 1)]
@@ -604,7 +608,7 @@ def test_external_active_request_is_not_intercepted(
     with fixture_server() as server, fixture_server() as outside:
         server.external_probe = (f"http://127.0.0.1:{outside.server_port}", method, kind)
         config = _install_fixture(monkeypatch, server)
-        result, errors = run_sync(config, tmp_path, DOMAINS, None, headless=True)
+        result, errors = run_sync(config, tmp_path, DOMAINS, None, collector=sync_all.sync_all, headless=True)
         assert errors is None, (errors, result)
         assert (method, "/probe", None) in outside.requests
         assert all(result["domains"][domain]["status"] == "ok" for domain in DOMAINS)
@@ -631,7 +635,9 @@ def test_document_commit_spans_exclude_all_four_collector_phases(
 
     with fixture_server() as server:
         config = _install_fixture(monkeypatch, server)
-        result, errors = run_sync(config, tmp_path, DOMAINS, IDS[0], headless=True, profile=recorder)
+        result, errors = run_sync(
+            config, tmp_path, DOMAINS, IDS[0], collector=sync_all.sync_all, headless=True, profile=recorder
+        )
         assert errors is None
         assert all(result["domains"][domain]["status"] == "ok" for domain in DOMAINS)
 
@@ -663,7 +669,9 @@ def test_first_entry_topbar_mismatch_retains_old_row_and_continues_other_courses
     with fixture_server() as server:
         server.wrong_topbar = True
         config = _install_fixture(monkeypatch, server)
-        result, errors = run_sync(config, tmp_path, DOMAINS, None, headless=True, profile=recorder)
+        result, errors = run_sync(
+            config, tmp_path, DOMAINS, None, collector=sync_all.sync_all, headless=True, profile=recorder
+        )
         assert [error.code for error in errors] == ["course-sync-failed"] * len(DOMAINS)
         assert all(result["domains"][domain]["status"] == "partial" for domain in DOMAINS)
         assert all(
@@ -718,7 +726,7 @@ def test_first_course_section_redirect_fails_only_that_course(tmp_path: Path, mo
     with fixture_server() as server:
         server.first_course_section_redirect = True
         config = _install_fixture(monkeypatch, server)
-        result, errors = run_sync(config, tmp_path, DOMAINS, None, headless=True)
+        result, errors = run_sync(config, tmp_path, DOMAINS, None, collector=sync_all.sync_all, headless=True)
         assert [error.code for error in errors] == ["course-sync-failed"] * len(DOMAINS)
         catalogs = _catalogs(tmp_path)
         for domain in DOMAINS:
@@ -739,7 +747,9 @@ def test_lecture_section_requires_its_own_committed_course_page(
     with fixture_server() as server:
         setattr(server, failure, True)
         config = _install_fixture(monkeypatch, server)
-        result, errors = run_sync(config, tmp_path, ("lectures", "assignments"), IDS[0], headless=True)
+        result, errors = run_sync(
+            config, tmp_path, ("lectures", "assignments"), IDS[0], collector=sync_all.sync_all, headless=True
+        )
         codes = [error.code for error in errors] if isinstance(errors, list) else [errors.code]
         assert codes == (["course-sync-failed"] * (2 if failure == "wrong_course_topbar" else 1))
         lecture_catalog = read_catalog(catalog_path(tmp_path))
@@ -765,7 +775,7 @@ def test_filtered_selection_and_unknown_course_do_not_claim_full_enrollment(
     with fixture_server() as server:
         config = _install_fixture(monkeypatch, server)
         selected = IDS[3]
-        result, errors = run_sync(config, tmp_path, DOMAINS, selected, headless=True)
+        result, errors = run_sync(config, tmp_path, DOMAINS, selected, collector=sync_all.sync_all, headless=True)
         assert errors is None, (errors, server.requests, result)
         catalogs = _catalogs(tmp_path)
         for domain, catalog in catalogs.items():
@@ -779,7 +789,9 @@ def test_filtered_selection_and_unknown_course_do_not_claim_full_enrollment(
             if (method, path) == ("POST", "/api/v1/course/addSessionCourseInfo")
         ] == [selected]
         before = {domain: (tmp_path / "catalog" / f"{domain}.json").read_bytes() for domain in DOMAINS}
-        result, errors = run_sync(config, tmp_path, DOMAINS, "not-enrolled.invalid", headless=True)
+        result, errors = run_sync(
+            config, tmp_path, DOMAINS, "not-enrolled.invalid", collector=sync_all.sync_all, headless=True
+        )
         codes = [error.code for error in errors] if isinstance(errors, list) else [errors.code]
         assert codes == ["course-not-found"]
         assert all(result["domains"][domain]["status"] == "not-started" for domain in DOMAINS[1:])
@@ -811,7 +823,7 @@ def test_discovery_failure_preserves_rows_and_marks_every_catalog_unknown(
             raise ValueError("Synthetic roster could not be decoded")
 
         monkeypatch.setattr(sync_all, "parse_courses", broken_roster)
-        result, errors = run_sync(config, tmp_path, DOMAINS, None, headless=True)
+        result, errors = run_sync(config, tmp_path, DOMAINS, None, collector=sync_all.sync_all, headless=True)
         codes = [error.code for error in errors] if isinstance(errors, list) else [errors.code]
         assert codes == ["course-discovery-failed"]
         assert all(result["domains"][domain]["status"] == "not-started" for domain in DOMAINS[1:])
@@ -840,7 +852,7 @@ def test_second_domain_atomic_write_failure_reports_only_committed_truth(
             raise CampusError("catalog-write-failed", "Synthetic disk failure.", None, "error")
 
         monkeypatch.setattr(sync_all, "write_domain_catalog", fail_second)
-        result, errors = run_sync(config, tmp_path, DOMAINS, IDS[0], headless=True)
+        result, errors = run_sync(config, tmp_path, DOMAINS, IDS[0], collector=sync_all.sync_all, headless=True)
         codes = [error.code for error in errors] if isinstance(errors, list) else [errors.code]
         assert codes == ["catalog-write-failed"]
         outcomes = result["domains"]
@@ -874,7 +886,9 @@ def test_single_course_board_failure_retains_prior_row_and_other_courses_complet
     with fixture_server() as server:
         server.board_paginated = True
         config = _install_fixture(monkeypatch, server)
-        result, errors = run_sync(config, tmp_path, ("notices", "materials"), None, headless=True)
+        result, errors = run_sync(
+            config, tmp_path, ("notices", "materials"), None, collector=sync_all.sync_all, headless=True
+        )
         codes = [error.code for error in errors] if isinstance(errors, list) else [errors.code]
         assert codes == ["notice-board-paginated"]
         assert result["domains"]["notices"]["status"] == "partial"
@@ -919,7 +933,9 @@ def test_failed_task_response_retains_only_that_courses_previous_assignment(
     with fixture_server() as server:
         server.task_count_mismatch = True
         config = _install_fixture(monkeypatch, server)
-        result, errors = run_sync(config, tmp_path, ("assignments", "materials"), None, headless=True)
+        result, errors = run_sync(
+            config, tmp_path, ("assignments", "materials"), None, collector=sync_all.sync_all, headless=True
+        )
         codes = [error.code for error in errors] if isinstance(errors, list) else [errors.code]
         assert codes == ["course-sync-failed"]
         assert result["domains"]["assignments"]["status"] == "partial"
@@ -966,7 +982,9 @@ def test_incomplete_archive_list_retains_only_failed_courses_previous_row(
     with fixture_server() as server:
         server.archive_count_mismatch = True
         config = _install_fixture(monkeypatch, server)
-        result, errors = run_sync(config, tmp_path, ("assignments", "materials"), None, headless=True)
+        result, errors = run_sync(
+            config, tmp_path, ("assignments", "materials"), None, collector=sync_all.sync_all, headless=True
+        )
         codes = [error.code for error in errors] if isinstance(errors, list) else [errors.code]
         assert codes == ["course-sync-failed"]
         assert result["domains"]["assignments"]["status"] == "ok"
@@ -1103,7 +1121,9 @@ def test_lecture_extraction_failure_retains_only_failed_courses_prior_row(
             return await collector(page, course, ordinal=ordinal)
 
         monkeypatch.setattr(sync_all, "collect_lectures_rows", collect_or_fail)
-        result, errors = run_sync(config, tmp_path, ("lectures", "assignments"), None, headless=True)
+        result, errors = run_sync(
+            config, tmp_path, ("lectures", "assignments"), None, collector=sync_all.sync_all, headless=True
+        )
         codes = [error.code for error in errors] if isinstance(errors, list) else [errors.code]
         assert codes == ["course-sync-failed"]
         assert result["domains"]["lectures"]["status"] == "partial"
@@ -1153,7 +1173,9 @@ def test_first_course_todo_failure_preserves_notice_and_continues_archive(
     with fixture_server() as server:
         server.malformed_todo = True
         config = _install_fixture(monkeypatch, server)
-        result, errors = run_sync(config, tmp_path, ("notices", "materials"), None, headless=True)
+        result, errors = run_sync(
+            config, tmp_path, ("notices", "materials"), None, collector=sync_all.sync_all, headless=True
+        )
         codes = [error.code for error in errors] if isinstance(errors, list) else [errors.code]
         assert codes == ["course-sync-failed"]
         detail = result["domains"]["notices"]["errors"][0]["message"]
@@ -1190,7 +1212,9 @@ def test_failed_todo_navigation_restores_roster_before_archive_menu(
     with fixture_server() as server:
         server.todo_redirect = True
         config = _install_fixture(monkeypatch, server)
-        result, errors = run_sync(config, tmp_path, ("notices", "materials"), IDS[0], headless=True)
+        result, errors = run_sync(
+            config, tmp_path, ("notices", "materials"), IDS[0], collector=sync_all.sync_all, headless=True
+        )
         assert errors is not None
         assert result["domains"]["notices"]["status"] == "partial"
         assert "notices sync failed" in result["domains"]["notices"]["errors"][0]["message"]
@@ -1215,7 +1239,9 @@ def test_later_invalid_catalog_blocks_all_publication_and_names_later_domain(
     original = target.read_bytes()
     with fixture_server() as server:
         config = _install_fixture(monkeypatch, server)
-        result, errors = run_sync(config, tmp_path, ("lectures", "notices"), IDS[0], headless=True)
+        result, errors = run_sync(
+            config, tmp_path, ("lectures", "notices"), IDS[0], collector=sync_all.sync_all, headless=True
+        )
         codes = [error.code for error in errors] if isinstance(errors, list) else [errors.code]
         assert codes == ["catalog-invalid"]
         assert result["domains"]["lectures"]["status"] == "not-started"
@@ -1259,7 +1285,9 @@ def test_catalogs_are_published_only_after_browser_session_closes(
     monkeypatch.setattr(sync_all, "write_domain_catalog", write_assignments)
     with fixture_server() as server:
         config = _install_fixture(monkeypatch, server)
-        result, errors = run_sync(config, tmp_path, ("lectures", "assignments"), IDS[0], headless=True)
+        result, errors = run_sync(
+            config, tmp_path, ("lectures", "assignments"), IDS[0], collector=sync_all.sync_all, headless=True
+        )
     assert errors is None
     assert result["domains"]["lectures"]["status"] == "ok"
     assert result["domains"]["assignments"]["status"] == "ok"

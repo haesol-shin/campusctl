@@ -43,6 +43,7 @@ class CommandBindings:
     capabilities: dict[str, list[str]]
     discover_courses: Callable[[Any, dict[str, Any]], Awaitable[list[dict[str, Any]]]]
     play_lectures: Callable[..., Awaitable[Any]]
+    sync_all: Callable[..., Awaitable[Any]]
     validate_requested_lectures: Callable[..., Any]
 
 

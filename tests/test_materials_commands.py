@@ -16,7 +16,7 @@ from campusctl.commands import materials
 from campusctl.domain_catalog import write_domain_catalog
 from campusctl.providers.cnu import attachment_transfer
 from campusctl.providers.cnu import materials as provider
-from campusctl.providers.cnu.sync_all import DomainOutcome
+from campusctl.sync import DomainOutcome
 
 ID = "cnu_lms_material:course-a:file-1"
 ROW = {
@@ -335,7 +335,7 @@ def test_end_to_end_fixture_cli_scenario(
             )
         }
 
-    monkeypatch.setattr("campusctl.sync.sync_all", sync_fixture)
+    monkeypatch.setattr("campusctl.providers.cnu.sync_all.sync_all", sync_fixture)
     assert _cli(["sync", "--only", "materials"], capsys) == (0, "Synced 1 course, 1 material.\n")
     code, human_list = _cli(["materials", "list"], capsys)
     assert code == 0 and ID in human_list

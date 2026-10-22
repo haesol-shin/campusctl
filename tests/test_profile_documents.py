@@ -203,13 +203,14 @@ def test_profiled_sync_matches_plain_sync_and_attributes_waits(tmp_path, monkeyp
 
     from campusctl import cli
     from campusctl.catalog import catalog_path, write_catalog
+    from campusctl.providers.cnu.sync_all import sync_all
     from campusctl.sync import run_sync
 
     with fixture_server() as server:
         config = _install_fixture(monkeypatch, server)
         off_root = tmp_path / "off"
         on_root = tmp_path / "on"
-        off_result, off_errors = run_sync(config, off_root, DOMAINS, IDS[0], headless=True)
+        off_result, off_errors = run_sync(config, off_root, DOMAINS, IDS[0], collector=sync_all, headless=True)
         off_requests = list(server.requests)
         server.requests.clear()
         write_catalog(

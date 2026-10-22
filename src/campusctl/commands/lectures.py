@@ -108,7 +108,11 @@ def _list(args: argparse.Namespace, bindings: CommandBindings, context: CommandC
         )
     else:
         course_id, snapshot = select_course(args.course, root, ids_only=ids_only)
-    refreshed = refresh("lectures", root, course_id, args, snapshot, profile=context.profile) if args.refresh else None
+    refreshed = (
+        refresh("lectures", root, course_id, args, snapshot, collector=bindings.sync_all, profile=context.profile)
+        if args.refresh
+        else None
+    )
     try:
         catalog = read_catalog()
     except CampusError:

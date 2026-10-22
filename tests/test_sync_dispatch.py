@@ -13,6 +13,7 @@ from campusctl import cli
 from campusctl import sync as sync_module
 from campusctl.commands import course_inputs
 from campusctl.envelope import CampusError
+from campusctl.providers.cnu import sync_all
 
 
 def _call(argv: list[str], capsys: pytest.CaptureFixture[str]) -> tuple[int, dict]:
@@ -36,7 +37,7 @@ def test_global_mode_refuses_before_sync_and_legacy_flag_is_usage(
 ) -> None:
     monkeypatch.setenv("CAMPUSCTL_DATA_DIR", str(tmp_path))
     patch_load_config(monkeypatch, lambda: {"browser": {"cdp_endpoint": "http://browser.invalid:9222"}})
-    monkeypatch.setattr(sync_module, "sync_all", lambda *args, **kwargs: pytest.fail("sync dispatched"))
+    monkeypatch.setattr(sync_all, "sync_all", lambda *args, **kwargs: pytest.fail("sync dispatched"))
     for argv, code, expected in (
         (["--headless", "sync", "--json"], 2, "headless-unavailable"),
         (["sync", "--headless", "--json"], 2, "usage-error"),
@@ -55,7 +56,7 @@ def test_profile_emits_single_safe_stderr_line_without_polluting_json(
     async def collect(*args: object, **kwargs: object):
         return {"assignments": sync_module.DomainOutcome(result={"courses": 1})}
 
-    monkeypatch.setattr(sync_module, "sync_all", collect)
+    monkeypatch.setattr(sync_all, "sync_all", collect)
     code = cli.main(["--profile", "sync", "--only", "assignments", "--json"])
     captured = capsys.readouterr()
     assert code == 0 and json.loads(captured.out)["result"] == {"courses": 1}
@@ -88,7 +89,7 @@ def test_fresh_cache_sync_accepts_live_full_id_but_rejects_name_fragment(
 
     monkeypatch.setattr(course_inputs, "discover_live_course", discover)
 
-    monkeypatch.setattr(sync_module, "sync_all", collect)
+    monkeypatch.setattr(sync_all, "sync_all", collect)
     code, response = _call(["sync", "--only", "assignments", "--course", "course-a", "--json"], capsys)
     assert code == 0 and response["result"]["courses"] == 1
     code, response = _call(["sync", "--only", "assignments", "--course", "course", "--json"], capsys)
@@ -146,7 +147,7 @@ def test_fresh_live_discovery_uses_selected_operation_before_domain_work(
 
     monkeypatch.setattr(browser, "open_session", session)
     monkeypatch.setattr(courses, "discover_courses", discover)
-    monkeypatch.setattr(sync_module, "sync_all", collect)
+    monkeypatch.setattr(sync_all, "sync_all", collect)
     code, response = _call(["sync", "--only", "assignments", "--course", "course-a", "--json"], capsys)
     assert code == 0 and response["result"]["courses"] == 1
     assert operations == ["assignments.sync"]
@@ -171,6 +172,63 @@ def test_uncached_numeric_full_id_wins_over_json_index_refusal(
         return {"assignments": sync_module.DomainOutcome(result={"courses": 1})}
 
     monkeypatch.setattr(course_inputs, "discover_live_course", discover)
-    monkeypatch.setattr(sync_module, "sync_all", collect)
+    monkeypatch.setattr(sync_all, "sync_all", collect)
     code, response = _call(["sync", "--only", "assignments", "--course", "123", "--json"], capsys)
     assert code == 0 and response["result"]["courses"] == 1 and calls == ["123"]
+
+
+def test_canonical_domain_order_and_shared_bound_collector(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from campusctl.catalog import catalog_path, write_catalog
+
+    monkeypatch.setenv("CAMPUSCTL_DATA_DIR", str(tmp_path))
+    patch_load_config(monkeypatch, lambda: {})
+    seen: list[tuple[tuple[str, ...], str | None]] = []
+
+    async def collect(config: dict, root: Path, domains: tuple[str, ...], course_id: str | None, **kwargs: object):
+        seen.append((domains, course_id))
+        if "lectures" in domains:
+            write_catalog(
+                {
+                    "schema_version": 1,
+                    "generated_at": "2026-09-25T10:00:00Z",
+                    "enrollment_state": "known",
+                    "courses": [{"course_id": "course-a", "label": "Alpha", "class_no": None}],
+                    "failed_courses": [],
+                    "lectures": [],
+                },
+                catalog_path(root),
+            )
+        return {domain: sync_module.DomainOutcome(result={"courses": 1, domain: 0}) for domain in domains}
+
+    monkeypatch.setattr(sync_all, "sync_all", collect)
+    code, response = _call(["sync", "--only", "materials,notices,assignments,lectures", "--json"], capsys)
+    assert code == 0
+    assert list(response["result"]["domains"]) == ["lectures", "assignments", "notices", "materials"]
+    code, _ = _call(["courses", "list", "--refresh", "--json"], capsys)
+    assert code == 0
+    code, _ = _call(["lectures", "list", "--refresh", "--json"], capsys)
+    assert code == 0
+
+    tty = SimpleNamespace(isatty=lambda: True, write=lambda _text: 0, flush=lambda: None)
+    (tmp_path / "catalog" / "lectures.json").unlink()
+    monkeypatch.setattr(cli.sys, "stdin", tty)
+    monkeypatch.setattr(cli.sys, "stdout", tty)
+    monkeypatch.setenv("CAMPUSCTL_OUTPUT", "human")
+    monkeypatch.setattr("campusctl.config.load_config", lambda *_a, **_kw: {})
+    monkeypatch.setattr(
+        "campusctl.config_init.run_config_init", lambda *_a, **_kw: ({"config_path": "c", "created": False}, None)
+    )
+    monkeypatch.setattr(
+        "campusctl.setup.run_setup", lambda *_a, **_kw: {"browser": {"installed": True, "action": "already-installed"}}
+    )
+    monkeypatch.setattr("campusctl.setup.keyring_status", lambda _cfg: ("Synthetic", True))
+    monkeypatch.setattr("builtins.input", lambda _prompt: "y")
+    assert cli.main(["setup"]) == 0
+    assert seen == [
+        (("lectures", "assignments", "notices", "materials"), None),
+        (("lectures",), None),
+        (("lectures",), None),
+        (("lectures", "assignments", "notices", "materials"), None),
+    ]

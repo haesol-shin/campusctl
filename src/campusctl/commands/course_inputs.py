@@ -15,7 +15,7 @@ from campusctl.course_selection import resolve_course
 from campusctl.envelope import CampusError, error_item, resolve_status
 from campusctl.paths import data_dir
 from campusctl.profiling import SpanRecorder
-from campusctl.sync import run_sync
+from campusctl.sync import SyncCollector, run_sync
 
 
 def select_course(
@@ -102,6 +102,7 @@ def refresh(
     args: argparse.Namespace,
     snapshot: dict[str, Any] | None = None,
     *,
+    collector: SyncCollector,
     profile: SpanRecorder | None = None,
 ) -> tuple[dict[str, Any], CampusError | list[CampusError] | None]:
     config = load_config()
@@ -111,6 +112,7 @@ def refresh(
         root,
         (domain,),
         course_id,
+        collector=collector,
         headless=mode,
         profile=profile,
         course_snapshot=snapshot,
@@ -163,7 +165,11 @@ def list_with_refresh(
         )
     else:
         course, snapshot = select_course(args.course, root, ids_only=ids_only)
-    refreshed = refresh(domain, root, course, args, snapshot, profile=context.profile) if args.refresh else None
+    refreshed = (
+        refresh(domain, root, course, args, snapshot, collector=bindings.sync_all, profile=context.profile)
+        if args.refresh
+        else None
+    )
     try:
         listed = read(course)
     except CampusError:
