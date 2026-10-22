@@ -37,6 +37,7 @@ from campusctl.providers.cnu.roster_diagnostics import (
     stop_roster_requests,
 )
 from campusctl.providers.cnu.sync import COURSE_ROOM_URL_ANCHOR, _merge_health, collect_lectures_rows
+from campusctl.sync import DomainOutcome
 
 _SECTION_PATH = {
     "lectures": "/std/course",
@@ -63,13 +64,6 @@ def _error_detail(error: Exception) -> str:
                 return f"{match[1]} timed out"
         return error.code
     return type(error).__name__
-
-
-@dataclass(slots=True)
-class DomainOutcome:
-    result: dict[str, Any] = field(default_factory=dict)
-    errors: list[CampusError] = field(default_factory=list)
-    status: str | None = None
 
 
 @dataclass(slots=True)

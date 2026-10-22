@@ -52,12 +52,15 @@ def profile_scope(args: argparse.Namespace) -> tuple[str, ...] | None:
 
 
 def dispatch(args: argparse.Namespace, bindings: CommandBindings, context: CommandContext) -> CommandResult:
-    del bindings
     # Resolve the data directory before the historical bare-command TypeError.
     root = data_dir()
     if args.courses_command != "list":
         unchanged_bare_failure()
-    refreshed = refresh("lectures", root, None, args, profile=context.profile) if args.refresh else None
+    refreshed = (
+        refresh("lectures", root, None, args, collector=bindings.sync_all, profile=context.profile)
+        if args.refresh
+        else None
+    )
     try:
         roster = course_roster(root)
     except CampusError:

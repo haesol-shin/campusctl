@@ -571,6 +571,7 @@ def _install_p3_fakes(
     import campusctl.sync as sync_module
     from campusctl.envelope import CampusError
     from campusctl.providers.cnu import courses as courses_module
+    from campusctl.providers.cnu import sync_all as sync_all_module
 
     keyring_state = _P3_FIXTURES[fixture][1]
     stored = {"present": keyring_state == "ready"}
@@ -668,7 +669,9 @@ def _install_p3_fakes(
     stack.enter_context(patch.object(getpass, "getpass", read_password))
     stack.enter_context(patch.object(browser_module, "open_session", fake_open_session))
     stack.enter_context(patch.object(courses_module, "discover_courses", fake_discover))
-    stack.enter_context(patch.object(sync_module, "sync_all", fake_sync_all))
+    stack.enter_context(patch.object(sync_all_module, "sync_all", fake_sync_all))
+    if hasattr(sync_module, "sync_all"):
+        stack.enter_context(patch.object(sync_module, "sync_all", fake_sync_all))
     state["keyring"] = keyring_state
 
 
@@ -2227,6 +2230,310 @@ def invoke_play(case: Case) -> int:
     return 0 if error is None else 1
 
 
+_P7_ORIGIN = "https://lms.invalid"
+_P7_COURSE = {"course_id": "course.invalid", "label": "Synthetic course", "class_no": "01"}
+
+
+class _P7Page:
+    def __init__(self, actions: list, fixture: str) -> None:
+        self.actions = actions
+        self.fixture = fixture
+        self.main_frame = SimpleNamespace(url=f"{_P7_ORIGIN}/std/myLecture")
+        self._listeners: dict[str, list] = {}
+
+    @property
+    def url(self) -> str:
+        return self.main_frame.url
+
+    def on(self, event: str, callback) -> None:
+        self._listeners.setdefault(event, []).append(callback)
+
+    def remove_listener(self, event: str, callback) -> None:
+        callbacks = self._listeners.get(event, [])
+        if callback in callbacks:
+            callbacks.remove(callback)
+
+    def _emit(self, event: str, payload) -> None:
+        for callback in list(self._listeners.get(event, ())):
+            callback(payload)
+
+    async def goto(self, url: str, **kwargs) -> None:
+        del kwargs
+        path = re.sub(r"^https?://[^/]+", "", url)
+        self.actions.append(["page", "goto", path])
+        if path == "/std/todo":
+            req = SimpleNamespace(url=url, method="GET", resource_type="document", frame=self.main_frame)
+            self._emit("request", req)
+        self.main_frame.url = url
+        self._emit("framenavigated", self.main_frame)
+
+    async def wait_for_selector(self, selector: str, **kwargs) -> None:
+        del kwargs
+        self.actions.append(["page", "wait-selector", selector])
+
+    async def click(self, selector: str, **kwargs) -> None:
+        del kwargs
+        if 'data-act="moveLecture"' in selector:
+            self.actions.append(["course", "select", _P7_COURSE["course_id"]])
+            self._emit(
+                "request",
+                SimpleNamespace(
+                    url=f"{_P7_ORIGIN}/api/v1/course/addSessionCourseInfo",
+                    method="POST",
+                    resource_type="xhr",
+                    frame=self.main_frame,
+                ),
+            )
+            self._emit(
+                "request",
+                SimpleNamespace(
+                    url=f"{_P7_ORIGIN}/std/lecture", method="GET", resource_type="document", frame=self.main_frame
+                ),
+            )
+            self.main_frame.url = f"{_P7_ORIGIN}/std/lecture"
+            self._emit("framenavigated", self.main_frame)
+            return
+        match = re.search(r'href="([^"]+)"', selector)
+        path = match.group(1) if match else selector
+        self.actions.append(["section", "open", path])
+        self.main_frame.url = f"{_P7_ORIGIN}{path}"
+        self._emit("framenavigated", self.main_frame)
+
+    async def evaluate(self, script: str, *args):
+        del args
+        if "moveLecture" in script:
+            self.actions.append(["roster", "evaluate"])
+            return [_P7_COURSE]
+        if "topbarCurrentLecture" in script:
+            return _P7_COURSE["course_id"]
+        raise AssertionError("unexpected page evaluation")
+
+
+def _write_p7_files(root: Path, fixture: str, executable: Path) -> None:
+    from campusctl.catalog import write_catalog
+    from campusctl.catalog_view import course_roster, publish_course_snapshot
+
+    (root / "config" / "config.toml").write_text(
+        'provider = "cnu"\n[account]\nusername = "synthetic-user"\n'
+        '[credentials]\nprovider = "keyring"\n'
+        f"[browser]\nheadless = true\nexecutable_path = {json.dumps(str(executable))}\n",
+        encoding="utf-8",
+    )
+    if fixture in {"p7-stale-snapshot", "p7-missing-index", "p7-stale-cache"}:
+        data = root / "data"
+        earlier = {"course_id": "earlier.invalid", "label": "Earlier course", "class_no": "01"}
+        courses = [earlier] if fixture == "p7-stale-cache" else [_P7_COURSE]
+        write_catalog(
+            {"schema_version": 1, "generated_at": "2026-01-02T03:04:05Z", "courses": courses, "lectures": []},
+            data / "catalog" / "lectures.json",
+        )
+        if fixture == "p7-stale-snapshot":
+            publish_course_snapshot(data, course_roster(data))
+            write_catalog(
+                {
+                    "schema_version": 1,
+                    "generated_at": "2026-01-02T03:04:06Z",
+                    "courses": [earlier, _P7_COURSE],
+                    "lectures": [],
+                },
+                data / "catalog" / "lectures.json",
+            )
+
+
+def _install_p7_fakes(stack: ExitStack, actions: list, fixture: str) -> None:
+    import os
+
+    import campusctl.browser as browser_module
+    from campusctl.envelope import CampusError
+    from campusctl.providers.cnu import assignments, login, materials, notices, sync_all
+    from campusctl.wait_clock import use_clock
+
+    clock = _P5Clock(actions)
+    stack.enter_context(use_clock(clock))
+    page = _P7Page(actions, fixture)
+
+    @asynccontextmanager
+    async def fake_open_session(config, **kwargs):
+        del config
+        operation = kwargs["operation"]
+        actions.append(["session", "open", operation, kwargs["headless"]])
+        try:
+            yield SimpleNamespace(page=page)
+        finally:
+            actions.append(["session", "close", operation])
+
+    async def fake_login(active_page, config, **kwargs) -> None:
+        del active_page, config, kwargs
+        actions.append(["auth", "login"])
+        if fixture == "p7-fail-before-close":
+            raise CampusError("auth-failed", "Synthetic login failure.", "Retry.", "error")
+
+    async def fake_settle(session, *, domain=None, timeout=8.0) -> None:
+        del session, timeout
+        actions.append(["sso", "settle", domain])
+
+    async def fake_lectures(active_page, course, *, ordinal=None) -> list[dict]:
+        del active_page
+        actions.append(["collect", "lectures", course["course_id"], ordinal])
+        return [
+            _lecture_row("cnu_lecture:course.invalid:row-1", "Synthetic lecture", course["course_id"], course["label"])
+        ]
+
+    async def fake_assignments(active_page, course, *, capture) -> list[dict]:
+        del active_page, capture
+        actions.append(["collect", "assignments", course["course_id"]])
+        if fixture == "p7-domain-failure":
+            raise CampusError("course-sync-failed", "Synthetic assignment failure.", "Retry.", "error")
+        return assignments.parse_assignment_rows(
+            [{"task_id": "TB_L_REPORT1", "title": "Synthetic assignment", "due_date": "2026-03-04"}], course
+        )
+
+    async def fake_notices(active_page, course, *, capture, courses, todo_rows) -> list[dict]:
+        del active_page, capture, courses
+        actions.append(["collect", "notices", course["course_id"]])
+        return notices.parse_board_rows(
+            [
+                {
+                    "native_id": "TB_L_BOARDITEM1",
+                    "number": "1",
+                    "title": "Synthetic notice",
+                    "date": "2026-01-02 09:00",
+                    "author": "Synthetic author",
+                    "view_count": "1",
+                    "has_attachments": False,
+                }
+            ],
+            course,
+            todo_rows,
+        )
+
+    async def fake_materials(active_page, course, *, capture=None) -> list[dict]:
+        del active_page, capture
+        actions.append(["collect", "materials", course["course_id"]])
+        return [
+            {
+                "entity_id": "cnu_lms_material:course.invalid:file-1",
+                "course": {"id": course["course_id"], "label": course["label"]},
+                "archive_entry": {"board_item_id": "board-1", "title": "Synthetic archive"},
+                "file_id": "file-1",
+                "display_name": "example.pdf",
+                "filename": "example.pdf",
+                "media_type": "application/pdf",
+                "size_bytes": 123,
+                "downloadable": True,
+                "unavailable_reason": None,
+            }
+        ]
+
+    async def fake_todo(active_page, courses, *, capture, selected_course_id=None):
+        del active_page, courses, selected_course_id
+        capture.close()
+        actions.append(["collect", "todo"])
+        return ({_P7_COURSE["course_id"]: []}, set())
+
+    original_replace = os.replace
+
+    def traced_replace(src, dst, *args, **kwargs):
+        name = Path(dst).name
+        if name.endswith(".json"):
+            actions.append(["catalog", "publish", name])
+        return original_replace(src, dst, *args, **kwargs)
+
+    class SyntheticKeyring:
+        @staticmethod
+        def get_keyring():
+            return SimpleNamespace(priority=5)
+
+        @staticmethod
+        def get_password(service, username):
+            del service, username
+            actions.append(["keyring", "get", "ready"])
+            return "synthetic-secret"
+
+    stack.enter_context(patch.dict(sys.modules, {"keyring": SyntheticKeyring}))
+    stack.enter_context(patch.object(os, "replace", traced_replace))
+    stack.enter_context(patch.object(browser_module, "open_session", fake_open_session))
+    stack.enter_context(patch.object(browser_module, "settle_sso_popups", fake_settle))
+    stack.enter_context(patch.object(login, "ensure_logged_in", fake_login))
+    stack.enter_context(patch.object(login, "MY_LECTURE_URL", f"{_P7_ORIGIN}/std/myLecture"))
+    stack.enter_context(patch.object(sync_all, "MY_LECTURE_URL", f"{_P7_ORIGIN}/std/myLecture"))
+    stack.enter_context(patch.object(sync_all, "ensure_logged_in", fake_login))
+    stack.enter_context(patch.object(notices, "_ORIGIN", _P7_ORIGIN))
+    stack.enter_context(patch.object(notices, "_TODO_URL", f"{_P7_ORIGIN}/std/todo"))
+    stack.enter_context(patch.object(sync_all, "collect_lectures_rows", fake_lectures))
+
+    async def open_section(_page, action, *, capture=None) -> None:
+        del capture
+        await action()
+
+    async def arm_materials(_page):
+        return SimpleNamespace()
+
+    stack.enter_context(patch.object(assignments, "arm_assignment_capture", lambda _page: SimpleNamespace()))
+    stack.enter_context(patch.object(assignments, "open_assignment_section", open_section))
+    stack.enter_context(patch.object(assignments, "collect_assignment_rows", fake_assignments))
+    stack.enter_context(patch.object(notices, "arm_notice_capture", lambda _page: SimpleNamespace()))
+    stack.enter_context(patch.object(notices, "open_notice_section", open_section))
+    stack.enter_context(patch.object(notices, "collect_notice_rows", fake_notices))
+    stack.enter_context(patch.object(notices, "collect_notice_todo", fake_todo))
+    stack.enter_context(patch.object(materials, "arm_materials_capture", arm_materials))
+    stack.enter_context(patch.object(materials, "open_materials_section", open_section))
+    stack.enter_context(patch.object(materials, "collect_materials_rows", fake_materials))
+
+
+def _p7_cases() -> list[Case]:
+    """Provider-neutral sync aggregation, bound collector/discovery and real sync_all paths."""
+    sync = ["sync", "--only"]
+    refresh = ["assignments", "list", "--refresh", "--course"]
+    specs = [
+        ("p7-one-session-canonical-order", [*sync, "materials,notices,assignments,lectures"], "p7-real", 0, 0),
+        ("p7-domain-failure-continues", [*sync, "materials,assignments,lectures"], "p7-domain-failure", 1, 1),
+        ("p7-busy-lock", [*sync, "lectures,assignments"], "busy", 75, 75),
+        ("p7-close-before-publication", [*sync, "lectures,assignments"], "p7-real", 0, 0),
+        ("p7-no-publication-on-session-failure", [*sync, "lectures,assignments"], "p7-fail-before-close", 1, 1),
+        ("p7-discovery-fallback-sync-id", [*sync, "assignments", "--course", "course.invalid"], "p7-uncached", 0, 0),
+        ("p7-discovery-fallback-refresh-id", [*refresh, "course.invalid"], "p7-uncached", 0, 0),
+        ("p7-discovery-fallback-sync-name", [*sync, "assignments", "--course", "Synthetic"], "p7-uncached", 2, 0),
+        ("p7-discovery-fallback-refresh-name", [*refresh, "Synthetic"], "p7-uncached", 2, 0),
+        ("p7-discovery-stale-cache-sync", [*sync, "assignments", "--course", "Synthetic"], "p7-stale-cache", 2, 0),
+        ("p7-discovery-stale-cache-refresh", [*refresh, "Synthetic"], "p7-stale-cache", 2, 0),
+        ("p7-discovery-stale-snapshot-sync", [*sync, "assignments", "--course", "1"], "p7-stale-snapshot", 2, 2),
+        ("p7-discovery-missing-snapshot-refresh", [*refresh, "1"], "p7-missing-index", 2, 2),
+        ("p7-courses-refresh-collector", ["courses", "list", "--refresh"], "p7-real", 0, 0),
+        ("p7-lectures-refresh-collector", ["lectures", "list", "--refresh"], "p7-real", 0, 0),
+    ]
+    result: list[Case] = [
+        {
+            "name": f"{name}-{mode}",
+            "argv": argv,
+            "fixture": fixture,
+            "width": 80,
+            "env": {"CAMPUSCTL_OUTPUT": mode},
+            "expected": expected,
+        }
+        for name, argv, fixture, json_exit, human_exit in specs
+        for mode, expected in (("json", json_exit), ("human", human_exit))
+    ]
+    for name, fixture in (
+        ("p7-guided-setup-first-sync", "p3-sync-uncached"),
+        ("p7-guided-setup-first-sync-real", "p7-real"),
+    ):
+        result.append(
+            {
+                "name": name,
+                "argv": ["setup"],
+                "fixture": fixture,
+                "width": 80,
+                "env": {"CAMPUSCTL_OUTPUT": "human"},
+                "stdin_tty": True,
+                "stdout_tty": True,
+                "input": "y\n",
+                "expected": 0,
+            }
+        )
+    return result
+
+
 def cases() -> list[Case]:
     help_paths = [
         [],
@@ -2359,7 +2666,16 @@ def cases() -> list[Case]:
                 "expected": expected,
             }
         )
-    return [*result, *_command_owner_cases(), *_fetch_cases(), *_p4b_cases(), *_l4_cases(), *_p5_cases(), *_p6_cases()]
+    return [
+        *result,
+        *_command_owner_cases(),
+        *_fetch_cases(),
+        *_p4b_cases(),
+        *_l4_cases(),
+        *_p5_cases(),
+        *_p6_cases(),
+        *_p7_cases(),
+    ]
 
 
 @contextmanager
@@ -2389,6 +2705,8 @@ def prepare(root: Path, case: Case, actions: list):
             encoding="utf-8",
         )
         _write_p5_catalog(root, fixture)
+    elif fixture.startswith("p7-"):
+        _write_p7_files(root, fixture, executable)
     else:
         (root / "config" / "config.toml").write_text(
             'provider = "cnu"\n[credentials]\nprovider = "command"\n'
@@ -2457,6 +2775,8 @@ def prepare(root: Path, case: Case, actions: list):
             _install_progress_fakes(stack, actions, fixture)
         elif fixture.startswith("p5-") or fixture.startswith("p6-"):
             _install_p5_fakes(stack, actions, fixture)
+        elif fixture.startswith("p7-"):
+            _install_p7_fakes(stack, actions, fixture)
         if "fetch_fake" in case:
             _install_fetch_fakes(stack, actions, case["fetch_fake"])
         if case["name"] == "owner-courses-list-human" or case.get("trace_publication"):

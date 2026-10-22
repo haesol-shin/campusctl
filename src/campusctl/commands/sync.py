@@ -67,6 +67,7 @@ def dispatch(args: argparse.Namespace, bindings: CommandBindings, context: Comma
             root,
             domains,
             course_id,
+            collector=bindings.sync_all,
             headless=args.headless_override,
             profile=context.profile,
             course_snapshot=snapshot,

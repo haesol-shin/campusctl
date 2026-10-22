@@ -13,6 +13,7 @@ from typing import Any, NamedTuple, NoReturn, TextIO
 
 from campusctl.envelope import CampusError, Status, error_item
 from campusctl.profiling import SpanRecorder
+from campusctl.sync import SyncCollector
 
 Renderer = Callable[[str, dict[str, Any], int], list[str]]
 
@@ -43,6 +44,7 @@ class CommandBindings:
     capabilities: dict[str, list[str]]
     discover_courses: Callable[[Any, dict[str, Any]], Awaitable[list[dict[str, Any]]]]
     play_lectures: Callable[..., Awaitable[Any]]
+    sync_all: SyncCollector
     validate_requested_lectures: Callable[..., Any]
 
 

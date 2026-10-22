@@ -17,6 +17,7 @@ from playwright.sync_api import sync_playwright
 from campusctl.profiling import SpanRecorder
 from campusctl.providers.cnu import courses, login
 from campusctl.providers.cnu import sync as lectures
+from campusctl.providers.cnu.sync_all import sync_all
 from campusctl.sync import run_sync
 
 
@@ -75,7 +76,9 @@ def main() -> None:
         with sync_playwright() as playwright:
             executable = playwright.chromium.executable_path
         config = {"browser": {"executable_path": executable}}
-        result, errors = run_sync(config, root, ("lectures",), None, headless=False, profile=recorder)
+        result, errors = run_sync(
+            config, root, ("lectures",), None, collector=sync_all, headless=False, profile=recorder
+        )
         codes = [error.code for error in errors] if isinstance(errors, list) else [errors.code] if errors else []
         print(json.dumps({"status": "ok" if not codes else "partial", "result": result, "errors": codes}))
     finally:

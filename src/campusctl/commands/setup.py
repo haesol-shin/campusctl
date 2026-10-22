@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from functools import partial
 from typing import Any
 
 from campusctl.cli_args import _with_json
@@ -24,7 +25,6 @@ def _confirm_setup(prompt: str) -> bool:
 
 
 def dispatch(args: argparse.Namespace, bindings: CommandBindings, context: CommandContext) -> CommandResult:
-    del bindings
     from campusctl.setup import run_guided_setup, run_setup
 
     if context.interactive:
@@ -32,7 +32,7 @@ def dispatch(args: argparse.Namespace, bindings: CommandBindings, context: Comma
             *run_guided_setup(
                 confirm=_confirm_setup,
                 out=sys.stdout,
-                run_sync=run_sync,
+                run_sync=partial(run_sync, collector=bindings.sync_all),
                 headless_override=args.headless_override,
             )
         )

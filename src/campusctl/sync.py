@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -10,7 +12,16 @@ from campusctl.browser import profile_context
 from campusctl.browser_options import preflight_browser_mode
 from campusctl.catalog_view import DOMAINS
 from campusctl.envelope import CampusError, error_item, resolve_status
-from campusctl.providers.cnu.sync_all import DomainOutcome, sync_all
+
+
+@dataclass(slots=True)
+class DomainOutcome:
+    result: dict[str, Any] = field(default_factory=dict)
+    errors: list[CampusError] = field(default_factory=list)
+    status: str | None = None
+
+
+SyncCollector = Callable[..., Awaitable[dict[str, DomainOutcome]]]
 
 
 def parse_domains(value: str | None) -> tuple[str, ...]:
@@ -33,6 +44,7 @@ def run_sync(
     domains: tuple[str, ...],
     course_id: str | None,
     *,
+    collector: SyncCollector,
     headless: bool | None = None,
     profile: Any = None,
     course_snapshot: dict[str, Any] | None = None,
@@ -45,7 +57,7 @@ def run_sync(
 
     async def collect() -> tuple[dict[str, Any], CampusError | list[CampusError] | None]:
         try:
-            outcomes = await sync_all(
+            outcomes = await collector(
                 config, root, selected, course_id, headless=modes[selected[0]], course_snapshot=course_snapshot
             )
         except CampusError as error:
