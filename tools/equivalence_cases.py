@@ -708,18 +708,18 @@ def _install_fetch_fakes(stack: ExitStack, actions: list, plan: dict) -> None:
             actions.append(["network", "get", url, kwargs.get("max_redirects")])
             kind = plan.get("image")
             if kind and url == "https://cdn.invalid/ok.png":
-                body = b"not-a-png" if kind == "bad-signature" else b"\x89PNG\r\n\x1a\nok"
+                payload = b"not-a-png" if kind == "bad-signature" else b"\x89PNG\r\n\x1a\nok"
                 served = "https://other.invalid/moved.png" if kind == "redirect" else url
 
                 class ImageResponse:
                     status = 200
-                    headers = {"content-type": "image/png", "content-length": str(len(body))}
+                    headers = {"content-type": "image/png", "content-length": str(len(payload))}
 
                     def __init__(self) -> None:
                         self.url = served
 
                     async def body(self) -> bytes:
-                        return body
+                        return payload
 
                     async def dispose(self) -> None:
                         actions.append(["network", "dispose"])
