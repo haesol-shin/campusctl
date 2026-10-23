@@ -504,3 +504,35 @@ def test_failed_transfer_never_publishes(tmp_path: Path, monkeypatch: pytest.Mon
     sources_dir = root / "sources"
     if sources_dir.exists():
         assert not any(sources_dir.rglob("package.json"))
+
+    payload = b"%PDF-1.4\nunverified"
+    for index, (size_bytes, digest) in enumerate(
+        ((len(payload) + 1, hashlib.sha256(payload).hexdigest()), (len(payload), "0" * 64))
+    ):
+        temp_file = tmp_path / f".attachment-{index}"
+        temp_file.write_bytes(payload)
+
+        async def bad_fetch(
+            *_args: Any, _temp: Path = temp_file, _size: int = size_bytes, _digest: str = digest, **_kwargs: Any
+        ) -> FetchedAttachment:
+            return FetchedAttachment(_temp, _digest, "application/pdf", _size)
+
+        destination = tmp_path / f"published-never-{index}"
+        with pytest.raises(CampusError) as failure:
+            asyncio.run(
+                build_source_package(
+                    page,
+                    snapshot,
+                    entity_id="cnu_assignment:course-1:task-106",
+                    kind="assignment",
+                    course_id="course-1",
+                    course_label="Course 1",
+                    root=root,
+                    out=destination,
+                    resolution=SourceResolution(bad_fetch, PACKAGE_PROVENANCE),
+                )
+            )
+        assert failure.value.code == "fetch-failed"
+        assert not temp_file.exists()
+        assert not destination.exists()
+    assert not any(root.rglob("package.json"))

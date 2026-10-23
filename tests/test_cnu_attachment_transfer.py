@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 from test_cnu_request_policy import FIXTURE
 
-from campusctl.attachment_policy import OfficialAttachmentTarget, RequestPolicy
+from campusctl.attachment_policy import MAX_ATTACHMENT_BYTES, OfficialAttachmentTarget, RequestPolicy
 from campusctl.envelope import CampusError
 from campusctl.providers.cnu.attachment_transfer import fetch_official_attachment
 from campusctl.providers.cnu.selected_file_policy import SelectedFileDenied, bind_selected_file_request
@@ -257,6 +257,7 @@ async def _selected_guarded_bounded_transfer(tmp_path: Path) -> None:
     response = Response()
     browser = page(response)
     fetched = await fetch_official_attachment(browser, TARGET, policy, tmp_path, max_bytes=200_000_000)
+    assert response.reads == 1
     assert fetched.temp_path.read_bytes() == BODY
     assert fetched.size_bytes == len(BODY)
     assert fetched.sha256 == hashlib.sha256(BODY).hexdigest()
@@ -298,11 +299,24 @@ async def _response_failures(tmp_path: Path) -> None:
         assert not list(tmp_path.iterdir())
 
 
-def test_invalid_official_target_blocks_as_operational_policy_error(tmp_path: Path) -> None:
-    target = OfficialAttachmentTarget("", "archive", "post-1", "#official-file", None)
-    policy = RequestPolicy("example.pdf")
+@pytest.mark.parametrize(
+    ("target", "max_bytes"),
+    [
+        (OfficialAttachmentTarget("", "archive", "post-1", "#official-file", None), MAX_ATTACHMENT_BYTES),
+        (OfficialAttachmentTarget("file-1", "other", "post-1", "#official-file", None), MAX_ATTACHMENT_BYTES),
+        (OfficialAttachmentTarget("file-1", "archive", "post-1", "", None), MAX_ATTACHMENT_BYTES),
+        (TARGET, True),
+        (TARGET, 0),
+        (TARGET, MAX_ATTACHMENT_BYTES + 1),
+    ],
+)
+def test_invalid_official_target_blocks_as_operational_policy_error(
+    tmp_path: Path, target: OfficialAttachmentTarget, max_bytes: int
+) -> None:
     with pytest.raises(CampusError) as denial:
-        asyncio.run(fetch_official_attachment(object(), target, policy, tmp_path, max_bytes=200_000_000))
+        asyncio.run(
+            fetch_official_attachment(object(), target, RequestPolicy("example.pdf"), tmp_path, max_bytes=max_bytes)
+        )
     assert denial.value.code == "policy-blocked"
     assert denial.value.status == "error"
     assert not list(tmp_path.iterdir())
@@ -611,3 +625,40 @@ def test_selected_file_url_binding_rejects_unapproved_paths() -> None:
                 bind_selected_file_request(
                     selected_file_id="file-1", resolved_url=origin + invalid, source="official-control"
                 )
+
+
+async def _assert_blocked(
+    browser: FakePage, target: OfficialAttachmentTarget, policy: RequestPolicy, tmp_path: Path
+) -> None:
+    with pytest.raises(CampusError) as denied:
+        await fetch_official_attachment(browser, target, policy, tmp_path, max_bytes=MAX_ATTACHMENT_BYTES)
+    assert denied.value.code == "policy-blocked"
+    assert not browser.context.request.calls
+    assert not list(tmp_path.iterdir())
+
+
+def test_selected_metadata_boundaries_and_notice_parent(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        policy = RequestPolicy("example.pdf")
+        for payload in (
+            {"body": {"is_cms": "true", "path": "/storage-1/example.pdf", "name": "example.pdf"}},
+            {"body": {"is_cms": True, "path": "/storage-1/example.pdf"}},
+            {"body": {"is_cms": True, "path": "/storage/one/example.pdf", "name": "example.pdf"}},
+            {"body": {"is_full": True, "path": "storage-1/example.pdf", "name": "example.pdf"}},
+        ):
+            await _assert_blocked(page(Response(), payload=payload), TARGET, policy, tmp_path)
+
+        nested_url = URL
+        payload = {"header": {"code": 200}, "body": {"items": [{"deeper": [nested_url]}]}}
+        target = OfficialAttachmentTarget("file-1", "archive", "post-1", "#official-file", None)
+        browser = page(Response(url=nested_url), payload=payload, duplicate_url=nested_url)
+        fetched = await fetch_official_attachment(browser, target, policy, tmp_path, max_bytes=MAX_ATTACHMENT_BYTES)
+        assert browser.context.request.calls == [(nested_url, {}, 0)]
+        fetched.temp_path.unlink()
+
+        matching = PARENT_URL.removesuffix("/std/archive") + "/file/term-1/course-1/board/manager-1/post-1/example.pdf"
+        payload = {"header": {"code": 200}, "body": {"result": {"download": matching}}}
+        notice = OfficialAttachmentTarget("file-1", "notice", "post-2", "#official-file", None)
+        await _assert_blocked(page(Response(url=matching), payload=payload), notice, policy, tmp_path)
+
+    asyncio.run(scenario())
