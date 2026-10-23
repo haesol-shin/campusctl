@@ -11,7 +11,7 @@ from urllib.parse import parse_qs, urljoin, urlsplit
 
 from campusctl.browser import PROTOCOL_TIMEOUT_SECONDS, bounded, finish_response, profile_span
 from campusctl.envelope import CampusError
-from campusctl.source_package import DetailSnapshot, ResourceReference
+from campusctl.source_resources import DetailSnapshot, ResourceReference
 from campusctl.wait_clock import current_clock
 
 from .course_context import COURSE_MENU_TIMEOUT_MS, SECTION_RESPONSE_TIMEOUT_MS, _css_string

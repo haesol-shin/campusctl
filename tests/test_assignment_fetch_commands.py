@@ -255,7 +255,7 @@ def test_fetch_error_names_stage_without_exposing_provider_identity(
     fetch = command._fetch_assignment if command is assignments else command._fetch_notice
 
     with pytest.raises(CampusError) as failure:
-        asyncio.run(fetch({}, tmp_path, row))
+        asyncio.run(fetch({}, tmp_path, row, resolution=object()))
     item = error_item(failure.value)
     assert item["code"] == "entity-unknown"
     assert item["message"] == f"{kind} fetch: {failed_step} failed."

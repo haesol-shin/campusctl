@@ -689,7 +689,11 @@ def _install_fetch_fakes(stack: ExitStack, actions: list, plan: dict) -> None:
 
     import campusctl.browser as browser_module
     from campusctl.providers.cnu import assignment_detail, login, notice_detail
-    from campusctl.source_package import DetailSnapshot, ResourceReference
+
+    try:
+        from campusctl.source_resources import DetailSnapshot, ResourceReference
+    except ImportError:
+        from campusctl.source_package import DetailSnapshot, ResourceReference
 
     class Response:
         status = 200
@@ -700,8 +704,27 @@ def _install_fetch_fakes(stack: ExitStack, actions: list, plan: dict) -> None:
             actions.append(["network", "dispose"])
 
     class Request:
-        async def get(self, url: str, **kwargs: object) -> Response:
-            actions.append(["network", "get", url])
+        async def get(self, url: str, **kwargs: object) -> object:
+            actions.append(["network", "get", url, kwargs.get("max_redirects")])
+            kind = plan.get("image")
+            if kind and url == "https://cdn.invalid/ok.png":
+                payload = b"not-a-png" if kind == "bad-signature" else b"\x89PNG\r\n\x1a\nok"
+                served = "https://other.invalid/moved.png" if kind == "redirect" else url
+
+                class ImageResponse:
+                    status = 200
+                    headers = {"content-type": "image/png", "content-length": str(len(payload))}
+
+                    def __init__(self) -> None:
+                        self.url = served
+
+                    async def body(self) -> bytes:
+                        return payload
+
+                    async def dispose(self) -> None:
+                        actions.append(["network", "dispose"])
+
+                return ImageResponse()
             return Response()
 
     class Page:
@@ -749,6 +772,38 @@ def _install_fetch_fakes(stack: ExitStack, actions: list, plan: dict) -> None:
         if entity_id in plan.get("package", {}):
             # The image download (network boundary) answers with an oversized length, which the real packager rejects.
             parts.append(ResourceReference("image", "https://lms.invalid/big.png", "big.png", None, "Big", None, None))
+        if plan.get("image"):
+            image = ResourceReference("image", "https://cdn.invalid/ok.png", "ok.png", None, "Ok", None, None)
+            parts.append(image)
+            if plan["image"] == "dedup":
+                parts.append(image)
+            if plan["image"] == "omit":
+                parts.append(
+                    ResourceReference("video", "https://lms.invalid/clip.mp4", "clip.mp4", None, "Clip", None, None)
+                )
+        if plan.get("unverified"):
+            parts.append(
+                ResourceReference(
+                    "attachment", "https://lms.invalid/file.pdf", "file.pdf", None, "File", "file-1", None
+                )
+            )
+        if plan.get("bad_target"):
+            try:
+                from campusctl.attachment_policy import OfficialAttachmentTarget
+            except ImportError:
+                from campusctl.providers.cnu.attachment_transfer import OfficialAttachmentTarget
+
+            parts.append(
+                ResourceReference(
+                    "attachment",
+                    "https://lms.invalid/file.pdf",
+                    "file.pdf",
+                    None,
+                    "File",
+                    "file-1",
+                    OfficialAttachmentTarget("file-1", "assignment", "other-task", "#file", None),
+                )
+            )
         return DetailSnapshot(f"https://lms.invalid/{entity_id}", entity_id, tuple(parts))
 
     async def fake_assignment_detail(page, config, row):
@@ -2675,7 +2730,174 @@ def cases() -> list[Case]:
         *_p5_cases(),
         *_p6_cases(),
         *_p7_cases(),
+        *_p8_cases(),
     ]
+
+
+def _p8_cases() -> list[Case]:
+    """Real packager through fetch, plus one direct reuse build. Network and capture stay fake."""
+    assignment = "cnu_assignment:course.invalid:TB_L_REPORT1"
+    notice = "cnu_notice:course.invalid:n1"
+    plans = (
+        ("image-allowed", ["assignments", "fetch", assignment], 0, {"image": "ok"}),
+        ("repeat-inline", ["assignments", "fetch", assignment], 0, {"image": "dedup"}),
+        ("omit", ["assignments", "fetch", assignment], 1, {"image": "omit"}),
+        ("notice-unverified", ["notices", "fetch", notice], 1, {"unverified": True}),
+        ("bad-target", ["assignments", "fetch", assignment], 1, {"bad_target": True}),
+        ("signature", ["assignments", "fetch", assignment], 2, {"image": "bad-signature"}),
+        ("redirect", ["assignments", "fetch", assignment], 1, {"image": "redirect"}),
+        ("size", ["assignments", "fetch", assignment], 2, {"package": {assignment: True}}),
+    )
+    cases: list[Case] = []
+    for name, argv, expected, plan in plans:
+        for mode in ("json", "human"):
+            cases.append(
+                {
+                    "name": f"p8-{name}-{mode}",
+                    "argv": argv,
+                    "fixture": "p3-fetch",
+                    "width": 80,
+                    "env": {"CAMPUSCTL_OUTPUT": mode},
+                    "expected": expected,
+                    "fetch_fake": plan,
+                }
+            )
+    cases.append(
+        {
+            "name": "p8-reuse",
+            "argv": [],
+            "fixture": "p8-reuse",
+            "width": 80,
+            "expected": 0,
+            "invoke": "source_package",
+        }
+    )
+    cases.append(
+        {
+            "name": "p8-file-dedup",
+            "argv": [],
+            "fixture": "p8-file-dedup",
+            "width": 80,
+            "expected": 0,
+            "invoke": "source_package",
+        }
+    )
+    return cases
+
+
+def invoke_source_package(case: Case, actions: list) -> int:
+    """Build the same image package twice and report reuse without a provider default."""
+    import asyncio
+    from pathlib import Path
+
+    from campusctl.source_package import build_source_package
+
+    try:
+        from campusctl.source_resources import DetailSnapshot, ResourceReference
+    except ImportError:
+        from campusctl.source_package import DetailSnapshot, ResourceReference
+
+    body = b"\x89PNG\r\n\x1a\nok"
+    url = "https://cdn.invalid/ok.png"
+
+    class Response:
+        def __init__(self) -> None:
+            self.url = url
+            self.status = 200
+            self.headers = {"content-type": "image/png", "content-length": str(len(body))}
+
+        async def body(self) -> bytes:
+            return body
+
+        async def dispose(self) -> None:
+            actions.append(["network", "dispose"])
+
+    class Request:
+        async def get(self, requested: str, **kwargs: object) -> Response:
+            staged = any(path.name.startswith(".source-") for path in Path.cwd().rglob("*") if path.is_dir())
+            actions.append(["network", "get", requested, kwargs.get("max_redirects"), staged])
+            return Response()
+
+    page = SimpleNamespace(context=SimpleNamespace(request=Request()))
+    from campusctl import composition
+
+    if case.get("fixture") == "p8-file-dedup":
+        return asyncio.run(_file_dedup(actions, page))
+    reference = ResourceReference("image", url, "ok.png", None, "Ok", None, None)
+    snapshot = DetailSnapshot("https://page.invalid/detail", "task-1", ("Body\n", reference, reference))
+    kwargs: dict = {}
+    bound = getattr(composition.bind(), "source_resolution", None)
+    if bound is not None:
+        kwargs["resolution"] = bound
+
+    async def build() -> dict:
+        return await build_source_package(
+            page,
+            snapshot,
+            entity_id="synthetic-entity",
+            kind="assignment",
+            course_id="course.invalid",
+            course_label="Synthetic",
+            root=Path.cwd() / "data",
+            **kwargs,
+        )
+
+    first = asyncio.run(build())
+    second = asyncio.run(build())
+    print(json.dumps({"reused": first["path"] == second["path"], "provider": first["provenance"]["provider"]}))
+    return 0 if first["path"] == second["path"] else 1
+
+
+async def _file_dedup(actions: list, page: object) -> int:
+    import hashlib
+    from pathlib import Path
+
+    from campusctl.source_package import build_source_package
+
+    try:
+        from campusctl.attachment_policy import FetchedAttachment, OfficialAttachmentTarget
+        from campusctl.source_resources import DetailSnapshot, ResourceReference
+    except ImportError:
+        from campusctl.providers.cnu.attachment_transfer import FetchedAttachment, OfficialAttachmentTarget
+        from campusctl.source_package import DetailSnapshot, ResourceReference
+    payload = b"%PDF-1.4\nbounded"
+    digest = hashlib.sha256(payload).hexdigest()
+
+    async def transfer(_page, target, _policy, temp_dir, *, max_bytes):
+        actions.append(["transfer", target.file_id, Path(temp_dir).is_dir(), max_bytes])
+        path = Path(temp_dir) / "fetched.bin"
+        path.write_bytes(payload)
+        return FetchedAttachment(path, digest, "application/pdf", len(payload))
+
+    import campusctl.providers.cnu.attachment_transfer as transfer_owner
+    import campusctl.source_package as package_owner
+
+    transfer_owner.fetch_official_attachment = transfer
+    if hasattr(package_owner, "fetch_official_attachment"):
+        package_owner.fetch_official_attachment = transfer
+    from campusctl import composition
+
+    target = OfficialAttachmentTarget("file-1", "assignment", "task-1", "#file", None)
+    reference = ResourceReference(
+        "attachment", "https://page.invalid/file.pdf", "file.pdf", None, "File", "file-1", target
+    )
+    snapshot = DetailSnapshot("https://page.invalid/detail", "task-1", (reference, "\n", reference))
+    kwargs: dict = {}
+    bound = getattr(composition.bind(), "source_resolution", None)
+    if bound is not None:
+        kwargs["resolution"] = bound
+    result = await build_source_package(
+        page,
+        snapshot,
+        entity_id="synthetic-entity",
+        kind="assignment",
+        course_id="course.invalid",
+        course_label="Synthetic",
+        root=Path.cwd() / "data",
+        **kwargs,
+    )
+    print(json.dumps({"transfers": sum(item[0] == "transfer" for item in actions), "links": 2}))
+    return 0 if sum(item[0] == "transfer" for item in actions) == 1 and len(result["resources"]) == 1 else 1
 
 
 @contextmanager

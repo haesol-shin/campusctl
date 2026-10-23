@@ -16,6 +16,7 @@ from campusctl.domain_catalog import domain_catalog_path, read_domain_catalog
 from campusctl.envelope import CampusError, Status, UsageError, error_item
 from campusctl.paths import data_dir
 from campusctl.providers.cnu.login import LOGIN_FORM_SELECTOR
+from campusctl.source_resources import SourceResolution
 
 Capture = Callable[[Any, dict[str, Any]], Awaitable[Any]]
 ErrorFactory = Callable[[str, Exception], CampusError]
@@ -243,6 +244,7 @@ async def _fetch_item(
     domain: FetchDomain,
     capture: Capture,
     step_error: ErrorFactory | None,
+    resolution: SourceResolution,
 ) -> dict[str, Any]:
     """Capture one detail and build its package; the single and batch paths share this body.
 
@@ -266,6 +268,7 @@ async def _fetch_item(
             course_id=row["course"]["id"],
             course_label=row["course"]["label"],
             root=root,
+            resolution=resolution,
             out=out,
         )
     except Exception as exc:
@@ -283,6 +286,7 @@ async def fetch_single(
     headless: bool,
     domain: FetchDomain,
     capture: Capture,
+    resolution: SourceResolution,
 ) -> dict[str, Any]:
     """Fetch one selected detail; each failing step raises the domain's error for that step."""
     from campusctl.browser import open_session
@@ -291,7 +295,14 @@ async def fetch_single(
         async with open_session(config, data_dir=root, headless=headless, operation=f"{domain.name}.fetch") as session:
             page = await _authenticate(session, config, domain)
             return await _fetch_item(
-                page, row, root=root, out=out, domain=domain, capture=capture, step_error=domain.fetch_error
+                page,
+                row,
+                root=root,
+                out=out,
+                domain=domain,
+                capture=capture,
+                step_error=domain.fetch_error,
+                resolution=resolution,
             )
     except Exception as exc:
         # Step errors above already carry the domain wording; only a session-level failure is adapted here.
@@ -308,6 +319,7 @@ async def run_fetch_queue(
     headless: bool,
     domain: FetchDomain,
     capture: Capture,
+    resolution: SourceResolution,
 ) -> tuple[list[FetchItem], list[CampusError] | None]:
     """Authenticate once, then capture and publish each selected detail in order."""
     from campusctl.browser import open_session
@@ -322,7 +334,14 @@ async def run_fetch_queue(
             try:
                 try:
                     package = await _fetch_item(
-                        page, row, root=root, out=None, domain=domain, capture=capture, step_error=None
+                        page,
+                        row,
+                        root=root,
+                        out=None,
+                        domain=domain,
+                        capture=capture,
+                        step_error=None,
+                        resolution=resolution,
                     )
                 except Exception as exc:
                     classified, session_level = await classify_item_failure(

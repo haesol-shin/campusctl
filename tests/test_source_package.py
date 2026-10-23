@@ -11,16 +11,18 @@ from typing import Any
 
 import pytest
 
+from campusctl.attachment_policy import FetchedAttachment, OfficialAttachmentTarget
 from campusctl.envelope import CampusError
-from campusctl.providers.cnu.attachment_transfer import FetchedAttachment, OfficialAttachmentTarget
-from campusctl.source_package import (
-    DetailSnapshot,
-    ResourceReference,
-    _relative_name,
-    build_source_package,
-    resource_id,
-    source_ref,
-)
+from campusctl.providers.cnu.attachment_transfer import PACKAGE_PROVENANCE, fetch_official_attachment
+from campusctl.source_package import _relative_name, resource_id, source_ref
+from campusctl.source_package import build_source_package as _build_source_package
+from campusctl.source_resources import DetailSnapshot, ResourceReference, SourceResolution
+
+
+def build_source_package(*args: Any, **kwargs: Any):
+    kwargs.setdefault("resolution", SourceResolution(fetch_official_attachment, PACKAGE_PROVENANCE))
+    return _build_source_package(*args, **kwargs)
+
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "lms_sources" / "package_schema.json"
 
@@ -360,9 +362,12 @@ def test_selected_attachment_and_image_original_bytes(tmp_path: Path, monkeypatc
         temp_file.write_bytes(pdf_bytes)
         return FetchedAttachment(temp_file, pdf_sha256, "application/pdf", len(pdf_bytes))
 
-    import campusctl.source_package as sp_module
+    calls = {"n": 0}
 
-    monkeypatch.setattr(sp_module, "fetch_official_attachment", mock_fetch_attachment)
+    async def counted_fetch(*args: Any, **kwargs: Any) -> FetchedAttachment:
+        calls["n"] += 1
+        assert Path(args[3]).is_dir()
+        return await mock_fetch_attachment(*args, **kwargs)
 
     correct_target = OfficialAttachmentTarget(
         file_id="file-1",
@@ -404,9 +409,12 @@ def test_selected_attachment_and_image_original_bytes(tmp_path: Path, monkeypatc
             course_id="course-1",
             course_label="Course 1",
             root=root,
+            resolution=SourceResolution(counted_fetch, PACKAGE_PROVENANCE),
         )
     )
     assert result_ok["completeness"] == "complete"
+    assert result_ok["provenance"]["provider"] == PACKAGE_PROVENANCE
+    assert calls["n"] == 1
     assert len(result_ok["resources"]) == 2
     pkg_dir = Path(result_ok["path"])
     content_md = (pkg_dir / "content.md").read_text(encoding="utf-8")
@@ -453,12 +461,8 @@ def test_failed_transfer_never_publishes(tmp_path: Path, monkeypatch: pytest.Mon
     page = FakePage()
     root = tmp_path / "data"
 
-    import campusctl.source_package as sp_module
-
     async def mock_failing_fetch(*_args: Any, **kwargs: Any) -> FetchedAttachment:
         raise CampusError("download-failed", "Simulated network failure.")
-
-    monkeypatch.setattr(sp_module, "fetch_official_attachment", mock_failing_fetch)
 
     target = OfficialAttachmentTarget(
         file_id="file-1",
@@ -493,6 +497,7 @@ def test_failed_transfer_never_publishes(tmp_path: Path, monkeypatch: pytest.Mon
                 course_label="Course 1",
                 root=root,
                 out=destination,
+                resolution=SourceResolution(mock_failing_fetch, PACKAGE_PROVENANCE),
             )
         )
     assert not destination.exists()

@@ -17,6 +17,7 @@ from campusctl.commands.fetch_queue import FetchDomain, FetchItem, dispatch_fetc
 from campusctl.domain_catalog import domain_catalog_path, read_domain_catalog
 from campusctl.envelope import CampusError, UsageError
 from campusctl.paths import data_dir
+from campusctl.source_resources import SourceResolution
 from campusctl.text_layout import _wrap_indented
 
 _PUBLIC_ROW_KEYS = frozenset(
@@ -106,7 +107,12 @@ def dispatch(args: argparse.Namespace, bindings: CommandBindings, context: Comma
     if command == "list":
         return list_with_refresh("notices", args, bindings, context, _list)
     if command == "fetch":
-        return dispatch_fetch(args, _DOMAIN, fetch_one=_fetch_notice, fetch_many=_fetch_notice_queue)
+        return dispatch_fetch(
+            args,
+            _DOMAIN,
+            fetch_one=partial(_fetch_notice, resolution=bindings.source_resolution),
+            fetch_many=partial(_fetch_notice_queue, resolution=bindings.source_resolution),
+        )
     raise UsageError("A notices command is required.")
 
 
@@ -136,8 +142,11 @@ async def _fetch_notice(
     *,
     out: Path | None = None,
     headless: bool = False,
+    resolution: SourceResolution,
 ) -> dict[str, Any]:
-    return await fetch_single(config, root, row, out=out, headless=headless, domain=_DOMAIN, capture=_capture)
+    return await fetch_single(
+        config, root, row, out=out, headless=headless, domain=_DOMAIN, capture=_capture, resolution=resolution
+    )
 
 
 async def _fetch_notice_queue(
@@ -146,8 +155,11 @@ async def _fetch_notice_queue(
     rows: list[dict[str, Any]],
     *,
     headless: bool,
+    resolution: SourceResolution,
 ) -> tuple[list[FetchItem], list[CampusError] | None]:
-    return await run_fetch_queue(config, root, rows, headless=headless, domain=_DOMAIN, capture=_capture)
+    return await run_fetch_queue(
+        config, root, rows, headless=headless, domain=_DOMAIN, capture=_capture, resolution=resolution
+    )
 
 
 async def sync(

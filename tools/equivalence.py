@@ -190,6 +190,8 @@ def run_child(tree: Path, root: Path, scenario: Path) -> int:
     with module.prepare(root, case, actions) as fake_state:
         if case.get("invoke") == "play_lectures":
             code = module.invoke_play(case)
+        elif case.get("invoke") == "source_package":
+            code = module.invoke_source_package(case, actions)
         else:
             from campusctl import cli
 

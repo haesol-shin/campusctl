@@ -26,6 +26,7 @@ from campusctl.commands.cache_warnings import cache_warning_lines
 from campusctl.commands.course_inputs import list_refresh_scope, list_with_refresh
 from campusctl.envelope import CampusError, UsageError
 from campusctl.paths import data_dir
+from campusctl.source_resources import SourceResolution
 from campusctl.text_layout import _wrap_indented
 
 CAPABILITY: dict[str, Any] = {"commands": ["list", "download"]}
@@ -61,7 +62,7 @@ def dispatch(args: argparse.Namespace, bindings: CommandBindings, context: Comma
     if args.materials_command == "list":
         return list_with_refresh("materials", args, bindings, context, _list)
     if args.materials_command == "download":
-        return _download_selected(args, context)
+        return _download_selected(args, context, bindings.source_resolution)
     raise UsageError("A materials command is required.")
 
 
@@ -152,7 +153,9 @@ def _requested_material(
     return args.entity_id, None
 
 
-def _download_selected(args: argparse.Namespace, context: CommandContext) -> CommandResult:
+def _download_selected(
+    args: argparse.Namespace, context: CommandContext, resolution: SourceResolution
+) -> CommandResult:
     root = data_dir()
     snapshot = catalog_snapshot("materials", root)
     if snapshot is None:
@@ -200,7 +203,7 @@ def _download_selected(args: argparse.Namespace, context: CommandContext) -> Com
 
     check = pre_browser_check(lambda: assert_material_snapshot_current(root, selection)) if selection else nullcontext()
     with check:
-        material = asyncio.run(_download(config, root, row, args.out, headless=mode))
+        material = asyncio.run(_download(config, root, row, args.out, resolution, headless=mode))
     return command_result({"material": material})
 
 
@@ -212,7 +215,7 @@ async def sync(
     return await sync_materials(config, root, course_id, headless=headless)
 
 
-def _result(row: dict[str, Any], path: str, size: int, digest: str, outcome: str) -> dict[str, Any]:
+def _result(row: dict[str, Any], path: str, size: int, digest: str, outcome: str, provenance: str) -> dict[str, Any]:
     return {
         "entity_id": row["entity_id"],
         "path": path,
@@ -222,7 +225,7 @@ def _result(row: dict[str, Any], path: str, size: int, digest: str, outcome: str
         "sha256": digest,
         "outcome": outcome,
         "provenance": {
-            "provider": "cnu",
+            "provider": provenance,
             "course_id": row["course"]["id"],
             "board_item_id": row["archive_entry"]["board_item_id"],
             "file_id": row["file_id"],
@@ -231,8 +234,15 @@ def _result(row: dict[str, Any], path: str, size: int, digest: str, outcome: str
 
 
 async def _download(
-    config: dict[str, Any], root: Path, row: dict[str, Any], out: Path | None, *, headless: bool = False
+    config: dict[str, Any],
+    root: Path,
+    row: dict[str, Any],
+    out: Path | None,
+    resolution: SourceResolution,
+    *,
+    headless: bool = False,
 ) -> dict[str, Any]:
+    from campusctl.attachment_policy import MAX_ATTACHMENT_BYTES, OfficialAttachmentTarget, RequestPolicy
     from campusctl.browser import open_session
     from campusctl.material_files import (
         adopt_attachment,
@@ -242,7 +252,6 @@ async def _download(
         verified_receipt,
         write_receipt,
     )
-    from campusctl.providers.cnu.attachment_transfer import OfficialAttachmentTarget, fetch_official_attachment
     from campusctl.providers.cnu.course_context import open_course_section, prepare_course_section
     from campusctl.providers.cnu.login import COURSE_LINK_SELECTOR, MY_LECTURE_URL, ensure_logged_in
     from campusctl.providers.cnu.materials import (
@@ -255,7 +264,6 @@ async def _download(
         _step,
         enumerate_archive,
     )
-    from campusctl.providers.cnu.request_policy import MAX_ATTACHMENT_BYTES, RequestPolicy
 
     entity_id = row["entity_id"]
     course_id = row["course"]["id"]
@@ -268,7 +276,14 @@ async def _download(
             prepare_output_dir(root, entity_id, course_root)
         receipt = verified_receipt(root, entity_id, output_dir, course_root)
         if receipt is not None:
-            return _result(row, receipt["path"], receipt["size_bytes"], receipt["sha256"], "skipped-existing")
+            return _result(
+                row,
+                receipt["path"],
+                receipt["size_bytes"],
+                receipt["sha256"],
+                "skipped-existing",
+                resolution.provenance,
+            )
         page = session.page
         await ensure_logged_in(page, config, target_url=MY_LECTURE_URL, expected_selector=COURSE_LINK_SELECTOR)
         await settle_sso_popups(session, domain="materials")
@@ -328,7 +343,7 @@ async def _download(
             if await _step(page.locator(locator).count(), "checking selected inline control") != 1:
                 raise CampusError("entity-unknown", "Selected archive control no longer exists.")
         fetched = await _step(
-            fetch_official_attachment(
+            resolution.transfer(
                 page,
                 OfficialAttachmentTarget(file_id, "archive", post_id, locator, None),
                 RequestPolicy(row["filename"]),
@@ -361,7 +376,9 @@ async def _download(
             )
         finally:
             fetched.temp_path.unlink(missing_ok=True)
-        return _result(row, str(published.path), fetched.size_bytes, fetched.sha256, published.outcome)
+        return _result(
+            row, str(published.path), fetched.size_bytes, fetched.sha256, published.outcome, resolution.provenance
+        )
 
 
 def _stale_course(course: dict[str, Any]) -> str:

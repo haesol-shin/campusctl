@@ -13,6 +13,7 @@ from typing import Any, NamedTuple, NoReturn, TextIO
 
 from campusctl.envelope import CampusError, Status, error_item
 from campusctl.profiling import SpanRecorder
+from campusctl.source_resources import SourceResolution
 from campusctl.sync import SyncCollector
 
 Renderer = Callable[[str, dict[str, Any], int], list[str]]
@@ -46,6 +47,7 @@ class CommandBindings:
     play_lectures: Callable[..., Awaitable[Any]]
     sync_all: SyncCollector
     validate_requested_lectures: Callable[..., Any]
+    source_resolution: SourceResolution
 
 
 @dataclass(frozen=True, slots=True)

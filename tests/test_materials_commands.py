@@ -12,6 +12,7 @@ import pytest
 from config_patch import patch_load_config
 
 from campusctl import cli
+from campusctl.attachment_policy import FetchedAttachment
 from campusctl.commands import materials
 from campusctl.domain_catalog import write_domain_catalog
 from campusctl.providers.cnu import attachment_transfer
@@ -158,9 +159,7 @@ def _fake_network(
         assert max_bytes == 200_000_000 and policy.filename == "example.pdf"
         temp = directory / ".attachment-synthetic"
         temp.write_bytes(BYTES)
-        return attachment_transfer.FetchedAttachment(
-            temp, hashlib.sha256(BYTES).hexdigest(), "application/x-pdf", len(BYTES)
-        )
+        return FetchedAttachment(temp, hashlib.sha256(BYTES).hexdigest(), "application/x-pdf", len(BYTES))
 
     monkeypatch.setattr("campusctl.material_files.default_download_dir", lambda: root / "Downloads" / "campusctl")
     monkeypatch.setattr("campusctl.browser.open_session", session)

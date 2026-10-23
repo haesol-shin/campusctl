@@ -10,12 +10,18 @@ from urllib.parse import urljoin
 
 import pytest
 
+from campusctl.attachment_policy import OfficialAttachmentTarget
 from campusctl.envelope import CampusError
 from campusctl.identity import notice_entity_id
-from campusctl.providers.cnu.attachment_transfer import OfficialAttachmentTarget
+from campusctl.providers.cnu.attachment_transfer import PACKAGE_PROVENANCE, fetch_official_attachment
 from campusctl.providers.cnu.notice_detail import capture_notice_detail
 from campusctl.providers.cnu.readiness import _TOPBAR_COURSE_JS
-from campusctl.source_package import ResourceReference
+from campusctl.source_resources import ResourceReference, SourceResolution
+
+
+def _resolution(transfer: Any = fetch_official_attachment) -> SourceResolution:
+    return SourceResolution(transfer, PACKAGE_PROVENANCE)
+
 
 FIXTURE = Path(__file__).parent / "fixtures/lms_sources/notice_detail_synthetic.html"
 ORIGIN = "https://dcs-learning.cnu.ac.kr"
@@ -325,6 +331,7 @@ def test_html_content_omits_scripts_external_images_and_media(tmp_path: Path) ->
             course_id="course-example",
             course_label="Example Course",
             root=tmp_path,
+            resolution=_resolution(),
         )
     )
     assert package["completeness"] == "partial"
@@ -359,6 +366,7 @@ def test_skipped_html_does_not_hide_following_notice_content(tmp_path: Path, hid
             course_id=row["course"]["id"],
             course_label=row["course"]["label"],
             root=tmp_path,
+            resolution=_resolution(),
         )
     )
     content = Path(package["content_path"]).read_text(encoding="utf-8")
@@ -481,6 +489,7 @@ def test_ordinary_link_named_download_stays_link_label_and_complete(tmp_path: Pa
             course_id=target["course"]["id"],
             course_label=target["course"]["label"],
             root=tmp_path / "data",
+            resolution=_resolution(),
         )
     )
     assert pkg["completeness"] == "complete"
@@ -517,8 +526,6 @@ def test_notice_attachment_with_unverified_url_remains_omitted(tmp_path: Path, m
     async def deny_transfer(*_args: Any, **_kwargs: Any) -> None:
         pytest.fail("Unverified notice attachment must not be transferred")
 
-    monkeypatch.setattr("campusctl.source_package.fetch_official_attachment", deny_transfer)
-
     pkg = asyncio.run(
         build_source_package(
             page,
@@ -528,6 +535,7 @@ def test_notice_attachment_with_unverified_url_remains_omitted(tmp_path: Path, m
             course_id=target["course"]["id"],
             course_label=target["course"]["label"],
             root=tmp_path / "data",
+            resolution=SourceResolution(deny_transfer, PACKAGE_PROVENANCE),
         )
     )
     assert pkg["completeness"] == "partial"

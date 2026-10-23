@@ -14,7 +14,7 @@ import pytest
 from campusctl.envelope import CampusError
 from campusctl.providers.cnu import assignment_detail as adapter
 from campusctl.providers.cnu.readiness import _TOPBAR_COURSE_JS
-from campusctl.source_package import ResourceReference
+from campusctl.source_resources import ResourceReference
 
 FIXTURE = Path(__file__).parent / "fixtures" / "lms_sources" / "assignment_detail_synthetic.html"
 RESPONSE_FIXTURE = Path(__file__).parent / "fixtures" / "lms_sources" / "assignment_detail_responses_synthetic.json"
