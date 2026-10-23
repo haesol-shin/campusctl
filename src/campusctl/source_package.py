@@ -8,6 +8,7 @@ import os
 import shutil
 import tempfile
 import unicodedata
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -15,6 +16,15 @@ from urllib.parse import urlsplit
 from campusctl.envelope import CampusError
 from campusctl.material_files import safe_component
 from campusctl.source_resources import DetailSnapshot, ResourceReference, SourceResolution, resolve_source_resource
+
+
+@dataclass(frozen=True, slots=True)
+class _ResourceState:
+    reference: ResourceReference
+    identity: dict[str, str | None]
+    contents: bytes | None
+    path: str | None
+    reason: str | None
 
 
 def canonical_json(value: object) -> bytes:
@@ -166,7 +176,7 @@ async def build_source_package(
     parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     staging = Path(tempfile.mkdtemp(prefix=".source-", dir=parent))
     try:
-        references: dict[str, tuple[ResourceReference, dict, bytes | None, str | None, str | None]] = {}
+        references: dict[str, _ResourceState] = {}
         used: dict[str, set[str]] = {"images": set(), "attachments": set()}
         files: dict[str, bytes] = {}
         records: list[dict] = []
@@ -183,10 +193,9 @@ async def build_source_package(
             identity = source_ref(identity_url, part.provider_file_id)
             prior = references.get(rid)
             if prior is not None:
-                if prior[0] != part or prior[1] != identity:
+                if prior.reference != part or prior.identity != identity:
                     raise _failed()
-                _, _, _, previous_path, reason = prior
-                fragments.append(_link(part, previous_path, reason))
+                fragments.append(_link(part, prior.path, prior.reason))
                 continue
             name = _name(part)
             # Staging already exists; resolve at this traversal point, not as an eager batch.
@@ -228,7 +237,7 @@ async def build_source_package(
                 if part.provider_file_id is not None:
                     record["provider_file_id"] = part.provider_file_id
                 records.append(record)
-            references[rid] = (part, identity, contents, path, reason)
+            references[rid] = _ResourceState(part, identity, contents, path, reason)
             fragments.append(_link(part, path, reason))
         content = "".join(fragments).encode("utf-8")
         manifest = {
