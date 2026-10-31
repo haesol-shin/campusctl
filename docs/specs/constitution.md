@@ -11,7 +11,7 @@ These rules govern every campusctl change and take precedence over domain specs.
 5. **Verified identity before publication.** Data is published only under the course the committed page and its responses prove. A wrong or unprovable course fails that course and keeps its previous records; other courses and domains continue.
 6. **One session per account.** Network commands share one non-blocking browser session lock. Catalogs and packages are private, atomic and domain-separated. `busy`/75 never counts as an empty successful sync.
 7. **Learn from the live LMS.** Changes that touch LMS behavior start from a recorded [live run](live-run.md) and the owner's local LMS behavior notes, which every run updates.
-8. **Small reviewed PRs.** Stage only intended paths with `git add <path>`. Commit and PR titles use `type(scope): summary` in English, then exactly one blank line and at most four adjacent imperative `- ` bullets without trailing periods; no trailers. Verify with `git log -1 --format=%B | cat -A`. Release integration serializes CHANGELOG and version changes.
+8. **Small reviewed PRs.** Stage only intended paths with `git add <path>`. Commit and PR titles use `type(scope): summary` in English, then exactly one blank line and adjacent imperative `- ` bullets without trailing periods that give the reason for the change (no fixed count, lines of 72 characters or fewer); no trailers. Verify with `git log -1 --format=%B | cat -A`. Release integration serializes CHANGELOG and version changes.
 
 ## Limits
 
