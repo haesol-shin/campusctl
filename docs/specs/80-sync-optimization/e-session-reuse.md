@@ -1,4 +1,4 @@
-# E — Reuse authenticated sessions and explicitly selected fetches
+# E: Reuse authenticated sessions and explicitly selected fetches
 
 ## Goal and expected saving
 
@@ -19,7 +19,7 @@ All file references are repository-relative.
 
 ## Design
 
-### E1 — Harden and prove existing cross-run reuse; no CLI change
+### E1: Harden and prove existing cross-run reuse; no CLI change
 
 Owner of implementation: `src/campusctl/providers/cnu/login.py`, `tests/test_cnu_login.py`, and a focused browser-session fixture in `tests/test_browser.py` if needed. Do not edit `sync_all._settle`, `_return_to_roster`, course switching, browser launch flags or profiling in this work unit. Slice A owns instrumentation; its `auth` measurement must retain the cost of verifying reuse rather than relabeling that cost as saved work.
 
@@ -35,7 +35,7 @@ This is bounded safety hardening and evidence of already-implemented reuse, not 
 
 **Decision (owner, 2026-09-28):** the local profile does not keep the LMS login across invocations. Owner-held sanitized evidence (2026-09-28) shows six sequential invocations sharing one profile, each submitting credentials once in about 4.0–4.5 s, and session-type cookies present after login. campusctl accepts this cost: it closes the browser after each command like a person closing a browser, and does not export cookies, restore sessions or keep a browser running. Callers that need several details use one multi-ID fetch, which logs in once.
 
-### E2 — Implement approved multi-ID fetch
+### E2: Implement approved multi-ID fetch
 
 **Approved by the owner (2026-09-27).** Extend the existing single-ID CLI contract to homogeneous explicit multi-ID fetch. An internal refactor with no reachable caller is not completion:
 
@@ -58,13 +58,13 @@ Required contract:
 
 Sync-plus-fetch is **rejected by the owner**. Sync must remain metadata-only: opening every synced notice would add a view and flip read state for each one (`docs/specs/constitution.md:18,25`). Do not add implicit fetches or a sync callback hook. Cross-command CDP context reuse already shares authentication without keeping a sync page alive.
 
-### E3 — Local headless fetch
+### E3: Local headless fetch
 
 `HEADLESS_SUPPORT` enables `"assignments.fetch"` and `"notices.fetch"` for local Chromium. Both are supported following the successful G2 full-path run. `resolve_headless` gives an explicit `--headless` or `--headed` override precedence over `browser.headless`; CDP plus headless returns `headless-unavailable`/2 before locking or browser startup. Playback remains headed.
 
 Fetch wrappers pass the preflight mode into their one browser session for the whole ordered queue. Headless does not bypass detail identity verification or change package semantics.
 
-### Loopback telemetry — resolved outside campusctl
+### Loopback telemetry: resolved outside campusctl
 
 The owner resolves the loopback-port collision by retiring the local service that owns that port in the operator environment (decision 2026-09-27). campusctl does nothing: page requests remain unfiltered under `docs/specs/constitution.md:9,27`.
 

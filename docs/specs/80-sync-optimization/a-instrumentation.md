@@ -1,4 +1,4 @@
-# A — Attribute sync waits and document time
+# A: Attribute sync waits and document time
 
 ## Goal and expected saving
 
@@ -17,7 +17,7 @@ Understood as: specify behavior-preserving instrumentation that explains elapsed
 
 Implement A before B/C rebase their behavior changes. A owns recorder/browser instrumentation, the profile report reader and their tests; touches provider code **only to measure existing operations**. B owns readiness helper and replacement of settles; C owns archive restoration decisions; D owns any new course switch; E owns reuse behavior. Shared contract agreed with B: `page-readiness`, `page_kind`, `wait_kind`, and ephemeral `course` (never a course ID). C retains the `archive-restore` envelope around proof plus any reload. Preserve D's `course-selection` envelope. No changes to fetch CLI profiling scope: `src/campusctl/cli.py:820-821` restricts profiling to sync/refresh.
 
-### Work unit A1 — recorder and schema
+### Work unit A1: recorder and schema
 
 Extend `SpanRecorder.span` and `browser.profile_span` with keyword-only `page_kind`, `wait_kind`, `document`. Use a private unset sentinel in the browser wrapper: omitted labels inherit, explicit null clears, and labels ultimately absent serialize as null. The recorder receives resolved labels with null defaults. Add contextual `browser.profile_labels(...)` using a reset-in-finally ContextVar so collectors inherit domain/course ordinals without accepting course objects. Maintain an explicit session-local label snapshot for event callbacks, which must not depend on callback task context. Capture labels when a span starts, not when it finishes. Existing window remains unchanged.
 
@@ -43,7 +43,7 @@ Retain the 4096 span budget; add a separate 4096 document budget. Either overflo
 
 Migrate `tools/profile_sync.py::_safe_profile` to v2 only, validate exact key sets, enums, numeric types (reject bool-as-int), ordering, unique document ordinals and references, and reconstruct safe output. Unknown keys invalidate the profile instead of being copied. Update synthetic profile fixtures and tests together; do not add a v1 compatibility shim. Keep report schema independent from embedded profile schema.
 
-### Work unit A2 — every wait/settle
+### Work unit A2: every wait/settle
 
 Wrap each logical wait exactly once, including implicit action auto-wait, response completion, event/future waits, retry/poll loops, final settle, and cleanup waits on the sync path. Preserve existing timeout values, ordering, exception handling and return values. For topbar polling instrument the whole bounded poll, not each 100 ms sleep. Existing enclosing operation spans remain; introduce children only where they explain distinct waits. No global monkeypatch of Playwright or asyncio, and no automatic second span on every `bounded` call (which also wraps extraction).
 
@@ -51,7 +51,7 @@ Required inventory: the current-behavior callsites above plus `browser.py:121-13
 
 Set labels around each course/domain traversal in `sync_all`; propagate them into shared collectors. `_settle` gets `idle`/`load`; `_return_to_roster` gets document navigation plus its two individual settles. Menu waits and topbar waits remain separate. When B removes a wait, its span disappears rather than timing a no-op. B retains readiness timing and identity proof. C retains nested response/load spans only on paths actually taken. Never put a broad new wrapper around all traversal merely to make unattributed time zero.
 
-### Work unit A3 — passive document timeline
+### Work unit A3: passive document timeline
 
 Replace the count-only listener in `browser.open_session` with enabled-only request/response/navigation/failure listeners on the selected sync page. Count only **main-frame document requests**, not frames, popup documents, assets, telemetry or same-document URL changes. Preserve `counts.documents` as committed document count with this clarified definition; redirects are separate request-start rows but only the final committed request increments the count. Track request objects only while needed to correlate response/redirect/commit, then discard them; never serialize them.
 

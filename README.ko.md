@@ -187,4 +187,4 @@ campusctl은 공식 플레이어로 강의를 재생한 뒤 LMS 강의 상태를
 
 ## 라이선스
 
-MIT — [LICENSE](LICENSE)를 참고합니다.
+MIT. [LICENSE](LICENSE)를 참고합니다.

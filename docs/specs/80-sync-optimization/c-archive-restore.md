@@ -1,4 +1,4 @@
-# C — Retain the proven archive list after attachment inspection
+# C: Retain the proven archive list after attachment inspection
 
 ## Goal and expected saving
 

@@ -98,11 +98,11 @@ $ campusctl assignments list
 2 assignments (updated 2026-09-25 10:00)
 
 Synthetic Course A
-  Draft report — Submitted — Due: 2026-10-02 23:59
+  Draft report - Submitted - Due: 2026-10-02 23:59
     cnu_assignment:course-a:TB_L_REPORT101
 
 Synthetic Course B
-  Open task — Not submitted — Due: —
+  Open task - Not submitted - Due: -
     cnu_assignment:course-b:TB_L_REPORT202
 ```
 

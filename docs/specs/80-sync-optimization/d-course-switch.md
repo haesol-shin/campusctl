@@ -1,4 +1,4 @@
-# D — Course-to-course navigation without a roster return
+# D: Course-to-course navigation without a roster return
 
 ## Goal and expected saving
 
@@ -30,13 +30,13 @@ Raw observation and selectors containing real values stay owner-held. Public fix
 
 ## Conditional design and work units
 
-### D1 — Evidence decision (must precede D2)
+### D1: Evidence decision (must precede D2)
 
 - **Observed normal switch with the existing entry protocol:** implement D2 only for source page kinds verified to expose that control. Freeze the observed opener/option selectors in the implementation and sanitized fixture; the selector currently used for identity is only a candidate until then.
 - **No usable control:** keep `_return_to_roster` followed by `_select_course`; implement no speculative switch helper. Slice B owns replacing their settle waits with bounded readiness. Preserve normal navigation and Referer behavior, not a cached roster or synthesized selection request.
 - **Different landing page, request order/count or in-place switch:** retain roster navigation for now. Amend this contract from the recording before implementation; do not loosen the existing course-entry proof to accommodate a guess. This branch is an explicit unverified prerequisite, not a silently shipped partial fast path.
 
-### D2 — Proven switch implementation
+### D2: Proven switch implementation
 
 Own `src/campusctl/providers/cnu/sync_all.py` new `_switch_course` and the course-loop transition block, plus switch-specific behavior tests in `tests/test_sync_all.py`. Integrate after B's overlapping traversal readiness edits; do not independently rewrite `_settle` or `_return_to_roster`. B owns `src/campusctl/providers/cnu/readiness.py`; A owns profiling primitives. Release documentation is integrated by the coordinating change, not a competing worktree edit.
 

@@ -1,4 +1,4 @@
-# B — Page readiness, not network quiet
+# B: Page readiness, not network quiet
 
 ## Goal and expected saving
 
