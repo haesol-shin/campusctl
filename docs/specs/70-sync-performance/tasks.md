@@ -1,4 +1,4 @@
-# Sync performance — tasks
+# Sync performance: tasks
 
 [Spec](spec.md) · [Design](design.md)
 

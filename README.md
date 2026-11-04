@@ -187,4 +187,4 @@ Yes, choose full IDs from `assignments list` or `notices list` and fetch one or 
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).

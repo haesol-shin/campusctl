@@ -1,4 +1,4 @@
-# E — Reuse authenticated sessions and explicitly selected fetches
+# E: Reuse authenticated sessions and explicitly selected fetches
 
 ## Goal and expected saving
 
@@ -19,7 +19,7 @@ All file references are repository-relative.
 
 ## Design
 
-### E1 — Harden and prove existing cross-run reuse; no CLI change
+### E1: Harden and prove existing cross-run reuse; no CLI change
 
 Owner of implementation: `src/campusctl/providers/cnu/login.py`, `tests/test_cnu_login.py`, and a focused browser-session fixture in `tests/test_browser.py` if needed. Do not edit `sync_all._settle`, `_return_to_roster`, course switching, browser launch flags or profiling in this work unit. Slice A owns instrumentation; its `auth` measurement must retain the cost of verifying reuse rather than relabeling that cost as saved work.
 
@@ -35,7 +35,7 @@ This is bounded safety hardening and evidence of already-implemented reuse, not 
 
 **Decision (owner, 2026-09-28):** the local profile does not keep the LMS login across invocations. Owner-held sanitized evidence (2026-09-28) shows six sequential invocations sharing one profile, each submitting credentials once in about 4.0–4.5 s, and session-type cookies present after login. campusctl accepts this cost: it closes the browser after each command like a person closing a browser, and does not export cookies, restore sessions or keep a browser running. Callers that need several details use one multi-ID fetch, which logs in once.
 
-### E2 — Implement approved multi-ID fetch
+### E2: Implement approved multi-ID fetch
 
 **Approved by the owner (2026-09-27).** Extend the existing single-ID CLI contract to homogeneous explicit multi-ID fetch. An internal refactor with no reachable caller is not completion:
 
@@ -48,9 +48,7 @@ Required contract:
 
 - Deduplicate IDs in first-seen order; validate every ID against its domain catalog before browser startup. Unknown IDs retain `entity-unknown`; missing catalog retains `catalog-missing`. Never interpret numbers, glob patterns or a whole course as selected details.
 - `--out` keeps its existing single-package meaning. Reject it with more than one distinct selected ID using `usage-error`/2 before startup. Multi-item requests use existing default package destinations; do not reinterpret `DIR` as a parent folder.
-- One distinct ID keeps the exact existing `result.source_package` shape, human rendering and exit semantics. More than one returns `result.items`, for example:
-  `{"items":[{"entity_id":"<first-id>","outcome":"completed","source_package":{}},{"entity_id":"<second-id>","outcome":"failed","reason_code":"fetch-failed"},{"entity_id":"<third-id>","outcome":"completed","source_package":{}}]}`.
-  The empty package object above denotes the existing full package object, not an allowable empty result. Allowed item outcomes: `completed`, `partial`, `failed`, `not-started`; only the first two carry `source_package`, and `partial`/`failed` carry `reason_code`. Envelope errors keep the established `{code,message,remediation}` shape (`docs/contracts/cli.md:125-140`).
+- One distinct ID keeps the exact existing `result.source_package` shape, human rendering and exit semantics. More than one returns `result.items`, for example: `{"items":[{"entity_id":"<first-id>","outcome":"completed","source_package":{}},{"entity_id":"<second-id>","outcome":"failed","reason_code":"fetch-failed"},{"entity_id":"<third-id>","outcome":"completed","source_package":{}}]}`. The empty package object above denotes the existing full package object, not an allowable empty result. Allowed item outcomes: `completed`, `partial`, `failed`, `not-started`; only the first two carry `source_package`, and `partial`/`failed` carry `reason_code`. Envelope errors keep the established `{code,message,remediation}` shape (`docs/contracts/cli.md:125-140`).
 - Use one session and its exclusive lock for the complete ordered queue. Resolve headed/headless mode through the existing preflight; local headless fetch is supported. Authenticate and settle SSO once at entry; run the existing detail capture and package builder serially for each item without nested `open_session` calls. Keep course entry inside each detail reader initially; no unverified “same course” shortcut. Build and publish each package before leaving that item's page.
 - A usable package with resource omissions is `partial` with `resource-omitted`, and the queue continues. An **item-level failure** marks only that item `failed` with its existing `reason_code`, publishes no package for that failed item, and continues with the next ID. Identity mismatches, parse/content failures, attachment check failures and per-item detail timeouts are item-level failures. Preserve already published packages.
 - A **session-level failure** stops the queue: mark the active item `failed` with its `reason_code` and remaining items `not-started`. Session-level failures are expired login or required login action, a closed browser/context, `session-busy`, and run-wide LMS unavailability. If session startup fails before any item starts, keep the existing ordinary error envelope without item records. Classify before generic exception normalization: `commands/assignments.py:37-53` otherwise maps untyped errors to `fetch-failed`. A per-item `browser-timeout` alone is not evidence of run-wide unavailability. Use observable login/action state, browser/context closure or a session-scoped failure; do not infer session expiry from an identity mismatch or parse failure. Preserve existing public codes (`login-action-required`, `lms-unavailable`, `session-busy`, or the existing browser error); report detected expiry as `lms-unavailable`, not rejected credentials. Clear each item's listeners and transient capture state before proceeding; the next item must establish its own course/detail identity.
@@ -60,13 +58,13 @@ Required contract:
 
 Sync-plus-fetch is **rejected by the owner**. Sync must remain metadata-only: opening every synced notice would add a view and flip read state for each one (`docs/specs/constitution.md:18,25`). Do not add implicit fetches or a sync callback hook. Cross-command CDP context reuse already shares authentication without keeping a sync page alive.
 
-### E3 — Local headless fetch
+### E3: Local headless fetch
 
 `HEADLESS_SUPPORT` enables `"assignments.fetch"` and `"notices.fetch"` for local Chromium. Both are supported following the successful G2 full-path run. `resolve_headless` gives an explicit `--headless` or `--headed` override precedence over `browser.headless`; CDP plus headless returns `headless-unavailable`/2 before locking or browser startup. Playback remains headed.
 
 Fetch wrappers pass the preflight mode into their one browser session for the whole ordered queue. Headless does not bypass detail identity verification or change package semantics.
 
-### Loopback telemetry — resolved outside campusctl
+### Loopback telemetry: resolved outside campusctl
 
 The owner resolves the loopback-port collision by retiring the local service that owns that port in the operator environment (decision 2026-09-27). campusctl does nothing: page requests remain unfiltered under `docs/specs/constitution.md:9,27`.
 
