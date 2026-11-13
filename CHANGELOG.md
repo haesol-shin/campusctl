@@ -2,6 +2,18 @@
 
 All notable changes to campusctl are documented here. This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Release dates follow the local date convention (KST, Asia/Seoul).
 
+## [0.7.0] - 2026-11-13
+
+### Added
+- Report preview-open attempt counts in playback items and attempt numbers and preview steps in schema-version-3 diagnostics for every failed attempt, including recovered retries.
+
+### Fixed
+- Start cued YouTube lectures with at most one bounded click on the visible official play overlay, preserving 1x playback and existing failure diagnostics.
+- Continue selected lecture playback after item failures or unverified results; stop the queue only for session failures.
+- Reopen previews observed never to have started, up to three attempts per lecture, without replaying observed playback or adding retry delays.
+- Honor playback interruption during modal cleanup even when playback already failed.
+- Stop lecture playback when a progress callback is cancelled or interrupted, while still ignoring ordinary progress-display failures.
+
 ## [0.6.4] - 2026-10-12
 
 ### Fixed
