@@ -170,6 +170,11 @@ async def _release_item_state(page: Any) -> None:
         await asyncio.wait_for(unroute_all(behavior="ignoreErrors"), timeout=PROTOCOL_TIMEOUT_SECONDS)
 
 
+def is_session_error(error: Exception) -> bool:
+    """Recognize explicit session errors before an item wrapper hides their code."""
+    return isinstance(error, CampusError) and (error.code == "login-failed" or error.code in _SESSION_CODES)
+
+
 async def classify_item_failure(
     page: Any,
     error: Exception,
@@ -179,9 +184,9 @@ async def classify_item_failure(
 ) -> tuple[CampusError, bool]:
     """Classify one item failure before generic fetch-failed normalization."""
     closed = _closed(page, error)
-    if isinstance(error, CampusError) and error.code == "login-failed":
-        return fetch_error("authentication", _expired()), True
-    if isinstance(error, CampusError) and error.code in _SESSION_CODES:
+    if is_session_error(error):
+        if error.code == "login-failed":
+            return fetch_error("authentication", _expired()), True
         step = "authentication" if error.code in {"login-action-required", "lms-unavailable"} else "browser session"
         return fetch_error(step, error), True
     if closed:

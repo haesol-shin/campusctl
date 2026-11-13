@@ -9,7 +9,7 @@ from typing import Any
 
 from campusctl.browser import PROTOCOL_TIMEOUT_SECONDS, bounded
 from campusctl.catalog import catalog_path, read_catalog, write_catalog
-from campusctl.commands.fetch_queue import classify_item_failure
+from campusctl.commands.fetch_queue import classify_item_failure, is_session_error
 from campusctl.envelope import CampusError
 from campusctl.wait_clock import current_clock
 
@@ -363,13 +363,7 @@ def _original_failure(error: Exception) -> Exception:
     session_error: CampusError | None = None
     while id(original) not in seen:
         seen.add(id(original))
-        if isinstance(original, CampusError) and original.code in {
-            "login-failed",
-            "login-action-required",
-            "lms-unavailable",
-            "session-busy",
-            "browser-session-failed",
-        }:
+        if is_session_error(original):
             session_error = original
         if not isinstance(original.__cause__, Exception):
             break

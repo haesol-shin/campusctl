@@ -1413,11 +1413,11 @@ def test_cancelled_playback_is_not_replaced_by_player_close_failure(monkeypatch:
 
 @pytest.mark.parametrize("playback_fails", [False, True])
 @pytest.mark.parametrize("interrupt", [asyncio.CancelledError, KeyboardInterrupt])
-def test_cancelled_player_close_propagates_only_without_a_playback_error(
-    monkeypatch: pytest.MonkeyPatch, playback_fails: bool, interrupt: type[BaseException]
+def test_player_close_interrupt_stops_queue_even_after_playback_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, playback_fails: bool, interrupt: type[BaseException]
 ) -> None:
     page = FakePage()
-    page.last_read_row_id = "row-1"
+    _prepare(tmp_path, monkeypatch, page)
 
     async def read_state(_frame: Any) -> dict[str, Any]:
         if playback_fails:
@@ -1430,12 +1430,10 @@ def test_cancelled_player_close_propagates_only_without_a_playback_error(
     monkeypatch.setattr(panopto, "_read_video_state", read_state)
     monkeypatch.setattr(player_preview, "_close_player", cancelled_close)
 
-    expected = player_types._PlaybackFailure if playback_fails else interrupt
-    with pytest.raises(expected) as raised:
-        asyncio.run(player_preview._play_visible_lecture(page, "row-1", 1.0))
+    with pytest.raises(interrupt):
+        asyncio.run(player.play_lectures(page, {}, [_lecture(FIRST_ID), _lecture(SECOND_ID)], speed=1.0))
 
-    if playback_fails:
-        assert raised.value.code == "playback-stalled"
+    assert [call for call in page.calls if call[0] == "open-player"] == [("open-player", "row-1")]
 
 
 def test_panopto_elapsed_includes_the_gap_after_play_click(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1743,7 +1741,9 @@ def test_nonretryable_failure_continues_without_replaying(
     assert response["errors"][0]["code"] == code
 
 
-@pytest.mark.parametrize("session_kind", ["login-action-required", "closed-page", "login-form"])
+@pytest.mark.parametrize(
+    "session_kind", ["login-action-required", "browser-launch-failed", "closed-page", "login-form"]
+)
 def test_session_failure_classifies_original_cause_once_and_stops(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], session_kind: str
 ) -> None:
@@ -1752,10 +1752,12 @@ def test_session_failure_classifies_original_cause_once_and_stops(
     original_classifier = player.classify_item_failure
     classified: list[Exception] = []
     original_error = (
-        player.CampusError("login-action-required", "Synthetic authentication action required.", None)
-        if session_kind == "login-action-required"
+        player.CampusError(session_kind, "Synthetic session failure.", None)
+        if session_kind in {"login-action-required", "browser-launch-failed"}
         else RuntimeError("Target page has been closed" if session_kind == "closed-page" else "Synthetic timeout.")
     )
+    if session_kind == "browser-launch-failed":
+        original_error.__cause__ = RuntimeError("Synthetic launch cause.")
 
     async def is_visible(_selector: str) -> bool:
         return session_kind == "login-form"
@@ -1786,6 +1788,7 @@ def test_session_failure_classifies_original_cause_once_and_stops(
         response["errors"][0]["code"]
         == {
             "login-action-required": "login-action-required",
+            "browser-launch-failed": "browser-launch-failed",
             "closed-page": "browser-session-failed",
             "login-form": "lms-unavailable",
         }[session_kind]

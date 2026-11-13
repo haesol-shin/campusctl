@@ -286,5 +286,5 @@ async def _play_visible_lecture(
                     elapsed = current_clock().monotonic() - started_at if started_at is not None else 0.0
                     raise _PlaybackFailure(elapsed) from error
             except BaseException:
-                if primary_error is None:
+                if primary_error is None or isinstance(primary_error, Exception):
                     raise
