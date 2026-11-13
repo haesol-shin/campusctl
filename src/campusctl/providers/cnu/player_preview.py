@@ -5,7 +5,6 @@ Each media handler owns its own startup and watch loop. Preview opens and closes
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Callable
 from contextlib import suppress
 from typing import Any
@@ -17,6 +16,7 @@ from .media import MEDIA_HANDLERS, MediaHandler
 from .player_types import (
     MediaKind,
     _css_string,
+    _frame_kind,
     _PlaybackFailure,
     _PlayDiagnostic,
     _visible_locator,
@@ -107,11 +107,11 @@ async def _expand_row_through_ui(page: Any, row_id: str) -> None:
             PROTOCOL_TIMEOUT_SECONDS,
             "waiting for the selected CNU week to become visible",
         )
-    except Exception:
+    except Exception as error:
         raise _PlaybackFailure(
             code="lecture-row-unavailable",
             message="The requested lecture's course week did not become visible.",
-        ) from None
+        ) from error
 
     selectors = await bounded(
         page.evaluate(COLLAPSED_TOGGLES_JS, row_id),
@@ -136,11 +136,11 @@ async def _expand_row_through_ui(page: Any, row_id: str) -> None:
             PROTOCOL_TIMEOUT_SECONDS,
             "waiting for the CNU lecture title to become visible",
         )
-    except Exception:
+    except Exception as error:
         raise _PlaybackFailure(
             code="lecture-row-unavailable",
             message="The requested lecture remained hidden after opening its course week.",
-        ) from None
+        ) from error
 
 
 async def _close_player(page: Any) -> None:
@@ -156,6 +156,44 @@ def _reject_item_speed(handler: MediaHandler | None, speed: float) -> None:
     rejected = handler.item_speed_rejected(speed)
     if rejected is not None:
         raise rejected
+
+
+async def _observe_retry_state(page: Any, diagnostic: _PlayDiagnostic) -> str:
+    """Observe the still-open attempt, never treating an old classification as evidence."""
+    if diagnostic.started_seen:
+        await diagnostic.refresh()
+        return "started_or_unknown"
+    try:
+        count = await bounded(
+            page.locator("iframe#previewFrame").count(),
+            PROTOCOL_TIMEOUT_SECONDS,
+            "counting the preview frames",
+        )
+        if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+            return "observe_failed"
+        if count == 0:
+            return "not_started"
+        iframe = await bounded(
+            page.query_selector("iframe#previewFrame"), PROTOCOL_TIMEOUT_SECONDS, "finding the preview frame"
+        )
+        if iframe is None:
+            return "observe_failed"
+        frame = await bounded(iframe.content_frame(), PROTOCOL_TIMEOUT_SECONDS, "opening the preview frame")
+        if frame is None or (callable(getattr(frame, "is_detached", None)) and frame.is_detached()):
+            return "observe_failed"
+        kind = _frame_kind(str(getattr(frame, "url", "") or ""), str(getattr(page, "url", "") or ""))
+        diagnostic.frame = frame
+        diagnostic.frame_kind = kind
+        diagnostic.frame_panopto = kind == "panopto"
+        if kind != "panopto":
+            return "started_or_unknown"
+        if not await diagnostic.refresh():
+            return "observe_failed"
+        if diagnostic.page_state == "splash" and diagnostic.video_count == 0:
+            return "not_started"
+        return "started_or_unknown"
+    except Exception:
+        return "observe_failed"
 
 
 # Ordered preview lifetime: one modal open and close, with the existing cleanup-error precedence.
@@ -183,24 +221,30 @@ async def _play_visible_lecture(
         diagnostic.stage = "preview"
         row_selector = f"[id={_css_string(row_id)}] [data-act='titleDetailContents']"
         title = page.locator(row_selector)
+        diagnostic.attempt += 1
+        diagnostic.preview_step = "scroll"
         await bounded(
             title.scroll_into_view_if_needed(timeout=7000),
             PROTOCOL_TIMEOUT_SECONDS,
             "scrolling to the lecture",
         )
-        await bounded(title.click(timeout=7000), PROTOCOL_TIMEOUT_SECONDS, "opening the lecture preview")
+        diagnostic.preview_step = "click"
         modal_open = True
+        await bounded(title.click(timeout=7000), PROTOCOL_TIMEOUT_SECONDS, "opening the lecture preview")
+        diagnostic.preview_step = "modal"
         await bounded(
             page.wait_for_selector(PREVIEW_MODAL_SELECTOR, timeout=15000),
             16.0,
             "waiting for the lecture preview",
         )
         diagnostic.stage = "frame"
+        diagnostic.preview_step = "frame"
 
         handler = found if found is not None and found.play is not None else MEDIA_HANDLERS[MediaKind.VIDEO]
 
         def on_media_started(measured_at: float | None = None) -> None:
             nonlocal started_at
+            diagnostic.started_seen = True
             # Panopto passes the clock value it just read. YouTube passes nothing, so this
             # still reads the clock, which is where its wrapped elapsed came from.
             started_at = measured_at if measured_at is not None else current_clock().monotonic()
@@ -219,25 +263,28 @@ async def _play_visible_lecture(
     except _PlaybackFailure as error:
         primary_error = error
         raise
-    except Exception:
+    except Exception as error:
         elapsed = current_clock().monotonic() - started_at if started_at is not None else 0.0
         primary_error = _PlaybackFailure(elapsed)
-        raise primary_error from None
+        raise primary_error from error
     except BaseException as error:
         primary_error = error
         raise
     finally:
-        with suppress(BaseException):
-            await diagnostic.refresh()
+        if isinstance(primary_error, Exception):
+            diagnostic.retry_observation = await _observe_retry_state(page, diagnostic)
+        else:
+            with suppress(Exception):
+                await diagnostic.refresh()
         if primary_error is None:
             diagnostic.stage = "close"
         if modal_open:
             try:
                 await _close_player(page)
-            except asyncio.CancelledError:
-                if primary_error is None:
-                    raise
-            except BaseException:
+            except Exception as error:
                 if primary_error is None:
                     elapsed = current_clock().monotonic() - started_at if started_at is not None else 0.0
-                    raise _PlaybackFailure(elapsed) from None
+                    raise _PlaybackFailure(elapsed) from error
+            except BaseException:
+                if primary_error is None:
+                    raise

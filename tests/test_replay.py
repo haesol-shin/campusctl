@@ -103,10 +103,13 @@ def test_replay_does_not_credit_stale_f_without_native_end(monkeypatch: pytest.M
     monkeypatch.setattr(panopto, "PLAYER_STALL_SECONDS", 0.001)
     items, error = asyncio.run(_run(monkeypatch, tmp_path, page, [lecture, next_lecture]))
     assert error is not None
-    assert [item["outcome"] for item in items] == ["failed", "not-started"]
-    assert [item["player_opened"] for item in items] == [True, False]
+    assert [item["outcome"] for item in items] == ["failed", "failed"]
+    assert [item["player_opened"] for item in items] == [True, True]
     assert all(item["replay_requested"] for item in items)
-    assert [call for call in page.calls if call[0] == "open-player"] == [("open-player", "row-1")]
+    assert [call for call in page.calls if call[0] == "open-player"] == [
+        ("open-player", "row-1"),
+        ("open-player", "row-2"),
+    ]
     catalog = json.loads((tmp_path / "catalog" / "lectures.json").read_text(encoding="utf-8"))
     assert catalog["lectures"][0]["completion"] == "complete"
 
@@ -131,6 +134,7 @@ def test_replay_failure_before_modal_reports_not_opened(monkeypatch: pytest.Monk
     assert error is not None
     assert items[0]["outcome"] == "failed" and items[0]["player_opened"] is False
     assert items[0]["replay_requested"] is True
+    assert items[0]["attempts"] == 3
 
 
 @pytest.mark.parametrize("missing", ["frame", "video"])

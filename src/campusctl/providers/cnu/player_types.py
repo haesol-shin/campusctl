@@ -101,10 +101,18 @@ class _PlayDiagnostic:
         "splash_visible",
         "stage",
         "video_count",
+        "attempt",
+        "preview_step",
+        "started_seen",
+        "retry_observation",
     )
 
     def __init__(self) -> None:
         self.stage = "start"
+        self.attempt = 0
+        self.preview_step = "none"
+        self.started_seen = False
+        self.retry_observation = "observe_failed"
         self.frame_panopto: bool | None = None
         self.frame_kind = "none"
         self.video_count = 0
@@ -113,31 +121,51 @@ class _PlayDiagnostic:
         self.page_state = "unknown"
         self.frame: Any | None = None
 
-    async def refresh(self) -> None:
-        """Re-read the open player frame so a failure reports its page state."""
+    def observe_video(self, status: object) -> None:
+        """Remember any start evidence, even before the handler calls on_started."""
+        if isinstance(status, dict):
+            position = status.get("currentTime")
+            if status.get("paused") is False or (
+                isinstance(position, int | float)
+                and not isinstance(position, bool)
+                and math.isfinite(position)
+                and position > 0
+            ):
+                self.started_seen = True
+
+    async def refresh(self) -> bool:
+        """Return whether this classification read succeeded; stale fields are not evidence."""
         frame = self.frame
         if frame is None:
-            return
-        with suppress(Exception):
+            return False
+        try:
             value = await bounded(
                 frame.evaluate(CLASSIFY_PLAYER_PAGE_JS, PLAY_BUTTON_SELECTOR),
                 PROTOCOL_TIMEOUT_SECONDS,
                 "classifying the player page",
             )
-            if isinstance(value, dict):
-                state = value.get("page_state")
-                if isinstance(state, str) and state in PAGE_STATES:
-                    self.page_state = state
-                count = value.get("video_count")
-                if isinstance(count, int) and not isinstance(count, bool) and count >= 0:
-                    self.video_count = count
+        except Exception:
+            return False
+        if not isinstance(value, dict):
+            return False
+        state, count = value.get("page_state"), value.get("video_count")
+        if not isinstance(state, str) or state not in PAGE_STATES:
+            return False
+        if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+            return False
+        self.page_state, self.video_count = state, count
         with suppress(Exception):
             control = await _visible_locator(frame, PLAY_BUTTON_SELECTOR, "checking the player splash control")
             self.splash_visible = control is not None
+        return True
 
     def record(self, index: int, reason_code: str) -> str:
         payload = {
-            "schema_version": 2,
+            "schema_version": 3,
+            "attempt": self.attempt,
+            "preview_step": self.preview_step
+            if self.preview_step in {"scroll", "click", "modal", "frame", "splash"}
+            else "none",
             "index": index,
             "stage": self.stage if self.stage in PLAY_STAGES else "unknown",
             "reason_code": reason_code,

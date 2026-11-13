@@ -122,6 +122,8 @@ class FakeLocator:
             if "play" in self.selector.lower():
                 return 2 if self.page.hide_first_control else 1
             return 0
+        if self.selector == "iframe#previewFrame":
+            return int(self.page.player_open)
         if "btnPreviewClose" in self.selector or "btn_popClose" in self.selector:
             return int(self.page.player_open)
         week_tab = re.search(r'data-weekidx="([^"]+)"', self.selector)
@@ -266,7 +268,7 @@ class FakeFrame:
     def url(self) -> str:
         if self.page.active_row_id in self.page.youtube_rows:
             return "https://www.youtube-nocookie.com/embed/fake-video"
-        return "https://panopto.example/Embed.aspx"
+        return "https://panopto.invalid/Embed.aspx"
 
     def locator(self, selector: str) -> FakeLocator:
         return FakeLocator(self.page, selector, self)
@@ -381,7 +383,7 @@ class FakeContext:
     async def cookies(self) -> list[dict[str, str]]:
         if not self.authenticated:
             return []
-        return [{"name": ".ASPXAUTH", "domain": "panopto.example"}]
+        return [{"name": ".ASPXAUTH", "domain": "panopto.invalid"}]
 
 
 class FakePage:
@@ -714,22 +716,23 @@ def test_course_room_stops_when_the_loading_overlay_never_clears() -> None:
     assert not [call for call in page.calls if call[0] == "lecture-rows-wait"]
 
 
-def test_play_pauses_queue_when_the_lecture_title_stays_hidden(
+def test_play_continues_queue_when_the_lecture_title_stays_hidden(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     page = FakePage(
         week_by_row={"row-1": "4"},
         stuck_title_rows={"row-1"},
+        complete_after_play={"row-2": True},
     )
     _prepare(tmp_path, monkeypatch, page)
 
     exit_code, response = _invoke(capsys, [FIRST_ID, SECOND_ID])
 
     assert exit_code == 1
-    assert [item["outcome"] for item in response["result"]["items"]] == ["failed", "not-started"]
+    assert [item["outcome"] for item in response["result"]["items"]] == ["failed", "completed"]
     assert response["errors"][0]["code"] == "lecture-row-unavailable"
     assert "remained hidden" in response["errors"][0]["message"]
-    assert not [call for call in page.calls if call[0] == "open-player"]
+    assert [call for call in page.calls if call[0] == "open-player"] == [("open-player", "row-2")]
     _assert_no_dom_visibility_mutations(page)
 
 
@@ -867,10 +870,10 @@ def test_already_complete_provider_row_is_reported_and_queue_continues(
     assert records[SECOND_ID]["completion"] == "complete"
 
 
-def test_unverified_playback_pauses_queue_and_reports_remaining_as_not_started(
+def test_unverified_playback_continues_queue_without_replaying(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    page = FakePage(complete_after_play={"row-1": False})
+    page = FakePage(complete_after_play={"row-1": False, "row-2": True, "row-3": True})
     _prepare(tmp_path, monkeypatch, page)
     monkeypatch.setattr(player, "COMPLETION_POLL_SECONDS", 0.01)
     monkeypatch.setattr(player, "COMPLETION_POLL_INTERVAL_SECONDS", 0.001)
@@ -882,10 +885,15 @@ def test_unverified_playback_pauses_queue_and_reports_remaining_as_not_started(
     assert response["errors"][0]["code"] == "playback-unverified"
     assert [item["outcome"] for item in response["result"]["items"]] == [
         "unverified",
-        "not-started",
-        "not-started",
+        "completed",
+        "completed",
     ]
-    assert [call for call in page.calls if call[0] == "open-player"] == [("open-player", "row-1")]
+    assert [call for call in page.calls if call[0] == "open-player"] == [
+        ("open-player", "row-1"),
+        ("open-player", "row-2"),
+        ("open-player", "row-3"),
+    ]
+    assert [item["attempts"] for item in response["result"]["items"]] == [1, 1, 1]
 
 
 def test_youtube_autoplay_to_natural_end_records_full_not_counted_watch_and_continues_queue(
@@ -1242,10 +1250,10 @@ def test_youtube_non_1x_native_rate_fails_without_player_control_changes(
     assert not any(call[0] in {"play", "play-for", "speed", "speed-force"} for call in page.calls)
 
 
-def test_failed_playback_pauses_queue_and_marks_remaining_not_started(
+def test_failed_playback_exhausts_retries_and_continues_queue(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    page = FakePage(fail_click_ids={"row-1"})
+    page = FakePage(fail_click_ids={"row-1"}, complete_after_play={"row-2": True})
     _prepare(tmp_path, monkeypatch, page)
 
     exit_code, response = _invoke(capsys, [FIRST_ID, SECOND_ID])
@@ -1253,10 +1261,11 @@ def test_failed_playback_pauses_queue_and_marks_remaining_not_started(
     assert exit_code == 1
     assert response["status"] == "partial"
     assert response["errors"][0]["code"] == "playback-failed"
-    assert [item["outcome"] for item in response["result"]["items"]] == ["failed", "not-started"]
+    assert [item["outcome"] for item in response["result"]["items"]] == ["failed", "completed"]
+    assert [item["attempts"] for item in response["result"]["items"]] == [3, 1]
     failed = response["result"]["items"][0]
     assert failed["reason_code"] == response["errors"][0]["code"]
-    assert not [call for call in page.calls if call[0] == "open-player"]
+    assert [call for call in page.calls if call[0] == "open-player"] == [("open-player", "row-2")]
 
 
 def test_login_failure_reports_every_item_not_started_without_opening_player(
@@ -1279,7 +1288,7 @@ def test_login_failure_reports_every_item_not_started_without_opening_player(
     assert response["result"]["items"][0]["provider_state"] is None
 
 
-def test_player_close_failure_preserves_failed_item_and_pauses_queue(
+def test_player_close_failure_preserves_failed_items_and_continues_queue(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     page = FakePage(complete_after_play={"row-1": True}, fail_close=True)
@@ -1290,7 +1299,8 @@ def test_player_close_failure_preserves_failed_item_and_pauses_queue(
     assert exit_code == 1
     assert response["status"] == "partial"
     assert response["errors"][0]["code"] == "playback-failed"
-    assert [item["outcome"] for item in response["result"]["items"]] == ["failed", "not-started"]
+    assert [item["outcome"] for item in response["result"]["items"]] == ["failed", "failed"]
+    assert [item["attempts"] for item in response["result"]["items"]] == [1, 1]
     assert isinstance(response["result"]["items"][0]["elapsed_seconds"], int | float)
     assert ("close-attempt", "row-1") in page.calls
     catalog = json.loads((tmp_path / "catalog" / "lectures.json").read_text(encoding="utf-8"))
@@ -1322,7 +1332,7 @@ def test_panopto_splash_control_creates_video_before_waiting_for_it(monkeypatch:
 
 
 @pytest.mark.parametrize(("speed_option_present", "speed_applies"), [(False, True), (True, False)])
-def test_speed_selection_failure_pauses_queue_before_playback(
+def test_speed_selection_failure_continues_queue_without_playback(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -1338,7 +1348,8 @@ def test_speed_selection_failure_pauses_queue_before_playback(
     assert exit_code == 1
     assert response["status"] == "partial"
     assert response["errors"][0]["code"] == "playback-speed-unavailable"
-    assert [item["outcome"] for item in response["result"]["items"]] == ["failed", "not-started"]
+    assert [item["outcome"] for item in response["result"]["items"]] == ["failed", "failed"]
+    assert [item["attempts"] for item in response["result"]["items"]] == [1, 1]
     assert not [call for call in page.calls if call[0] == "play-index"]
 
 
@@ -1401,8 +1412,9 @@ def test_cancelled_playback_is_not_replaced_by_player_close_failure(monkeypatch:
 
 
 @pytest.mark.parametrize("playback_fails", [False, True])
+@pytest.mark.parametrize("interrupt", [asyncio.CancelledError, KeyboardInterrupt])
 def test_cancelled_player_close_propagates_only_without_a_playback_error(
-    monkeypatch: pytest.MonkeyPatch, playback_fails: bool
+    monkeypatch: pytest.MonkeyPatch, playback_fails: bool, interrupt: type[BaseException]
 ) -> None:
     page = FakePage()
     page.last_read_row_id = "row-1"
@@ -1413,12 +1425,12 @@ def test_cancelled_player_close_propagates_only_without_a_playback_error(
         return {"exists": True, "ended": True, "currentTime": 1.0, "duration": 1.0, "playbackRate": 1.0}
 
     async def cancelled_close(_page: Any) -> None:
-        raise asyncio.CancelledError
+        raise interrupt
 
     monkeypatch.setattr(panopto, "_read_video_state", read_state)
     monkeypatch.setattr(player_preview, "_close_player", cancelled_close)
 
-    expected = player_types._PlaybackFailure if playback_fails else asyncio.CancelledError
+    expected = player_types._PlaybackFailure if playback_fails else interrupt
     with pytest.raises(expected) as raised:
         asyncio.run(player_preview._play_visible_lecture(page, "row-1", 1.0))
 
@@ -1596,3 +1608,250 @@ def test_prepare_keeps_the_string_guard(monkeypatch: pytest.MonkeyPatch) -> None
     for media, missing, expected in cases:
         asyncio.run(once(media, missing=missing))
         assert seen == expected
+
+
+def test_title_click_failure_reopens_through_room_and_completes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    page = FakePage(complete_after_play={"row-1": True})
+    _prepare(tmp_path, monkeypatch, page)
+    original_click = FakeLocator.click
+    failed = False
+
+    async def click_once(self: FakeLocator, **kwargs: Any) -> None:
+        nonlocal failed
+        if "titleDetailContents" in self.selector and not failed:
+            failed = True
+            page.calls.append(("failed-title", None))
+            raise RuntimeError("Synthetic title click failure.")
+        await original_click(self, **kwargs)
+
+    monkeypatch.setattr(FakeLocator, "click", click_once)
+    exit_code = cli.main(["lectures", "play", FIRST_ID, "--json"])
+    captured = capsys.readouterr()
+    response = json.loads(captured.out)
+    diagnostics = [
+        json.loads(line.removeprefix(player_types.PLAY_DIAGNOSTIC_PREFIX)) for line in captured.err.splitlines()
+    ]
+
+    assert exit_code == 0
+    assert response["status"] == "ok"
+    assert response["result"]["items"][0]["outcome"] == "completed"
+    assert response["result"]["items"][0]["attempts"] == 2
+    assert len(diagnostics) == 1
+    assert diagnostics[0]["attempt"] == 1
+    assert diagnostics[0]["preview_step"] == "click"
+    assert [call[0] for call in page.calls if call[0] in {"course-room", "failed-title", "open-player"}] == [
+        "course-room",
+        "failed-title",
+        "course-room",
+        "open-player",
+    ]
+
+
+def test_exhausted_failures_preserve_requested_order_and_every_diagnostic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    page = FakePage(fail_click_ids={"row-1", "row-3"}, complete_after_play={"row-2": True})
+    _prepare(tmp_path, monkeypatch, page)
+    exit_code = cli.main(["lectures", "play", THIRD_ID, SECOND_ID, FIRST_ID, "--json"])
+    captured = capsys.readouterr()
+    response = json.loads(captured.out)
+    diagnostics = [
+        json.loads(line.removeprefix(player_types.PLAY_DIAGNOSTIC_PREFIX)) for line in captured.err.splitlines()
+    ]
+
+    assert exit_code == 1
+    items = response["result"]["items"]
+    assert [item["entity_id"] for item in items] == [THIRD_ID, SECOND_ID, FIRST_ID]
+    assert [item["outcome"] for item in items] == ["failed", "completed", "failed"]
+    assert [item["attempts"] for item in items] == [3, 1, 3]
+    assert [record["attempt"] for record in diagnostics] == [1, 2, 3, 1, 2, 3]
+    assert len(response["errors"]) == 2
+
+
+@pytest.mark.parametrize("stage", ["room", "row"])
+def test_prepreview_failure_has_zero_attempts_and_continues(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], stage: str
+) -> None:
+    page = FakePage(complete_after_play={"row-2": True})
+    _prepare(tmp_path, monkeypatch, page)
+    calls = 0
+    original = player._enter_course_room if stage == "room" else player._read_row
+
+    async def fail_first(*args: Any, **kwargs: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise TimeoutError("Synthetic prepreview failure.")
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(player, "_enter_course_room" if stage == "room" else "_read_row", fail_first)
+    exit_code, response = _invoke(capsys, [FIRST_ID, SECOND_ID])
+
+    assert exit_code == 1
+    assert [item["outcome"] for item in response["result"]["items"]] == ["failed", "completed"]
+    assert [item["attempts"] for item in response["result"]["items"]] == [0, 1]
+
+
+@pytest.mark.parametrize(
+    ("code", "started", "observation"),
+    [
+        ("lecture-not-open", False, "not_started"),
+        ("lecture-row-unavailable", False, "not_started"),
+        ("playback-speed-unavailable", False, "not_started"),
+        ("youtube-autoplay-blocked", False, "not_started"),
+        ("playback-stalled", True, "not_started"),
+        ("playback-stalled", False, "not_started"),
+        ("playback-timeout", False, "not_started"),
+        ("playback-unverified", False, "not_started"),
+        ("unverified", False, "not_started"),
+        ("playback-timeout", False, "started_or_unknown"),
+        ("player-frame-unavailable", False, "observe_failed"),
+    ],
+)
+def test_nonretryable_failure_continues_without_replaying(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    code: str,
+    started: bool,
+    observation: str,
+) -> None:
+    page = FakePage(complete_after_play={"row-2": True})
+    _prepare(tmp_path, monkeypatch, page)
+    original = player_preview._play_visible_lecture
+    attempts: list[str] = []
+
+    async def fail_first(page: Any, row_id: str, *args: Any, **kwargs: Any) -> Any:
+        attempts.append(row_id)
+        if row_id == "row-1":
+            diagnostic = kwargs["diagnostic"]
+            diagnostic.attempt += 1
+            diagnostic.started_seen = started
+            diagnostic.retry_observation = observation
+            raise player_types._PlaybackFailure(code=code)
+        return await original(page, row_id, *args, **kwargs)
+
+    monkeypatch.setattr(player_preview, "_play_visible_lecture", fail_first)
+    exit_code, response = _invoke(capsys, [FIRST_ID, SECOND_ID])
+
+    assert exit_code == 1
+    assert attempts == ["row-1", "row-2"]
+    assert [item["outcome"] for item in response["result"]["items"]] == ["failed", "completed"]
+    assert [item["attempts"] for item in response["result"]["items"]] == [1, 1]
+    assert response["errors"][0]["code"] == code
+
+
+@pytest.mark.parametrize("session_kind", ["login-action-required", "closed-page", "login-form"])
+def test_session_failure_classifies_original_cause_once_and_stops(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], session_kind: str
+) -> None:
+    page = FakePage()
+    _prepare(tmp_path, monkeypatch, page)
+    original_classifier = player.classify_item_failure
+    classified: list[Exception] = []
+    original_error = (
+        player.CampusError("login-action-required", "Synthetic authentication action required.", None)
+        if session_kind == "login-action-required"
+        else RuntimeError("Target page has been closed" if session_kind == "closed-page" else "Synthetic timeout.")
+    )
+
+    async def is_visible(_selector: str) -> bool:
+        return session_kind == "login-form"
+
+    async def classify(*args: Any, **kwargs: Any) -> Any:
+        classified.append(args[1])
+        return await original_classifier(*args, **kwargs)
+
+    async def fail_preview(*args: Any, **kwargs: Any) -> Any:
+        diagnostic = kwargs["diagnostic"]
+        diagnostic.attempt += 1
+        diagnostic.retry_observation = "not_started"
+        try:
+            raise original_error
+        except Exception as error:
+            raise player_types._PlaybackFailure() from error
+
+    monkeypatch.setattr(page, "is_visible", is_visible, raising=False)
+    monkeypatch.setattr(player, "classify_item_failure", classify)
+    monkeypatch.setattr(player_preview, "_play_visible_lecture", fail_preview)
+    exit_code, response = _invoke(capsys, [FIRST_ID, SECOND_ID])
+
+    assert exit_code == 1
+    assert classified == [original_error]
+    assert [item["outcome"] for item in response["result"]["items"]] == ["failed", "not-started"]
+    assert [item["attempts"] for item in response["result"]["items"]] == [1, 0]
+    assert (
+        response["errors"][0]["code"]
+        == {
+            "login-action-required": "login-action-required",
+            "closed-page": "browser-session-failed",
+            "login-form": "lms-unavailable",
+        }[session_kind]
+    )
+
+
+@pytest.mark.parametrize("signal", [KeyboardInterrupt, asyncio.CancelledError])
+def test_queue_preserves_base_exception_signals(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, signal: type[BaseException]
+) -> None:
+    page = FakePage()
+    _prepare(tmp_path, monkeypatch, page)
+    calls = 0
+
+    async def interrupt(*args: Any, **kwargs: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        raise signal()
+
+    monkeypatch.setattr(player_preview, "_play_visible_lecture", interrupt)
+    with pytest.raises(signal):
+        asyncio.run(player.play_lectures(page, {}, [_lecture(FIRST_ID), _lecture(SECOND_ID)], speed=1.0))
+    assert calls == 1
+
+
+def test_catalog_failures_are_accumulated_while_later_items_complete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    page = FakePage(complete_after_play={"row-1": True, "row-2": True})
+    _prepare(tmp_path, monkeypatch, page)
+    recorded: list[str] = []
+
+    def fail_catalog(entity_id: str, *args: Any) -> None:
+        recorded.append(entity_id)
+        raise player.CampusError("catalog-write-failed", "Synthetic catalog failure.", None, "error")
+
+    monkeypatch.setattr(player, "_mark_catalog_completion", fail_catalog)
+    exit_code, response = _invoke(capsys, [FIRST_ID, SECOND_ID])
+
+    assert exit_code == 1
+    assert recorded == [FIRST_ID, SECOND_ID]
+    assert [item["outcome"] for item in response["result"]["items"]] == ["completed", "completed"]
+    assert [error["code"] for error in response["errors"]] == ["catalog-write-failed", "catalog-write-failed"]
+
+
+def test_room_failure_on_retry_keeps_open_count_but_reports_attempt_zero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    page = FakePage(fail_click_ids={"row-1"}, complete_after_play={"row-2": True})
+    _prepare(tmp_path, monkeypatch, page)
+    enter_room = player._enter_course_room
+    visits = 0
+
+    async def fail_second_room(page: Any, course_id: str) -> None:
+        nonlocal visits
+        visits += 1
+        if visits == 2:
+            raise player.CampusError("browser-timeout", "Synthetic room timeout.")
+        await enter_room(page, course_id)
+
+    monkeypatch.setattr(player, "_enter_course_room", fail_second_room)
+    exit_code = cli.main(["lectures", "play", FIRST_ID, SECOND_ID, "--json"])
+    captured = capsys.readouterr()
+    response = json.loads(captured.out)
+    assert exit_code == 1
+    assert [item["outcome"] for item in response["result"]["items"]] == ["failed", "completed"]
+    assert [item["attempts"] for item in response["result"]["items"]] == [1, 1]
+    records = [json.loads(line.removeprefix(player_types.PLAY_DIAGNOSTIC_PREFIX)) for line in captured.err.splitlines()]
+    assert [record["attempt"] for record in records] == [1, 0]
