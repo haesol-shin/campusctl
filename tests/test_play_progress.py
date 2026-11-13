@@ -305,14 +305,10 @@ def _queue_for(point: str) -> list[dict[str, Any]]:
 
 def _page_for(point: str, *, fail_close: bool = False) -> FakePage:
     if point == "not-started":
-        return FakePage(complete_after_play={"row-1": False}, fail_close=fail_close)
+        page = FakePage(fail_close=True)
+        page.is_closed = lambda: page.player_open
+        return page
     return FakePage(complete_after_play={"row-1": True, "row-2": True}, fail_close=fail_close)
-
-
-def _arm_emit(monkeypatch: pytest.MonkeyPatch, point: str) -> None:
-    if point == "not-started":
-        monkeypatch.setattr(player, "COMPLETION_POLL_SECONDS", 0.01)
-        monkeypatch.setattr(player, "COMPLETION_POLL_INTERVAL_SECONDS", 0.001)
 
 
 def _completions(tmp_path: Any) -> dict[str, str]:
@@ -361,7 +357,6 @@ def test_progress_callback_cancellation_stops_the_queue(
 ) -> None:
     page = _page_for(point)
     _prepare(tmp_path, monkeypatch, page)
-    _arm_emit(monkeypatch, point)
     calls, progress, late_writes, traced_write = _raising_progress(point, exc_type)
     monkeypatch.setattr(player, "write_catalog", traced_write)
 
@@ -388,7 +383,6 @@ def test_ordinary_progress_callback_failure_keeps_today_result(
 ) -> None:
     page = _page_for(point)
     _prepare(tmp_path, monkeypatch, page)
-    _arm_emit(monkeypatch, point)
     calls, progress, _late_writes, _traced_write = _raising_progress(point, RuntimeError)
 
     result, error = _play(page, _queue_for(point), progress)
@@ -396,7 +390,6 @@ def test_ordinary_progress_callback_failure_keeps_today_result(
 
     control = _page_for(point)
     _prepare(tmp_path, monkeypatch, control)
-    _arm_emit(monkeypatch, point)
     control_result, control_error = _play(control, _queue_for(point))
 
     assert _error_codes(error) == _error_codes(control_error)
@@ -408,7 +401,7 @@ def test_ordinary_progress_callback_failure_keeps_today_result(
     assert len(_close_attempts(page)) == len(_close_attempts(control))
     if point == "not-started":
         assert [event["entity_id"] for event in calls if event.get("outcome") == "not-started"] == [SECOND_ID]
-        assert [item["outcome"] for item in result["items"]] == ["unverified", "not-started", "not-started"]
+        assert [item["outcome"] for item in result["items"]] == ["failed", "not-started", "not-started"]
 
 
 @pytest.mark.parametrize("exc_type", [asyncio.CancelledError, KeyboardInterrupt])

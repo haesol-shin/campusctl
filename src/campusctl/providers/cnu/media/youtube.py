@@ -141,19 +141,23 @@ def _stalled_failure(elapsed_seconds: float) -> _PlaybackFailure:
     )
 
 
-async def _click_youtube_start(frame: Any, timeout: float) -> tuple[bool, str]:
+async def _click_youtube_start(
+    frame: Any, timeout: float, observation: _PlayDiagnostic | None = None
+) -> tuple[bool, str]:
     button = await _visible_locator(frame, ".ytmCuedOverlayPlayButton", "finding the official YouTube start overlay")
     if button is None:
         return False, "official start overlay is not visible"
     # Visibility checks can outlive native autoplay; never toggle a player that has started.
     status = await _read_youtube_state(frame)
+    if observation is not None:
+        observation.observe_video(status)
     if not _youtube_in_start_state(status) or not _youtube_plays_at_one(status):
         return False, "player is no longer in its start state"
     await button.click(timeout=timeout * 1000)
     return True, "official start button clicked once"
 
 
-async def _wait_for_youtube_start(frame: Any) -> float:
+async def _wait_for_youtube_start(frame: Any, observation: _PlayDiagnostic | None = None) -> float:
     clock = current_clock()
     deadline = clock.monotonic() + YOUTUBE_AUTOPLAY_WAIT_SECONDS
     diagnostic = "playback state could not be read"
@@ -166,8 +170,10 @@ async def _wait_for_youtube_start(frame: Any) -> float:
 
     try:
         first = await _read_youtube_state(frame, min(PROTOCOL_TIMEOUT_SECONDS, YOUTUBE_AUTOPLAY_WAIT_SECONDS))
-    except Exception:
-        raise failure() from None
+    except Exception as error:
+        raise failure() from error
+    if observation is not None:
+        observation.observe_video(first)
     if _youtube_off_native_rate(first):
         raise _native_speed_failure()
     initial_time = _video_number(first, "currentTime")
@@ -182,13 +188,13 @@ async def _wait_for_youtube_start(frame: Any) -> float:
         if not clicked and _youtube_in_start_state(status):
             try:
                 clicked, diagnostic = await bounded(
-                    _click_youtube_start(frame, min(PROTOCOL_TIMEOUT_SECONDS, remaining)),
+                    _click_youtube_start(frame, min(PROTOCOL_TIMEOUT_SECONDS, remaining), observation),
                     min(PROTOCOL_TIMEOUT_SECONDS, remaining),
                     "checking or clicking the official YouTube start button",
                 )
-            except Exception:
+            except Exception as error:
                 diagnostic = "official start button check or click failed"
-                raise failure() from None
+                raise failure() from error
         remaining = deadline - clock.monotonic()
         if remaining <= 0:
             raise failure()
@@ -198,8 +204,10 @@ async def _wait_for_youtube_start(frame: Any) -> float:
             raise failure()
         try:
             status = await _read_youtube_state(frame, min(PROTOCOL_TIMEOUT_SECONDS, remaining))
-        except Exception:
-            raise failure() from None
+        except Exception as error:
+            raise failure() from error
+        if observation is not None:
+            observation.observe_video(status)
         if _youtube_off_native_rate(status):
             raise _native_speed_failure()
         current_time = _video_number(status, "currentTime")
@@ -213,8 +221,9 @@ async def _play_youtube_video(
     replay: bool = False,
     on_started: Callable[[], None] | None = None,
     on_position: Callable[[float, float], None] | None = None,
+    diagnostic: _PlayDiagnostic | None = None,
 ) -> tuple[float, str]:
-    current_time = await _wait_for_youtube_start(frame)
+    current_time = await _wait_for_youtube_start(frame, diagnostic)
     clock = current_clock()
     started_at = clock.monotonic()
     if on_started is not None:
@@ -225,6 +234,8 @@ async def _play_youtube_video(
     last_position_event_at: float | None = None
     while True:
         status = await _read_youtube_state(frame)
+        if diagnostic is not None:
+            diagnostic.observe_video(status)
         now = clock.monotonic()
         current_time = _video_number(status, "currentTime")
         duration = _video_number(status, "duration")
@@ -299,4 +310,6 @@ async def play(
     diagnostic.stage = "playback"
     if on_opened is not None:
         on_opened()
-    return await _play_youtube_video(frame, replay=replay, on_started=on_started, on_position=on_position)
+    return await _play_youtube_video(
+        frame, replay=replay, on_started=on_started, on_position=on_position, diagnostic=diagnostic
+    )

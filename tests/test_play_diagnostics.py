@@ -8,14 +8,24 @@ from typing import Any
 
 import pytest
 from playwright.async_api import Error as PlaywrightError
-from test_play import FIRST_ID, SECOND_ID, FakeFrame, FakePage, _lecture, _patch_playback_clock, _prepare
+from test_play import FIRST_ID, FakeFrame, FakePage, _lecture, _patch_playback_clock, _prepare
 
 from campusctl.envelope import CampusError
-from campusctl.providers.cnu import player, player_types
-from campusctl.providers.cnu.media import panopto
+from campusctl.providers.cnu import player, player_preview, player_types
+from campusctl.providers.cnu.media import panopto, youtube
 
 
 class MissingFramePage(FakePage):
+    def locator(self, selector: str) -> Any:
+        if selector == panopto.PLAYER_FRAME_SELECTOR:
+
+            class MissingLocator:
+                async def count(self) -> int:
+                    return 0
+
+            return MissingLocator()
+        return super().locator(selector)
+
     async def query_selector(self, selector: str) -> Any:
         if selector == panopto.PLAYER_FRAME_SELECTOR:
             return None
@@ -127,7 +137,7 @@ def _run(
         player.play_lectures(
             page,
             {"playback": {"default_speed": 1.0}},
-            [_lecture(FIRST_ID), _lecture(SECOND_ID)],
+            [_lecture(FIRST_ID)],
             replay=replay,
         )
     )
@@ -135,7 +145,7 @@ def _run(
 
 
 @pytest.mark.parametrize("cause", ["missing", "not-lv", "closed", "hidden"])
-def test_row_unavailable_stops_queue(
+def test_row_unavailable_is_not_retried(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], cause: str
 ) -> None:
     page = FakePage(stuck_title_rows={"row-1"} if cause == "hidden" else None)
@@ -149,7 +159,8 @@ def test_row_unavailable_stops_queue(
 
     result, errors, _clock = _run(monkeypatch, page)
 
-    assert [item["outcome"] for item in result["items"]] == ["failed", "not-started"]
+    assert result["items"][0]["outcome"] == "failed"
+    assert result["items"][0]["attempts"] == 0
     assert result["items"][0]["reason_code"] == errors[0].code == "lecture-row-unavailable"
     assert result["items"][0]["player_opened"] is False
     assert len(capsys.readouterr().err.splitlines()) == 1
@@ -169,29 +180,23 @@ def test_player_wait_deadlines_and_sanitized_diagnostic(
     code = f"player-{missing}-unavailable"
     assert result["items"][0]["reason_code"] == errors[0].code == code
     assert result["items"][0]["player_opened"] is False
-    assert clock[0] == (panopto.PLAYER_FRAME_WAIT_SECONDS if missing == "frame" else panopto.PLAYER_VIDEO_WAIT_SECONDS)
+    assert clock[0] == 3 * (
+        panopto.PLAYER_FRAME_WAIT_SECONDS if missing == "frame" else panopto.PLAYER_VIDEO_WAIT_SECONDS
+    )
     assert result["items"][0]["watch_time"] is None
     if missing == "frame":
         assert result["items"][0]["elapsed_seconds"] == panopto.PLAYER_FRAME_WAIT_SECONDS
     lines = capsys.readouterr().err.splitlines()
-    assert len(lines) == 1
-    assert lines[0].startswith(player_types.PLAY_DIAGNOSTIC_PREFIX)
-    record = json.loads(lines[0].removeprefix(player_types.PLAY_DIAGNOSTIC_PREFIX))
-    assert record == {
-        "schema_version": 2,
-        "index": 1,
-        "stage": missing,
-        "reason_code": code,
-        "frame_panopto": None if missing == "frame" else True,
-        "frame_kind": "none" if missing == "frame" else "panopto",
-        "video_count": 0,
-        "splash_visible": missing == "video",
-        "splash_clicks": 0 if missing == "frame" else 2,
-        "page_state": "unknown" if missing == "frame" else "splash",
-    }
+    assert len(lines) == 3
+    records = [json.loads(line.removeprefix(player_types.PLAY_DIAGNOSTIC_PREFIX)) for line in lines]
+    assert [record["attempt"] for record in records] == [1, 2, 3]
+    assert all(record["schema_version"] == 3 for record in records)
+    assert all(record["reason_code"] == code for record in records)
+    assert records[0]["preview_step"] == ("frame" if missing == "frame" else "splash")
+    assert records[0]["page_state"] == ("unknown" if missing == "frame" else "splash")
     for forbidden in (FIRST_ID, "course-a", "row-1", "http", "Embed.aspx", "panopto.example", str(tmp_path)):
         assert forbidden not in lines[0]
-    assert len([call for call in page.calls if call[0] == "play"]) == (0 if missing == "frame" else 2)
+    assert len([call for call in page.calls if call[0] == "play"]) == (0 if missing == "frame" else 6)
     assert ("close", "row-1") in page.calls
     if missing == "frame":
         assert "Close other LMS sessions" in errors[0].remediation
@@ -217,11 +222,10 @@ def test_frame_lookup_errors_keep_elapsed_and_specific_code(
 
     result, errors, clock = _run(monkeypatch, page)
 
-    assert clock[0] == 4.0
+    assert clock[0] == 8.0
     assert result["items"][0]["reason_code"] == errors[0].code == "player-frame-unavailable"
     assert result["items"][0]["elapsed_seconds"] == 4.0
     assert result["items"][0]["watch_time"] is None
-    assert result["items"][1]["outcome"] == "not-started"
     assert "Another session for the same account can replace the player page" in errors[0].remediation
     record = json.loads(capsys.readouterr().err.removeprefix(player_types.PLAY_DIAGNOSTIC_PREFIX))
     assert record["stage"] == "frame"
@@ -274,7 +278,7 @@ def test_non_panopto_lms_frame_is_classified_without_url(
     assert result["items"][0]["reason_code"] == errors[0].code == "player-frame-unavailable"
     line = capsys.readouterr().err
     record = json.loads(line.removeprefix(player_types.PLAY_DIAGNOSTIC_PREFIX))
-    assert record["schema_version"] == 2
+    assert record["schema_version"] == 3
     assert record["frame_kind"] == "lms"
     assert record["frame_panopto"] is False
     assert "lms.invalid" not in line
@@ -328,7 +332,6 @@ def test_replay_coverage_boundary_and_non_replay_seek_behavior(
     else:
         assert result["items"][0]["reason_code"] == errors[0].code == "playback-stalled"
         assert clock[0] == panopto.PLAYER_STALL_SECONDS
-        assert result["items"][1]["outcome"] == "not-started"
 
 
 def test_watch_limit_is_distinct_from_stall(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -341,7 +344,6 @@ def test_watch_limit_is_distinct_from_stall(tmp_path: Path, monkeypatch: pytest.
 
     assert result["items"][0]["reason_code"] == errors[0].code == "playback-timeout"
     assert clock[0] == 5.0
-    assert result["items"][1]["outcome"] == "not-started"
 
 
 def test_unknown_failure_keeps_generic_code(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -365,3 +367,114 @@ def test_page_classification_rejects_free_text() -> None:
     assert record["page_state"] == "unknown"
     assert record["video_count"] == 0
     assert "untrusted" not in diagnostic.record(1, "playback-failed")
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected"),
+    [
+        ("absent", "not_started"),
+        ("splash", "not_started"),
+        ("ready", "started_or_unknown"),
+        ("unknown", "started_or_unknown"),
+        ("youtube", "started_or_unknown"),
+        ("stale", "observe_failed"),
+        ("detached", "observe_failed"),
+        ("malformed", "observe_failed"),
+        ("count-error", "observe_failed"),
+        ("started-then-splash", "started_or_unknown"),
+    ],
+)
+def test_retry_observation_requires_fresh_unstarted_player(mode: str, expected: str) -> None:
+    class ObservationFrame(FakeFrame):
+        @property
+        def url(self) -> str:
+            if mode == "youtube":
+                return "https://www.youtube-nocookie.com/embed/synthetic"
+            return "https://panopto.invalid/Embed.aspx"
+
+        def is_detached(self) -> bool:
+            return mode == "detached"
+
+        async def evaluate(self, script: str, *args: Any) -> dict[str, Any]:
+            if mode == "stale":
+                raise RuntimeError("classification unavailable")
+            if mode == "malformed":
+                return {"page_state": "splash", "video_count": False}
+            state = mode if mode in {"ready", "unknown"} else "splash"
+            return {"page_state": state, "video_count": int(state == "ready")}
+
+    class ObservationPage(FakePage):
+        def locator(self, selector: str) -> Any:
+            if selector == "iframe#previewFrame":
+
+                class FrameCount:
+                    async def count(self) -> int:
+                        if mode == "count-error":
+                            raise TimeoutError("count unavailable")
+                        return int(mode != "absent")
+
+                return FrameCount()
+            return super().locator(selector)
+
+    page = ObservationPage()
+    page.player_open = True
+    page.frame = ObservationFrame(page)
+    diagnostic = player_types._PlayDiagnostic()
+    diagnostic.frame = page.frame
+    diagnostic.page_state = "splash"
+    diagnostic.video_count = 0
+    if mode == "started-then-splash":
+        diagnostic.observe_video({"paused": False, "currentTime": 0})
+        diagnostic.observe_video({"paused": True, "currentTime": 0})
+
+    assert asyncio.run(player_preview._observe_retry_state(page, diagnostic)) == expected
+
+
+def test_unpaused_read_before_start_callback_prevents_reopening(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class VanishingVideoFrame(FakeFrame):
+        async def evaluate(self, script: str, *args: Any) -> dict[str, Any]:
+            if "campusctl-classify-player-page" in script:
+                return {"page_state": "splash", "video_count": 0}
+            return {"exists": True, "paused": False, "currentTime": 0, "playbackRate": 1}
+
+        def locator(self, selector: str) -> Any:
+            if "data-speed" in selector:
+                raise RuntimeError("player disappeared before the start callback")
+            return super().locator(selector)
+
+    page = FakePage()
+    page.frame = VanishingVideoFrame(page)
+    _prepare(tmp_path, monkeypatch, page, default_speed=1.5)
+    result, errors = asyncio.run(player.play_lectures(page, {"playback": {"default_speed": 1.5}}, [_lecture(FIRST_ID)]))
+    assert errors[0].code == "playback-failed"
+    assert result["items"][0]["outcome"] == "failed"
+    assert result["items"][0]["attempts"] == 1
+    assert [call for call in page.calls if call[0] == "open-player"] == [("open-player", "row-1")]
+
+
+def test_modal_timeout_with_frame_present_does_not_reopen(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    class ModalTimeoutPage(FakePage):
+        async def wait_for_selector(self, selector: str, **kwargs: Any) -> None:
+            if "previewModal" in selector:
+                raise TimeoutError("modal readiness unavailable")
+            await super().wait_for_selector(selector, **kwargs)
+
+    page = ModalTimeoutPage()
+    _prepare(tmp_path, monkeypatch, page)
+    result, errors, _clock = _run(monkeypatch, page)
+    assert errors[0].code == "playback-failed"
+    assert result["items"][0]["attempts"] == 1
+    assert ("close", "row-1") in page.calls
+
+
+def test_youtube_preclick_autoplay_observation_survives_later_splash() -> None:
+    page = FakePage(youtube_mode="cued", youtube_starts_during_visibility=True)
+    diagnostic = player_types._PlayDiagnostic()
+    clicked, _detail = asyncio.run(youtube._click_youtube_start(page.frame, 1.0, diagnostic))
+    assert clicked is False
+    assert page.frame.clicks == []
+    assert diagnostic.started_seen is True
+    diagnostic.observe_video({"paused": True, "currentTime": 0})
+    assert diagnostic.started_seen is True

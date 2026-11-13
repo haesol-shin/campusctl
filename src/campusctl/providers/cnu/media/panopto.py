@@ -162,12 +162,12 @@ async def _player_frame(  # noqa: C901 - ordered frame, video and splash wait
                     candidate = await bounded(
                         iframe.content_frame(), PROTOCOL_TIMEOUT_SECONDS, "opening the Panopto player frame"
                     )
-            except (CampusError, PlaywrightError):
+            except (CampusError, PlaywrightError) as error:
                 raise _PlaybackFailure(
                     current_clock().monotonic() - started_at,
                     code="player-frame-unavailable",
                     message="The Panopto player frame was unavailable.",
-                ) from None
+                ) from error
             if candidate is not None:
                 frame_url = str(getattr(candidate, "url", "") or "")
                 kind = _frame_kind(frame_url, str(getattr(page, "url", "") or ""))
@@ -182,10 +182,10 @@ async def _player_frame(  # noqa: C901 - ordered frame, video and splash wait
                         PROTOCOL_TIMEOUT_SECONDS,
                         "checking the Panopto video frame",
                     )
-                except (CampusError, PlaywrightError):
+                except (CampusError, PlaywrightError) as error:
                     if diagnostic is not None and recognized_player:
                         diagnostic.stage = "video"
-                    raise _video_check_failure(current_clock().monotonic() - started_at, recognized_player) from None
+                    raise _video_check_failure(current_clock().monotonic() - started_at, recognized_player) from error
                 if "Embed.aspx" in frame_url or video is not None:
                     frame = candidate
         else:
@@ -199,6 +199,7 @@ async def _player_frame(  # noqa: C901 - ordered frame, video and splash wait
         if frame is not None:
             if diagnostic is not None:
                 diagnostic.stage = "video"
+                diagnostic.preview_step = "splash"
             play_button = await _visible_locator(
                 frame,
                 PLAY_BUTTON_SELECTOR,
@@ -240,13 +241,13 @@ async def _player_frame(  # noqa: C901 - ordered frame, video and splash wait
             16.0,
             "waiting for the Panopto video",
         )
-    except Exception:
+    except Exception as error:
         if diagnostic is not None:
             await diagnostic.refresh()
         raise _PlaybackFailure(
             code="player-video-unavailable",
             message="The Panopto player frame loaded without a video element.",
-        ) from None
+        ) from error
     return frame
 
 
@@ -264,7 +265,7 @@ async def _read_video_state(frame: Any) -> dict[str, Any]:
     return value
 
 
-async def _wait_for_speed(frame: Any, speed: float) -> bool:
+async def _wait_for_speed(frame: Any, speed: float, diagnostic: _PlayDiagnostic | None = None) -> bool:
     clock = current_clock()
     deadline = clock.monotonic() + SPEED_CHANGE_TIMEOUT_SECONDS
     while True:
@@ -277,8 +278,10 @@ async def _wait_for_speed(frame: Any, speed: float) -> bool:
                 min(PROTOCOL_TIMEOUT_SECONDS, remaining),
                 "verifying Panopto playback speed",
             )
-        except Exception:
-            return False
+        except Exception as error:
+            raise _PlaybackFailure(code="playback-speed-unavailable") from error
+        if diagnostic is not None:
+            diagnostic.observe_video(status)
         if (
             isinstance(status, dict)
             and status.get("exists")
@@ -340,6 +343,7 @@ async def play(  # noqa: C901 - ordered LMS step sequence
     if on_opened is not None:
         on_opened()
     status = await _read_video_state(frame)
+    diagnostic.observe_video(status)
 
     if not _panopto_rate_matches(status.get("playbackRate"), speed):
         speed_selector = _speed_selector(speed)
@@ -353,11 +357,12 @@ async def play(  # noqa: C901 - ordered LMS step sequence
                 PROTOCOL_TIMEOUT_SECONDS,
                 "selecting the Panopto speed option",
             )
-        except Exception:
-            raise _PlaybackFailure(code="playback-speed-unavailable") from None
-        if not await _wait_for_speed(frame, speed):
+        except Exception as error:
+            raise _PlaybackFailure(code="playback-speed-unavailable") from error
+        if not await _wait_for_speed(frame, speed, diagnostic):
             raise _PlaybackFailure(code="playback-speed-unavailable")
         status = await _read_video_state(frame)
+        diagnostic.observe_video(status)
     already_ended = replay and bool(status.get("ended"))
 
     if status.get("paused") or already_ended:
@@ -365,8 +370,11 @@ async def play(  # noqa: C901 - ordered LMS step sequence
         if play_button is None:
             raise _PlaybackFailure()
         await bounded(play_button.click(timeout=7000), PROTOCOL_TIMEOUT_SECONDS, "starting the Panopto video")
-        if already_ended and (await _read_video_state(frame)).get("ended"):
-            raise _PlaybackFailure(message="The official player did not restart playback.")
+        if already_ended:
+            status = await _read_video_state(frame)
+            diagnostic.observe_video(status)
+            if status.get("ended"):
+                raise _PlaybackFailure(message="The official player did not restart playback.")
 
     started_at = current_clock().monotonic()
     if on_started is not None:
@@ -376,6 +384,7 @@ async def play(  # noqa: C901 - ordered LMS step sequence
     last_position_event_at: float | None = None
     while True:
         status = await _read_video_state(frame)
+        diagnostic.observe_video(status)
         now = current_clock().monotonic()
         current_time = _video_number(status, "currentTime")
         duration = _video_number(status, "duration")
