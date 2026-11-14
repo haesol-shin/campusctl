@@ -31,7 +31,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "keyring", specifier = ">=24" },
-    { name = "playwright", specifier = ">=1.62" },
+    { name = "playwright", specifier = ">=1.62,<1.66" },
 ]
 
 [package.metadata.requires-dev]

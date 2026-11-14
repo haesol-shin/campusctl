@@ -98,6 +98,14 @@ Install the pinned `v0.7.0` release with:
 uv tool install --with-executables-from playwright git+https://github.com/haesol-shin/campusctl@v0.7.0
 ```
 
+## Pin a Playwright version
+
+campusctl accepts Playwright 1.62 through 1.65. A tool install resolves the newest allowed Playwright, not the version in `uv.lock`. To use the locked Playwright, reinstall the tool with an explicit version, replacing `1.64.1` with the `playwright` version in that release's `uv.lock`:
+
+```bash
+uv tool install --force --with-executables-from playwright --with playwright==1.64.1 git+https://github.com/haesol-shin/campusctl
+```
+
 ## Update or uninstall
 
 Update the CLI and check or install its browser:

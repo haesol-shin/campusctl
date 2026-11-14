@@ -1230,6 +1230,30 @@ def test_failed_todo_navigation_restores_roster_before_archive_menu(
         assert materials_catalog["materials"] == [_expected_row("materials", IDS[0], 1)]
 
 
+def test_todo_snapshot_failure_names_the_caught_exception(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def unavailable(*_args: Any, **_kwargs: Any) -> Any:
+        raise ModuleNotFoundError("No module named 'playwright._impl._network'")
+
+    with fixture_server() as server:
+        config = _install_fixture(monkeypatch, server)
+        monkeypatch.setattr(sync_all, "_todo", unavailable)
+        result, errors = run_sync(
+            config, tmp_path, ("notices", "materials"), None, collector=sync_all.sync_all, headless=True
+        )
+        codes = [error.code for error in errors] if isinstance(errors, list) else [errors.code]
+        assert codes == ["course-sync-failed"] * len(IDS)
+        assert result["domains"]["notices"]["status"] == "partial"
+        assert result["domains"]["materials"]["status"] == "ok"
+        messages = [error["message"] for error in result["domains"]["notices"]["errors"]]
+        assert len(messages) == len(IDS)
+        assert all("at todo extraction: ModuleNotFoundError" in message for message in messages)
+        catalog = read_domain_catalog("notices", domain_catalog_path("notices", tmp_path))
+        assert catalog["failed_courses"] == [
+            {"course_id": cid, "label": f"Fixture Course {n}", "reason": "course-sync-failed"}
+            for n, cid in enumerate(IDS, 1)
+        ]
+
+
 def test_later_invalid_catalog_blocks_all_publication_and_names_later_domain(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

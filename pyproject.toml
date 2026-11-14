@@ -10,7 +10,7 @@ readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"
-dependencies = ["playwright>=1.62", "keyring>=24"]
+dependencies = ["playwright>=1.62,<1.66", "keyring>=24"]
 
 [project.scripts]
 campusctl = "campusctl.cli:main"

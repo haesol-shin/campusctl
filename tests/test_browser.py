@@ -173,88 +173,165 @@ def test_bounded_timeout_is_safe_and_names_operation() -> None:
     _run(scenario())
 
 
+class _LegacyResponseLayout:
+    """Playwright 1.64: Response._finished_future races Request._target_closed_future."""
+
+    label = "1.64"
+
+    def __init__(self) -> None:
+        from types import SimpleNamespace
+
+        from playwright._impl._network import Response as ImplResponse
+
+        loop = asyncio.get_running_loop()
+        self.closed: asyncio.Future[Any] = loop.create_future()
+        self.impl = object.__new__(ImplResponse)
+        self.impl._finished_future = loop.create_future()
+        self.impl._request = SimpleNamespace(_target_closed_future=lambda: self.closed)
+        self.response = SimpleNamespace(_impl_obj=self.impl, finished=self.impl.finished)
+
+    def complete(self) -> None:
+        self.impl._finished_future.set_result(True)
+
+    def fail(self, error: Exception) -> None:
+        self.impl._finished_future.set_exception(error)
+
+    def close(self) -> None:
+        self.closed.set_result(None)
+
+    def assert_intact(self) -> None:
+        assert not self.impl._finished_future.cancelled()
+        assert not self.closed.cancelled()
+
+
+class _ModernResponseLayout:
+    """Playwright 1.65: Response._finished_promise races the request's LongStandingScope."""
+
+    label = "1.65"
+
+    def __init__(self) -> None:
+        from types import SimpleNamespace
+
+        from playwright._impl.errors import Error
+        from playwright._impl.isomorphic.manual_promise import LongStandingScope, ManualPromise
+        from playwright._impl.network import Response as ImplResponse
+
+        self.error_type = Error
+        self.promise = ManualPromise()
+        self.scope = LongStandingScope()
+        self.impl = object.__new__(ImplResponse)
+        self.impl._finished_promise = self.promise
+        self.impl._request = SimpleNamespace(_target_closed_scope=lambda: self.scope)
+        self.response = SimpleNamespace(_impl_obj=self.impl, finished=self.impl.finished)
+
+    def complete(self) -> None:
+        self.promise.resolve(None)
+
+    def fail(self, error: Exception) -> None:
+        self.promise.reject(error)
+
+    def close(self) -> None:
+        self.scope.close(self.error_type("Target closed"))
+
+    def assert_intact(self) -> None:
+        assert not self.promise.cancelled()
+
+
+_LAYOUTS = [_LegacyResponseLayout, _ModernResponseLayout]
+
+
+@pytest.mark.parametrize("layout_type", _LAYOUTS, ids=[layout.label for layout in _LAYOUTS])
 @pytest.mark.parametrize("outcome", ["success", "pending-success", "cancel", "timeout"])
-def test_finish_response_does_not_orphan_target_close_tasks(outcome: str) -> None:
-    from types import SimpleNamespace
-
-    from playwright._impl._network import Response as ImplResponse
-
+def test_finish_response_does_not_orphan_target_close_tasks(layout_type: type[Any], outcome: str) -> None:
     async def scenario() -> None:
+        try:
+            layout = layout_type()
+        except ImportError:
+            pytest.skip(f"Playwright does not provide the {layout_type.label} response layout")
         loop = asyncio.get_running_loop()
         errors: list[dict[str, Any]] = []
         loop.set_exception_handler(lambda _loop, context: errors.append(context))
-        closed = loop.create_future()
-        impl = object.__new__(ImplResponse)
-        impl._finished_future = loop.create_future()
-        impl._request = SimpleNamespace(_target_closed_future=lambda: closed)
-        response = SimpleNamespace(_impl_obj=impl, finished=impl.finished)
         baseline = asyncio.all_tasks()
         try:
             if outcome == "success":
-                impl._finished_future.set_result(True)
-                assert await browser.finish_response(response) is None
+                layout.complete()
+                assert await browser.finish_response(layout.response) is None
             elif outcome == "pending-success":
-                waiter = asyncio.create_task(browser.finish_response(response))
+                waiter = asyncio.create_task(browser.finish_response(layout.response))
                 await settle()
                 assert not waiter.done()
-                impl._finished_future.set_result(True)
+                layout.complete()
                 assert await waiter is None
             elif outcome == "cancel":
-                waiter = asyncio.create_task(browser.finish_response(response))
+                waiter = asyncio.create_task(browser.finish_response(layout.response))
                 await settle()
                 waiter.cancel()
                 with pytest.raises(asyncio.CancelledError):
                     await waiter
             else:
                 with pytest.raises(CampusError, match="finishing a test response"):
-                    await browser.bounded(browser.finish_response(response), 0.01, "finishing a test response")
+                    await browser.bounded(browser.finish_response(layout.response), 0.01, "finishing a test response")
             await settle()
             orphaned = asyncio.all_tasks() - baseline
-            closed.set_result(None)
+            layout.close()
             await settle()
             # Retain and retrieve leaked tasks only after recording the failure,
             # so the regression itself does not pollute other tests' stderr.
             leaked_errors = await asyncio.gather(*orphaned, return_exceptions=True)
             assert not orphaned, leaked_errors
             assert not errors
-            assert not impl._finished_future.cancelled()
-            assert not closed.cancelled()
+            layout.assert_intact()
         finally:
             loop.set_exception_handler(None)
 
     _run(scenario())
 
 
+@pytest.mark.parametrize("layout_type", _LAYOUTS, ids=[layout.label for layout in _LAYOUTS])
 @pytest.mark.parametrize("outcome", ["closed", "closed-and-finished", "completion-error"])
-def test_finish_response_preserves_errors(outcome: str) -> None:
-    from types import SimpleNamespace
-
-    from playwright._impl._network import Response as ImplResponse
+def test_finish_response_preserves_errors(layout_type: type[Any], outcome: str) -> None:
     from playwright.async_api import Error
 
     async def scenario() -> None:
-        loop = asyncio.get_running_loop()
-        closed = loop.create_future()
-        impl = object.__new__(ImplResponse)
-        impl._finished_future = loop.create_future()
-        impl._request = SimpleNamespace(_target_closed_future=lambda: closed)
-        response = SimpleNamespace(_impl_obj=impl, finished=impl.finished)
+        try:
+            layout = layout_type()
+        except ImportError:
+            pytest.skip(f"Playwright does not provide the {layout_type.label} response layout")
         if outcome == "closed-and-finished":
-            impl._finished_future.set_result(True)
-            closed.set_result(None)
-        waiter = asyncio.create_task(browser.finish_response(response))
+            layout.complete()
+            layout.close()
+        waiter = asyncio.create_task(browser.finish_response(layout.response))
         await settle()
         if outcome == "closed":
             assert not waiter.done()
-            closed.set_result(None)
+            layout.close()
         elif outcome == "completion-error":
             assert not waiter.done()
-            impl._finished_future.set_exception(Error("Response failed"))
+            layout.fail(Error("Response failed"))
         message = "Response failed" if outcome == "completion-error" else "Target closed"
         with pytest.raises(Error, match=message):
             await waiter
-        assert not closed.cancelled()
-        assert not impl._finished_future.cancelled()
+        layout.assert_intact()
+
+    _run(scenario())
+
+
+def test_finish_response_falls_back_to_public_finished_for_unknown_layout() -> None:
+    from types import SimpleNamespace
+
+    async def scenario() -> None:
+        calls: list[str] = []
+
+        async def finished() -> None:
+            calls.append("finished")
+
+        responses = [
+            SimpleNamespace(finished=finished),
+            SimpleNamespace(_impl_obj=SimpleNamespace(), finished=finished),
+        ]
+        for response in responses:
+            assert await browser.finish_response(response) is None
+        assert calls == ["finished", "finished"]
 
     _run(scenario())
 
