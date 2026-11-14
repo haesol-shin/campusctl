@@ -492,30 +492,49 @@ async def bounded(awaitable: Any, seconds: float, what: str) -> Any:
         ) from None
 
 
+def _response_completion_futures(impl: Any) -> tuple[asyncio.Future[Any], asyncio.Future[Any]] | None:
+    """Return the Playwright 1.64 completion and target-close futures, if present.
+
+    Playwright 1.64 keeps both futures on Response and Request. Playwright 1.65
+    replaced them with a promise and a LongStandingScope whose race cancels its
+    own waiter, so its public finished() needs no shim. Probe attributes rather
+    than import the private module: an unknown layout must fall back to the
+    public API instead of raising ImportError or AttributeError.
+    """
+    finished = getattr(impl, "_finished_future", None)
+    target_closed = getattr(getattr(impl, "_request", None), "_target_closed_future", None)
+    if not isinstance(finished, asyncio.Future) or not callable(target_closed):
+        return None
+    closed = target_closed()
+    if not isinstance(closed, asyncio.Future):
+        return None
+    return finished, closed
+
+
 async def finish_response(response: Any) -> Any:
     """Wait for completion without Playwright's orphaned target-close task.
 
-    Playwright's Response.finished() races a completion future against a new
+    Playwright 1.64 Response.finished() races a completion future against a new
     target-close task, but never cancels that task on success or cancellation.
     Race the same existing futures directly instead. asyncio.wait leaves both
     shared futures intact when a bounded caller times out or is cancelled.
-    Keep this private-API compatibility boundary here, not in the providers.
+    Playwright 1.65 uses the public finished(): its LongStandingScope race
+    cancels the waiter it adds, in every outcome. Keep this private-API
+    compatibility boundary here, not in the providers.
     """
     impl = getattr(response, "_impl_obj", None)
-    if impl is None:
+    futures = _response_completion_futures(impl) if impl is not None else None
+    if futures is None:
         return await response.finished()
 
-    from playwright._impl._network import Response as ImplResponse
     from playwright.async_api import Error
 
-    if not isinstance(impl, ImplResponse):
-        return await response.finished()
-    closed = impl._request._target_closed_future()
-    await asyncio.wait([impl._finished_future, closed], return_when=asyncio.FIRST_COMPLETED)
+    finished, closed = futures
+    await asyncio.wait([finished, closed], return_when=asyncio.FIRST_COMPLETED)
     if closed.done():
         await closed
         raise Error("Target closed")
-    await impl._finished_future
+    await finished
     return None
 
 

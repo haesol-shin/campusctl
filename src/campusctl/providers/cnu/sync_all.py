@@ -458,13 +458,15 @@ async def sync_all(  # noqa: C901
                     )
                 todo_rows: dict[str, list[dict[str, Any]]] = {}
                 todo_failures: set[str] = set()
+                todo_error: Exception | None = None
                 if "notices" in domains:
                     session_step = "todo snapshot"
                     try:
                         with browser.profile_labels(page_kind="todo", domain="notices", course=None):
                             todo_rows, todo_failures = await _todo(page, roster, course_id)
-                    except Exception:
+                    except Exception as error:
                         # A failed global read cannot attest to any selected notice board.
+                        todo_error = error
                         todo_failures = {item["course_id"] for item in selected_courses}
                     try:
                         await _return_to_roster(page)
@@ -501,7 +503,7 @@ async def sync_all(  # noqa: C901
                     selected_before = True
                     for domain_index, domain in enumerate(domains):
                         if domain == "notices" and course["course_id"] in todo_failures:
-                            staged[domain].fail(domain, course, "todo extraction")
+                            staged[domain].fail(domain, course, "todo extraction", todo_error)
                             continue
                         try:
                             rows = await _section(page, ordinal, domain, course, roster, todo_rows)

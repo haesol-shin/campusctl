@@ -98,6 +98,14 @@ Playwright 브라우저 캐시의 기본 위치는 다음과 같습니다:
 uv tool install --with-executables-from playwright git+https://github.com/haesol-shin/campusctl@v0.7.0
 ```
 
+## Playwright 버전 고정
+
+campusctl은 Playwright 1.62부터 1.65까지 지원합니다. 도구 설치는 `uv.lock`의 버전이 아니라 허용된 최신 Playwright를 고릅니다. `uv.lock`의 Playwright를 쓰려면 릴리스의 `uv.lock`에 있는 `playwright` 버전으로 `1.64.1`을 바꿔 다음 명령으로 도구를 다시 설치하세요.
+
+```bash
+uv tool install --force --with-executables-from playwright --with playwright==1.64.1 git+https://github.com/haesol-shin/campusctl
+```
+
 ## 업데이트 또는 제거
 
 CLI를 업데이트하고 브라우저를 확인하거나 설치하려면:
